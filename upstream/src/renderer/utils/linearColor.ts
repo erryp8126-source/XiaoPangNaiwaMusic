@@ -79,28 +79,54 @@ const getImageColor = (img: HTMLImageElement): Promise<string> => {
 
 const getImagePrimaryColor = (imageSrc: string): Promise<string> => {
   return new Promise((resolve, reject) => {
+    if (!imageSrc || (typeof document !== 'undefined' && document.hidden)) {
+      resolve('rgb(28,36,52)');
+      return;
+    }
+
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        resolve('rgb(28,36,52)');
+      }
+    }, 1500);
+
     const img = new Image();
     img.crossOrigin = 'Anonymous';
-    img.src = imageSrc;
 
     img.onload = () => {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        reject(new Error('无法获取canvas上下文'));
-        return;
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      try {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve('rgb(28,36,52)');
+          return;
+        }
+
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const color = getAverageColor(imageData.data);
+        resolve(`rgb(${color.join(',')})`);
+      } catch {
+        resolve('rgb(28,36,52)');
       }
-
-      canvas.width = img.width;
-      canvas.height = img.height;
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const color = getAverageColor(imageData.data);
-      resolve(`rgb(${color.join(',')})`);
     };
 
-    img.onerror = () => reject(new Error('图片加载失败'));
+    img.onerror = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      reject(new Error('图片加载失败'));
+    };
+
+    img.src = imageSrc;
   });
 };
 

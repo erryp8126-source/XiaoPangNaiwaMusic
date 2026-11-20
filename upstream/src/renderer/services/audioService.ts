@@ -881,10 +881,21 @@ class AudioService {
         const savedVolume = parseFloat(localStorage.getItem('volume') || '1');
         const initialVol = Number.isNaN(savedVolume) ? 1 : Math.max(0, Math.min(1, savedVolume));
 
+        // 预先同步硬件 EQ 状态，并一次性传入 autoplay + seekTime，避免后台切歌二次往返 WebView
+        const eqEnabled = !this.bypass;
+        window.AlgerAndroid?.eqSetEnabled(eqEnabled);
+        if (eqEnabled) {
+          const saved = this.loadEQSettings();
+          Object.entries(saved).forEach(([freq, gain]) => {
+            window.AlgerAndroid?.eqSetBandGain(Number(freq), Number(gain) || 0);
+          });
+        }
+
         const nativeSound = new NativeHowl({
           src: [url],
           track,
-          autoplay: false,
+          autoplay: isPlay,
+          seekTime: seekTime > 0 ? seekTime : 0,
           volume: initialVol,
           rate: this.playbackRate
         });
@@ -903,69 +914,113 @@ class AudioService {
           reject(err);
         };
 
-        nativeSound.on('loaderror', (_id: any, error: any) => {
-          this.emit('loaderror', { track, error });
-          this.emit('url_expired', track);
-          finishReject(new Error(typeof error === 'string' ? error : '音频加载失败'));
-        });
-
-        nativeSound.on('playerror', (_id: any, error: any) => {
-          this.emit('playerror', { track, error });
-          this.emit('url_expired', track);
-          finishReject(new Error(typeof error === 'string' ? error : '音频播放失败'));
-        });
-
-        nativeSound.on('play', () => {
-          if ((this.currentSound as any) === nativeSound) {
-            this.emit('play');
-          }
-        });
-
-        nativeSound.on('pause', () => {
-          if ((this.currentSound as any) === nativeSound) {
-            this.emit('pause');
-          }
-        });
-
-        nativeSound.on('end', () => {
-          if ((this.currentSound as any) === nativeSound) {
-            this.emit('end');
-          }
-        });
-
-        nativeSound.on('seek', () => {
-          if ((this.currentSound as any) === nativeSound) {
-            this.emit('seek');
-          }
-        });
+        this.bindNativeSoundEvents(nativeSound, track, finishReject);
 
         nativeSound.once('load', () => {
           if ((this.currentSound as any) !== nativeSound) {
             finishResolve();
             return;
           }
-          // 同步硬件 EQ 状态
-          const eqEnabled = !this.bypass;
-          window.AlgerAndroid?.eqSetEnabled(eqEnabled);
-          if (eqEnabled) {
-            const saved = this.loadEQSettings();
-            Object.entries(saved).forEach(([freq, gain]) => {
-              window.AlgerAndroid?.eqSetBandGain(Number(freq), Number(gain) || 0);
-            });
-          }
-          if (seekTime > 0) {
-            nativeSound.seek(seekTime);
-          }
           this.emit('load');
-          if (isPlay) {
-            nativeSound.play();
-          }
           finishResolve();
         });
       } catch (e: any) {
         reject(e instanceof Error ? e : new Error(String(e)));
       }
     });
+  }
+
+  private bindNativeSoundEvents(
+    nativeSound: NativeHowl,
+    track: SongResult,
+    onErrorReject?: (err: Error) => void
+  ): void {
+    nativeSound.on('loaderror', (_id: any, error: any) => {
+      this.emit('loaderror', { track, error });
+      this.emit('url_expired', track);
+      onErrorReject?.(new Error(typeof error === 'string' ? error : '音频加载失败'));
+    });
+
+    nativeSound.on('playerror', (_id: any, error: any) => {
+      this.emit('playerror', { track, error });
+      this.emit('url_expired', track);
+      onErrorReject?.(new Error(typeof error === 'string' ? error : '音频播放失败'));
+    });
+
+    nativeSound.on('play', () => {
+      if ((this.currentSound as any) === nativeSound) {
+        this.emit('play');
+      }
+    });
+
+    nativeSound.on('pause', () => {
+      if ((this.currentSound as any) === nativeSound) {
+        this.emit('pause');
+      }
+    });
+
+    nativeSound.on('end', () => {
+      if ((this.currentSound as any) === nativeSound) {
+        this.emit('end');
+      }
+    });
+
+    nativeSound.on('seek', () => {
+      if ((this.currentSound as any) === nativeSound) {
+        this.emit('seek');
+      }
+    });
+  }
+
+  /**
+   * 当 Android 后台原生服务自动切到下一首时，无缝接管当前正在播放的 ExoPlayer 实例（不中断播放）
+   */
+  public attachNativeAndroidTrack(
+    payload: {
+      instanceId: number;
+      url: string;
+      position?: number;
+      duration?: number;
+      playing?: boolean;
+    },
+    track: SongResult
+  ): Howl {
+    if (this.currentSound) {
+      try {
+        this.currentSound.off('play');
+        this.currentSound.off('pause');
+        this.currentSound.off('end');
+        this.currentSound.off('seek');
+        this.currentSound.off('loaderror');
+        this.currentSound.off('playerror');
+      } catch {
+        // ignore
+      }
+    }
+
+    this.currentTrack = track;
+    const savedVolume = parseFloat(localStorage.getItem('volume') || '1');
+    const initialVol = Number.isNaN(savedVolume) ? 1 : Math.max(0, Math.min(1, savedVolume));
+
+    const nativeSound = new NativeHowl({
+      src: [payload.url || ''],
+      track,
+      volume: initialVol,
+      rate: this.playbackRate,
+      attachOnly: true,
+      fixedInstanceId: payload.instanceId,
+      initialPosition: typeof payload.position === 'number' ? payload.position : 0,
+      initialPlaying: payload.playing !== false
+    });
+
+    this.currentSound = nativeSound as unknown as Howl;
+    this.bindNativeSoundEvents(nativeSound, track);
+    this.emit('load');
+    if (payload.playing !== false) {
+      this.emit('play');
+    }
+    this.emit('seek');
+    return this.currentSound;
   }
 
   getCurrentSound() {
@@ -1016,11 +1071,14 @@ class AudioService {
 
     if (this.currentSound) {
       try {
+        this.emit('seek_start', time);
         // 直接执行seek操作
         this.currentSound.seek(time);
-        // 触发seek事件
-        this.updateMediaSessionPositionState();
-        this.emit('seek', time);
+        if (!isAndroid()) {
+          // 非 Android 端立即触发 seek 事件；Android 端由原生 ExoPlayer 完成定位后回传真实位置
+          this.updateMediaSessionPositionState();
+          this.emit('seek', time);
+        }
       } catch (error) {
         console.error('Seek操作失败:', error);
       }

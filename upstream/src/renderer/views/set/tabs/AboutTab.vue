@@ -1,27 +1,26 @@
 <template>
   <div>
-    <!-- 小庞奶娃音乐 品牌展示卡片 -->
+    <!-- 小庞奶娃音乐 品牌展示卡片（浅色/深色双模高对比度自适应） -->
     <div
-      class="mb-6 p-5 rounded-[24px] relative overflow-hidden border border-sky-100/80 dark:border-white/10 shadow-naiwa-sm"
-      style="background: linear-gradient(135deg, rgba(215, 239, 249, 0.72) 0%, rgba(255, 244, 214, 0.78) 100%)"
+      class="mb-5 p-5 rounded-[22px] relative overflow-hidden bg-gradient-to-br from-sky-50 via-white to-amber-50 dark:from-[#1B2638] dark:via-[#192231] dark:to-[#221F26] border border-slate-200/90 dark:border-slate-700/80 shadow-[0_2px_12px_rgba(15,23,42,0.06)] dark:shadow-[0_4px_16px_rgba(0,0,0,0.3)]"
     >
       <div class="relative z-10 flex items-center gap-4">
         <img
           :src="mascotIcon"
           alt="小庞奶娃音乐"
-          class="w-16 h-16 rounded-[18px] object-cover shadow-md ring-2 ring-white/90"
+          class="w-16 h-16 rounded-[18px] object-cover shadow-md ring-2 ring-amber-400/50"
         />
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2 flex-wrap">
-            <h2 class="text-lg font-extrabold text-slate-800">小庞奶娃音乐</h2>
+            <h2 class="text-lg font-extrabold text-slate-900 dark:text-white">小庞奶娃音乐</h2>
             <span
-              class="px-2.5 py-0.5 rounded-full text-[11px] font-bold text-white"
-              style="background: linear-gradient(135deg, #ffc21c 0%, #eb8f00 100%)"
+              class="px-2.5 py-0.5 rounded-full text-[11px] font-bold text-white shadow-sm"
+              style="background: linear-gradient(135deg, #D97706 0%, #EA580C 100%)"
             >
               v{{ updateInfo.currentVersion }} 奶娃暖阳版
             </span>
           </div>
-          <p class="text-xs text-slate-600 mt-1 leading-relaxed">
+          <p class="text-[13px] text-slate-600 dark:text-slate-300 mt-1.5 leading-relaxed">
             基于 AlgerMusicPlayer 深度定制的安卓移动端音乐播放器 · 晴空暖阳治愈视觉
           </p>
         </div>

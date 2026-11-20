@@ -57,7 +57,7 @@
       <button
         v-if="!showHoverTracks"
         type="button"
-        class="absolute bottom-2.5 right-2.5 flex h-9 w-9 items-center justify-center rounded-full bg-white/88 text-amber-600 shadow-lg backdrop-blur-md active:scale-90 transition-transform dark:bg-slate-900/80 dark:text-amber-300"
+        class="absolute bottom-2.5 right-2.5 flex h-9 w-9 items-center justify-center rounded-full bg-white/90 text-amber-600 shadow-lg backdrop-blur-md active:scale-90 transition-transform dark:bg-slate-900/85 dark:text-amber-300"
         @click.stop="$emit('play')"
       >
         <i class="ri-play-fill ml-0.5 text-base" />

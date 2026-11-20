@@ -44,7 +44,7 @@
             <!-- Quick Play Button -->
             <button
               type="button"
-              class="absolute bottom-2.5 right-2.5 w-9 h-9 rounded-full bg-white/88 dark:bg-slate-900/80 text-amber-600 dark:text-amber-300 flex items-center justify-center shadow-lg backdrop-blur-md active:scale-90 transition-transform"
+              class="absolute bottom-2.5 right-2.5 w-9 h-9 rounded-full bg-white/90 dark:bg-slate-900/85 text-amber-600 dark:text-amber-300 flex items-center justify-center shadow-lg backdrop-blur-md active:scale-90 transition-transform"
               @click.stop="playAlbum(album)"
             >
               <i class="ri-play-fill text-base ml-0.5"></i>

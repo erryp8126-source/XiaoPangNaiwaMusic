@@ -5,26 +5,35 @@
       :description="t('settings.basic.themeModeDesc')"
     >
       <template #action>
-        <div class="flex items-center gap-3 max-md:flex-wrap">
-          <div class="flex items-center gap-2">
-            <n-switch v-model:value="setData.autoTheme" @update:value="handleAutoThemeChange">
-              <template #checked><i class="ri-smartphone-line"></i></template>
-              <template #unchecked><i class="ri-settings-line"></i></template>
-            </n-switch>
-            <span class="text-sm text-gray-500 max-md:hidden">
+        <div class="flex items-center gap-3 flex-wrap max-md:w-full max-md:justify-between">
+          <div
+            class="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700"
+          >
+            <span class="text-xs font-semibold text-slate-700 dark:text-slate-200">
               {{
                 setData.autoTheme ? t('settings.basic.autoTheme') : t('settings.basic.manualTheme')
               }}
             </span>
+            <n-switch v-model:value="setData.autoTheme" @update:value="handleAutoThemeChange">
+              <template #checked><i class="ri-smartphone-line"></i></template>
+              <template #unchecked><i class="ri-settings-line"></i></template>
+            </n-switch>
           </div>
-          <n-switch
-            v-model:value="isDarkTheme"
-            :disabled="setData.autoTheme"
+          <div
+            class="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700"
             :class="{ 'opacity-50': setData.autoTheme }"
           >
-            <template #checked><i class="ri-moon-line"></i></template>
-            <template #unchecked><i class="ri-sun-line"></i></template>
-          </n-switch>
+            <span class="text-xs font-semibold text-slate-700 dark:text-slate-200">
+              {{ isDarkTheme ? '深色模式' : '浅色模式' }}
+            </span>
+            <n-switch
+              v-model:value="isDarkTheme"
+              :disabled="setData.autoTheme"
+            >
+              <template #checked><i class="ri-moon-line"></i></template>
+              <template #unchecked><i class="ri-sun-line"></i></template>
+            </n-switch>
+          </div>
         </div>
       </template>
     </setting-item>
@@ -38,6 +47,7 @@
 
     <setting-item
       v-if="!isElectron"
+      inline
       :title="t('settings.basic.tabletMode')"
       :description="t('settings.basic.tabletModeDesc')"
     >
@@ -107,11 +117,13 @@
 
     <setting-item :title="t('settings.basic.tokenManagement')">
       <template #description>
-        <div class="text-sm text-gray-500 mb-2">
+        <div class="text-[13px] text-slate-600 dark:text-slate-300 mb-1.5">
           {{ t('settings.basic.tokenStatus') }}:
-          {{ currentToken ? t('settings.basic.tokenSet') : t('settings.basic.tokenNotSet') }}
+          <span class="font-semibold text-slate-800 dark:text-slate-100">
+            {{ currentToken ? t('settings.basic.tokenSet') : t('settings.basic.tokenNotSet') }}
+          </span>
         </div>
-        <div v-if="currentToken" class="text-xs text-gray-400 mb-2 font-mono break-all">
+        <div v-if="currentToken" class="text-xs text-slate-500 dark:text-slate-400 mb-2 font-mono break-all">
           {{ currentToken.substring(0, 50) }}...
         </div>
       </template>
@@ -129,17 +141,17 @@
 
     <setting-item :title="t('settings.basic.animation')">
       <template #description>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2.5 flex-wrap">
           <n-switch v-model:value="setData.noAnimate">
             <template #checked>{{ t('common.off') }}</template>
             <template #unchecked>{{ t('common.on') }}</template>
           </n-switch>
-          <span>{{ t('settings.basic.animationDesc') }}</span>
+          <span class="text-[13px] text-slate-600 dark:text-slate-300">{{ t('settings.basic.animationDesc') }}</span>
         </div>
       </template>
       <template #action>
         <div class="flex items-center gap-2">
-          <span v-if="!isMobile" class="text-sm text-gray-400">{{ setData.animationSpeed }}x</span>
+          <span v-if="!isMobile" class="text-sm text-slate-500 dark:text-slate-300">{{ setData.animationSpeed }}x</span>
           <div class="w-40 max-md:w-auto flex justify-end">
             <n-slider
               v-if="!isMobile"

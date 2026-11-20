@@ -286,6 +286,13 @@ class AndroidJsBridge(
             ?: """{"instanceId":0,"position":0,"duration":0,"playing":false}"""
     }
 
+    @JavascriptInterface
+    fun audioSyncQueue(queueJson: String) {
+        val obj = runCatching { JsonParser.parseString(queueJson).asJsonObject }.getOrNull() ?: return
+        MusicPlaybackService.latestSyncedQueue = obj
+        MusicPlaybackService.instance?.syncQueue(obj)
+    }
+
     // ==================== 硬件均衡器 ====================
 
     @JavascriptInterface

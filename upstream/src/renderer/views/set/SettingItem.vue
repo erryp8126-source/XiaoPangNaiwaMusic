@@ -1,25 +1,25 @@
 <template>
   <div
-    class="setting-item flex items-center justify-between p-4 transition-colors bg-transparent text-slate-800 dark:text-slate-100 border-b border-sky-100/60 dark:border-white/5 last:border-b-0 hover:bg-sky-50/45 hover:dark:bg-white/5"
+    class="setting-item flex items-center justify-between px-4 py-3.5 transition-colors bg-transparent text-slate-900 dark:text-slate-100 border-b border-slate-100 dark:border-slate-700/70 last:border-b-0"
     :class="[
       // 移动端垂直布局
-      { 'max-md:flex-col max-md:items-start max-md:gap-3': !inline },
+      { 'max-md:flex-col max-md:items-stretch max-md:gap-3': !inline },
       // 可点击样式
       {
-        'cursor-pointer active:bg-amber-50/60 active:dark:bg-white/10': clickable
+        'cursor-pointer active:bg-slate-100 active:dark:bg-slate-800/80': clickable
       },
       customClass
     ]"
     @click="handleClick"
   >
     <!-- 左侧：标题和描述 -->
-    <div class="flex-1 min-w-0 mr-4">
-      <div class="text-base font-medium mb-0.5">
+    <div class="flex-1 min-w-0" :class="inline ? 'mr-3' : 'md:mr-4'">
+      <div class="text-[15px] font-semibold text-slate-900 dark:text-white leading-snug">
         <slot name="title">{{ title }}</slot>
       </div>
       <div
         v-if="description || $slots.description"
-        class="text-sm text-gray-500 dark:text-gray-400 leading-normal"
+        class="text-[13px] text-slate-600 dark:text-slate-300 leading-relaxed mt-1"
       >
         <slot name="description">{{ description }}</slot>
       </div>

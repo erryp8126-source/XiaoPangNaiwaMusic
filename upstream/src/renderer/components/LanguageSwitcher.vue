@@ -22,5 +22,10 @@ const currentLanguage = computed({
 </script>
 
 <template>
-  <n-select v-model:value="currentLanguage" :options="languages" size="small" />
+  <n-select
+    v-model:value="currentLanguage"
+    :options="languages"
+    size="medium"
+    class="min-w-[140px] max-md:w-full"
+  />
 </template>

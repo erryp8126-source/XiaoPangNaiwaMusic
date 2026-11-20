@@ -2,7 +2,8 @@
   <div class="inline-flex items-center gap-1" :class="widthClass">
     <button
       v-if="type === 'number' && showButtons"
-      class="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-neutral-100 text-neutral-500 transition-colors hover:bg-neutral-200 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700"
+      type="button"
+      class="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-100 text-slate-700 transition-colors hover:bg-slate-200 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
       :disabled="disabled || atMin"
       @click="decrement"
     >
@@ -17,7 +18,7 @@
         :placeholder="placeholder"
         :disabled="disabled"
         inputmode="decimal"
-        class="w-full rounded-[10px] border border-neutral-200 bg-neutral-50 py-1.5 pl-3 text-sm text-neutral-900 transition-all duration-200 outline-none placeholder:text-neutral-400 focus:border-primary focus:bg-white focus:ring-2 focus:ring-primary/20 disabled:opacity-50 disabled:cursor-not-allowed dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:bg-neutral-900"
+        class="w-full rounded-xl border border-slate-300 bg-slate-50 py-2 pl-3 text-sm font-medium text-slate-900 transition-all duration-200 outline-none placeholder:text-slate-400 focus:border-amber-500 focus:bg-white focus:ring-2 focus:ring-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed dark:border-slate-600 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-400 dark:focus:bg-slate-900"
         :class="[type === 'number' && !suffix ? 'text-center pr-3' : '', suffix ? 'pr-10' : 'pr-3']"
         @input="handleInput"
         @blur="handleBlur"
@@ -25,7 +26,7 @@
       />
       <span
         v-if="suffix"
-        class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-neutral-400"
+        class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500 dark:text-slate-400"
       >
         {{ suffix }}
       </span>
@@ -33,7 +34,8 @@
 
     <button
       v-if="type === 'number' && showButtons"
-      class="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-neutral-100 text-neutral-500 transition-colors hover:bg-neutral-200 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700"
+      type="button"
+      class="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-100 text-slate-700 transition-colors hover:bg-slate-200 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
       :disabled="disabled || atMax"
       @click="increment"
     >

@@ -1,43 +1,44 @@
 <template>
-  <div class="h-full w-full bg-transparent transition-colors duration-300 flex flex-col">
-    <!-- 顶部导航区 -->
+  <div class="h-full w-full bg-[#F1F5F9] dark:bg-[#0D131C] transition-colors duration-300 flex flex-col">
+    <!-- 顶部导航区（移动端已由顶栏显示返回与「设置」标题，这里仅保留高对比度分类切换条） -->
     <div
-      class="flex-shrink-0 border-b border-sky-100/70 dark:border-white/5 bg-[#f6fafd]/80 dark:bg-[#0f141c]/80 backdrop-blur-xl z-10 page-padding pt-4 pb-2"
+      class="flex-shrink-0 border-b border-slate-200/90 dark:border-slate-800 bg-white/95 dark:bg-[#131B28]/95 backdrop-blur-xl z-10 page-padding pt-3 md:pt-4 pb-2.5"
     >
-      <div class="flex items-center gap-2.5 mb-4">
-        <span class="h-6 w-1.5 rounded-full bg-gradient-to-b from-amber-400 to-sky-400" />
-        <h1 class="text-2xl md:text-3xl font-extrabold text-slate-800 dark:text-slate-100">
+      <div class="hidden md:flex items-center gap-2.5 mb-3.5">
+        <span class="h-6 w-1.5 rounded-full bg-gradient-to-b from-amber-500 to-sky-500" />
+        <h1 class="text-2xl md:text-3xl font-extrabold text-slate-900 dark:text-white">
           {{ t('common.settings') }}
         </h1>
       </div>
 
       <n-scrollbar x-scrollable class="w-full">
-        <div class="flex items-center pl-0.5 pb-2 whitespace-nowrap">
-          <div
+        <div class="flex items-center gap-2 pb-1 whitespace-nowrap">
+          <button
             v-for="section in navSections"
             :key="section.id"
-            class="py-1.5 px-4 mr-2.5 inline-block rounded-full cursor-pointer transition-all duration-200 text-xs md:text-sm font-semibold select-none active:scale-95"
+            type="button"
+            class="py-1.5 px-4 inline-flex items-center justify-center rounded-full cursor-pointer transition-all duration-200 text-[13.5px] font-bold select-none active:scale-95"
             :class="
               currentSection === section.id
-                ? 'text-white shadow-naiwa-glow'
-                : 'bg-white/80 dark:bg-slate-800/75 text-slate-600 dark:text-slate-300 border border-sky-100/80 dark:border-white/10'
+                ? 'text-white shadow-md shadow-amber-600/25'
+                : 'bg-slate-100 text-slate-700 border border-slate-200/90 hover:bg-slate-200/70 dark:bg-slate-800 dark:text-slate-200 dark:border-slate-700'
             "
             :style="
               currentSection === section.id
-                ? 'background: linear-gradient(135deg, #ffc21c 0%, #eb8f00 100%)'
+                ? 'background: linear-gradient(135deg, #D97706 0%, #EA580C 100%)'
                 : undefined
             "
             @click="currentSection = section.id"
           >
             {{ section.title }}
-          </div>
+          </button>
         </div>
       </n-scrollbar>
     </div>
 
     <!-- 内容区域 -->
     <n-scrollbar class="flex-1">
-      <div class="w-full mx-auto pb-40 pt-5 page-padding">
+      <div class="w-full mx-auto pb-40 pt-4 page-padding">
         <div v-show="currentSection === 'basic'" class="animate-fade-in">
           <basic-tab />
         </div>

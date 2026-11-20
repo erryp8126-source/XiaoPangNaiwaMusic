@@ -127,6 +127,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        MusicPlaybackService.onAppForegroundChanged(true)
+    }
+
+    override fun onPause() {
+        MusicPlaybackService.onAppForegroundChanged(false)
+        super.onPause()
+    }
+
     override fun onDestroy() {
         floatingLyricManager.hide()
         if (isFinishing) {

@@ -25,6 +25,7 @@ export interface AndroidBridgeInterface {
   audioSetVolume(volume: number): void;
   audioSetRate(rate: number): void;
   audioGetState(): string;
+  audioSyncQueue(queueJson: string): void;
   // Hardware Equalizer
   eqSetEnabled(enabled: boolean): void;
   eqSetBandGain(freqHz: number, gainDb: number): void;
@@ -303,6 +304,8 @@ export class NativeHowl {
   private _duration = 0;
   private _volume = 1;
   private _rate = 1;
+  private _initialSeekTime = 0;
+  private _seekGuardUntil = 0;
   private listeners: Map<string, Set<Function>> = new Map();
   private onceListeners: Map<string, Set<Function>> = new Map();
   private loadedEmitted = false;
@@ -313,13 +316,20 @@ export class NativeHowl {
     volume?: number;
     rate?: number;
     autoplay?: boolean;
+    seekTime?: number;
+    attachOnly?: boolean;
+    fixedInstanceId?: number;
+    initialPosition?: number;
+    initialPlaying?: boolean;
     onload?: () => void;
     onloaderror?: (_id: any, err: any) => void;
   }) {
-    this.instanceId = ++nativeHowlSeq;
+    this.instanceId =
+      typeof options.fixedInstanceId === 'number' ? options.fixedInstanceId : ++nativeHowlSeq;
     this.url = options.src?.[0] || '';
     this._volume = options.volume ?? 1;
     this._rate = options.rate ?? 1;
+    this._initialSeekTime = options.seekTime && options.seekTime > 0 ? options.seekTime : 0;
 
     const track = options.track || {};
     const artists = track.ar
@@ -350,8 +360,16 @@ export class NativeHowl {
       this.once('loaderror', options.onloaderror);
     }
 
-    // Load immediately into native ExoPlayer if this is created for active playback
-    this.activateAndLoad(Boolean(options.autoplay));
+    if (options.attachOnly) {
+      activeNativeHowl = this;
+      this._state = 'loaded';
+      this.loadedEmitted = true;
+      this._position = Math.max(0, options.initialPosition || 0);
+      this._playing = Boolean(options.initialPlaying);
+    } else {
+      // Load immediately into native ExoPlayer if this is created for active playback
+      this.activateAndLoad(Boolean(options.autoplay));
+    }
   }
 
   public updateTrackMeta(track: any): void {
@@ -396,25 +414,41 @@ export class NativeHowl {
           songId: this.trackMeta.id,
           durationSec: this.trackMeta.durationSec,
           autoplay,
+          seekTime: this._initialSeekTime,
           volume: this._volume,
           rate: this._rate
         })
       );
+      if (this._initialSeekTime > 0) {
+        this._position = this._initialSeekTime;
+        this._initialSeekTime = 0;
+      }
     } catch (e) {
       this.handleNativeEvent({ type: 'loaderror', error: String(e) });
     }
   }
 
   public handleNativeEvent(evt: any): void {
-    if (evt.instanceId && evt.instanceId !== this.instanceId) {
+    if (evt.instanceId !== undefined && evt.instanceId !== 0 && evt.instanceId !== this.instanceId) {
       return;
     }
+
+    const now = Date.now();
+    const isSeekEvent = evt.type === 'seek' || evt.type === 'replayed' || evt.type === 'sync-state';
+    if (isSeekEvent) {
+      this._seekGuardUntil = 0;
+    }
+
     if (typeof evt.position === 'number' && !Number.isNaN(evt.position)) {
-      this._position = Math.max(0, evt.position);
+      // 在刚触发 seek 后的短暂保护窗内，忽略 Seek 之前在管道里排队的旧 timeupdate，防止进度条弹回
+      if (evt.type !== 'timeupdate' || now >= this._seekGuardUntil) {
+        this._position = Math.max(0, evt.position);
+      }
     }
     if (typeof evt.duration === 'number' && evt.duration > 0 && !Number.isNaN(evt.duration)) {
       this._duration = evt.duration;
     }
+    const prevPlaying = this._playing;
     if (typeof evt.playing === 'boolean') {
       this._playing = evt.playing;
     }
@@ -443,6 +477,20 @@ export class NativeHowl {
       case 'end':
         this._playing = false;
         this._emit('end', this.instanceId);
+        break;
+      case 'replayed':
+        this._position = 0;
+        this._playing = true;
+        this._emit('seek', this.instanceId);
+        this._emit('play', this.instanceId);
+        break;
+      case 'sync-state':
+        this._emit('seek', this.instanceId);
+        if (this._playing && !prevPlaying) {
+          this._emit('play', this.instanceId);
+        } else if (!this._playing && prevPlaying) {
+          this._emit('pause', this.instanceId);
+        }
         break;
       case 'seek':
         this._emit('seek', this.instanceId);
@@ -555,8 +603,12 @@ export class NativeHowl {
 
   public seek(pos?: number): number | this {
     if (typeof pos === 'number' && !Number.isNaN(pos)) {
-      this._position = Math.max(0, pos);
-      if (activeNativeHowl === this) {
+      const clamped =
+        this._duration > 0 ? Math.max(0, Math.min(pos, this._duration)) : Math.max(0, pos);
+      this._position = clamped;
+      this._seekGuardUntil = Date.now() + 750;
+      if (this._state !== 'unloaded') {
+        activeNativeHowl = this;
         window.AlgerAndroid?.audioSeek(this._position);
       }
       return this;
@@ -601,6 +653,51 @@ export class NativeHowl {
 
 export function getActiveNativeHowl(): NativeHowl | null {
   return activeNativeHowl;
+}
+
+export function syncAndroidPlaybackQueue(params: {
+  playList: any[];
+  currentIndex: number;
+  playMode: number;
+  musicQuality?: string;
+  unblockSources?: string[];
+  isFm?: boolean;
+  cookie?: string;
+}): void {
+  if (!isAndroid()) return;
+  try {
+    const items = (params.playList || []).slice(0, 1000).map((song: any) => {
+      const artists = song?.ar
+        ? song.ar.map((a: any) => a.name).join(' / ')
+        : song?.song?.artists
+          ? song.song.artists.map((a: any) => a.name).join(' / ')
+          : '';
+      return {
+        id: String(song?.id ?? ''),
+        name: song?.name || '未知歌曲',
+        artist: artists,
+        album: song?.al?.name || song?.song?.album?.name || '',
+        cover: song?.picUrl || song?.al?.picUrl || '',
+        url: song?.playMusicUrl || '',
+        source: song?.source || 'netease',
+        dt: Number(song?.dt || song?.duration || 0)
+      };
+    });
+
+    window.AlgerAndroid?.audioSyncQueue(
+      JSON.stringify({
+        playMode: params.playMode ?? 0,
+        currentIndex: Math.max(0, params.currentIndex ?? 0),
+        musicQuality: params.musicQuality || 'higher',
+        unblockSources: params.unblockSources || ['kuwo', 'kugou', 'migu', 'gdmusic'],
+        isFm: Boolean(params.isFm),
+        cookie: params.cookie || '',
+        items
+      })
+    );
+  } catch (e) {
+    console.warn('[AndroidBridge] syncAndroidPlaybackQueue error:', e);
+  }
 }
 
 // ==================== Global Window Bridge Installer ====================
@@ -653,6 +750,8 @@ export function installAndroidWindowApi(): void {
     if (channel === 'audio-event') {
       if (payload?.type === 'nexttrack' || payload?.type === 'previoustrack') {
         emitAndroidEvent('media-control', payload.type);
+      } else if (payload?.type === 'native-track-changed') {
+        emitAndroidEvent('native-track-changed', payload);
       } else if (activeNativeHowl) {
         activeNativeHowl.handleNativeEvent(payload);
       }

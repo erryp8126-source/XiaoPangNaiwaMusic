@@ -14,19 +14,19 @@
 
       <setting-item v-if="isNative" :title="t('settings.playback.musicSources')">
         <template #description>
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2.5 flex-wrap">
             <n-switch v-model:value="setData.enableMusicUnblock">
               <template #checked>{{ t('common.on') }}</template>
               <template #unchecked>{{ t('common.off') }}</template>
             </n-switch>
-            <span>{{ t('settings.playback.musicUnblockEnableDesc') }}</span>
+            <span class="text-[13px] text-slate-600 dark:text-slate-300">{{ t('settings.playback.musicUnblockEnableDesc') }}</span>
           </div>
-          <div v-if="setData.enableMusicUnblock" class="mt-2 text-sm">
-            <span class="text-gray-500">{{ t('settings.playback.selectedMusicSources') }}</span>
-            <span v-if="musicSources.length > 0" class="text-gray-400">{{
+          <div v-if="setData.enableMusicUnblock" class="mt-2 text-[13px]">
+            <span class="text-slate-600 dark:text-slate-300">{{ t('settings.playback.selectedMusicSources') }}</span>
+            <span v-if="musicSources.length > 0" class="font-medium text-slate-800 dark:text-slate-100">{{
               musicSources.join(', ')
             }}</span>
-            <span v-else class="text-red-500 text-xs">{{
+            <span v-else class="text-rose-600 dark:text-rose-400 text-xs font-medium">{{
               t('settings.playback.noMusicSources')
             }}</span>
           </div>
@@ -38,6 +38,7 @@
 
       <setting-item
         v-if="isAndroid"
+        inline
         title="桌面悬浮歌词"
         description="在手机其他应用上方悬浮显示当前歌词（需授予悬浮窗权限）"
       >
@@ -49,6 +50,7 @@
 
       <setting-item
         v-if="isAndroid"
+        inline
         title="均衡器 (EQ)"
         description="使用手机原生硬件音效均衡器调节 10 段频响"
       >
@@ -57,6 +59,7 @@
 
       <setting-item
         v-if="platform === 'darwin'"
+        inline
         :title="t('settings.playback.showStatusBar')"
         :description="t('settings.playback.showStatusBarContent')"
       >
@@ -67,6 +70,7 @@
       </setting-item>
 
       <setting-item
+        inline
         :title="t('settings.playback.autoPlay')"
         :description="t('settings.playback.autoPlayDesc')"
       >
@@ -86,17 +90,17 @@
     </setting-section>
 
     <div
-      class="mt-6 p-4 rounded-[22px] bg-white/82 dark:bg-slate-800/65 backdrop-blur-xl border border-sky-100/80 dark:border-white/10 shadow-naiwa-sm"
+      class="mt-5 p-4 rounded-[20px] bg-white dark:bg-[#192231] border border-slate-200/90 dark:border-slate-700/80 shadow-[0_2px_12px_rgba(15,23,42,0.06)] dark:shadow-[0_4px_16px_rgba(0,0,0,0.3)]"
     >
-      <div class="text-sm font-semibold text-slate-500 mb-2">支持正版</div>
-      <div class="text-sm md:text-base text-slate-800 dark:text-slate-100 mb-4">
+      <div class="text-xs font-bold uppercase tracking-wider text-amber-700 dark:text-amber-300 mb-1.5">支持正版</div>
+      <div class="text-sm text-slate-700 dark:text-slate-200 leading-relaxed mb-3.5">
         大家还是需要支持正版，本软件只做开源探讨。各大音乐会员购买链接：
       </div>
-      <div class="flex gap-2.5 flex-wrap">
+      <div class="flex gap-2 flex-wrap">
         <a
           v-for="link in memberLinks"
           :key="link.url"
-          class="px-4 py-2 rounded-full bg-amber-50/90 dark:bg-amber-500/15 text-primary text-xs md:text-sm font-semibold hover:opacity-85 transition-opacity"
+          class="px-3.5 py-2 rounded-full bg-amber-50 text-amber-800 border border-amber-200/90 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-400/25 text-xs md:text-sm font-semibold hover:opacity-85 transition-opacity"
           :href="link.url"
           target="_blank"
         >

@@ -33,13 +33,13 @@ defineEmits<{ click: [event: MouseEvent] }>();
 const variantClass = computed(() => {
   switch (props.variant) {
     case 'primary':
-      return 'bg-gradient-to-r from-amber-400 to-orange-500 text-white shadow-naiwa-glow';
+      return 'bg-gradient-to-r from-amber-600 to-orange-600 text-white shadow-sm shadow-amber-600/25 hover:brightness-105';
     case 'danger':
-      return 'bg-rose-50 text-rose-600 hover:bg-rose-100 dark:bg-rose-950/40 dark:text-rose-300';
+      return 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 dark:bg-rose-950/60 dark:text-rose-200 dark:border-rose-800/70';
     case 'ghost':
-      return 'bg-transparent text-slate-500 hover:bg-sky-50 dark:text-slate-400 dark:hover:bg-slate-800';
+      return 'bg-transparent text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800';
     default:
-      return 'bg-sky-50 text-slate-700 hover:bg-sky-100 border border-sky-100/80 dark:bg-slate-700/70 dark:text-slate-200 dark:border-white/10';
+      return 'bg-slate-100 text-slate-800 border border-slate-200/90 hover:bg-slate-200/80 dark:bg-slate-700 dark:text-slate-100 dark:border-slate-600';
   }
 });
 </script>

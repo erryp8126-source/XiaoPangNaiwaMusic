@@ -7,15 +7,15 @@
         @click.self="close"
       >
         <!-- 遮罩层 -->
-        <div class="absolute inset-0 bg-black/50" @click="close"></div>
+        <div class="absolute inset-0 bg-black/65" @click="close"></div>
 
-        <!-- 弹窗内容 - 奶娃暗夜磨砂玻璃 -->
+        <!-- 弹窗内容 - 高对比度暗夜实底磨砂面板 -->
         <div
-          class="relative w-full max-w-lg bg-[#131b29]/88 backdrop-blur-2xl rounded-t-[30px] overflow-hidden max-h-[85vh] flex flex-col border-t border-white/15 shadow-2xl"
+          class="relative w-full max-w-lg bg-[#111827]/[0.97] backdrop-blur-2xl rounded-t-[28px] overflow-hidden max-h-[85vh] flex flex-col border-t border-slate-700/80 shadow-2xl"
         >
           <!-- 顶部拖拽条 -->
           <div class="flex justify-center pt-3 pb-2 flex-shrink-0">
-            <div class="w-10 h-1 rounded-full bg-white/30"></div>
+            <div class="w-10 h-1 rounded-full bg-slate-500"></div>
           </div>
 
           <!-- 标题栏 -->
@@ -25,7 +25,7 @@
             </h2>
             <button
               @click="close"
-              class="w-8 h-8 rounded-full flex items-center justify-center bg-white/10 text-white/75 active:scale-90 transition-all"
+              class="w-8 h-8 rounded-full flex items-center justify-center bg-slate-800 border border-slate-700 text-slate-200 active:scale-90 transition-all"
             >
               <i class="ri-close-line text-xl"></i>
             </button>
@@ -41,9 +41,9 @@
               <div class="grid grid-cols-3 gap-2.5">
                 <button
                   @click="handleDownloadCurrent"
-                  class="flex flex-col items-center justify-center gap-1.5 py-3.5 rounded-2xl bg-white/10 border border-white/10 text-white/90 active:scale-95 transition-all"
+                  class="flex flex-col items-center justify-center gap-1.5 py-3.5 rounded-2xl bg-slate-800/95 border border-slate-700 text-slate-100 active:scale-95 transition-all"
                 >
-                  <i class="ri-download-cloud-2-line text-xl text-amber-300"></i>
+                  <i class="ri-download-cloud-2-line text-xl text-amber-400"></i>
                   <span class="text-xs font-semibold">下载歌曲</span>
                 </button>
                 <button
@@ -51,8 +51,8 @@
                   class="flex flex-col items-center justify-center gap-1.5 py-3.5 rounded-2xl transition-all active:scale-95 border"
                   :class="
                     floatingLyricOn
-                      ? 'bg-amber-400/20 border-amber-300/45 text-amber-200'
-                      : 'bg-white/10 border-white/10 text-white/90'
+                      ? 'bg-amber-500/25 border-amber-400/60 text-amber-200'
+                      : 'bg-slate-800/95 border-slate-700 text-slate-100'
                   "
                 >
                   <i class="ri-subtitles-line text-xl"></i>
@@ -60,19 +60,19 @@
                 </button>
                 <button
                   @click="showEqModal = true"
-                  class="flex flex-col items-center justify-center gap-1.5 py-3.5 rounded-2xl bg-white/10 border border-white/10 text-white/90 active:scale-95 transition-all"
+                  class="flex flex-col items-center justify-center gap-1.5 py-3.5 rounded-2xl bg-slate-800/95 border border-slate-700 text-slate-100 active:scale-95 transition-all"
                 >
-                  <i class="ri-equalizer-line text-xl text-sky-300"></i>
+                  <i class="ri-equalizer-line text-xl text-sky-400"></i>
                   <span class="text-xs font-semibold">均衡器 EQ</span>
                 </button>
               </div>
-              <div class="h-px bg-white/10 my-5"></div>
+              <div class="h-px bg-slate-800 my-5"></div>
             </div>
 
             <!-- 播放速度 -->
             <div class="mb-6">
               <div class="flex items-center justify-between mb-3">
-                <span class="text-sm font-semibold text-white/85">
+                <span class="text-sm font-semibold text-white">
                   {{ t('player.settings.playbackSpeed') }}
                 </span>
                 <span class="text-sm text-amber-300 font-bold">{{ playbackRate }}x</span>
@@ -82,11 +82,11 @@
                   v-for="option in speedOptions"
                   :key="option"
                   @click="setSpeed(option)"
-                  class="px-4 py-2 rounded-full text-sm font-semibold transition-all active:scale-95"
+                  class="px-4 py-2 rounded-full text-sm font-semibold transition-all active:scale-95 border"
                   :class="
                     playbackRate === option
-                      ? 'bg-gradient-to-r from-amber-400 to-orange-500 text-white shadow-lg shadow-amber-500/25'
-                      : 'bg-white/10 text-white/75 hover:bg-white/15'
+                      ? 'bg-gradient-to-r from-amber-600 to-orange-600 border-amber-400/50 text-white shadow-lg shadow-amber-600/25'
+                      : 'bg-slate-800 border-slate-700 text-slate-100 hover:bg-slate-700'
                   "
                 >
                   {{ option }}x
@@ -95,12 +95,12 @@
             </div>
 
             <!-- 分隔线 -->
-            <div class="h-px bg-white/10 my-5"></div>
+            <div class="h-px bg-slate-800 my-5"></div>
 
             <!-- 定时关闭 -->
             <div>
               <div class="flex items-center justify-between mb-3">
-                <span class="text-sm font-semibold text-white/85">
+                <span class="text-sm font-semibold text-white">
                   {{ t('player.sleepTimer.title') }}
                 </span>
                 <span v-if="hasTimerActive" class="text-sm text-amber-300 font-bold">
@@ -110,7 +110,7 @@
 
               <!-- 已激活状态 -->
               <div v-if="hasTimerActive" class="space-y-3">
-                <div class="p-4 rounded-2xl bg-amber-400/15 border border-amber-300/30">
+                <div class="p-4 rounded-2xl bg-amber-500/20 border border-amber-400/40">
                   <div class="flex items-center justify-between">
                     <div class="flex items-center gap-3">
                       <i class="ri-timer-line text-amber-300 text-xl"></i>
@@ -120,7 +120,7 @@
                     </div>
                     <button
                       @click="cancelTimer"
-                      class="px-3.5 py-1.5 rounded-full text-xs font-semibold bg-rose-500/25 text-rose-200 hover:bg-rose-500/35"
+                      class="px-3.5 py-1.5 rounded-full text-xs font-semibold bg-rose-500/30 border border-rose-400/40 text-rose-100 hover:bg-rose-500/40"
                     >
                       {{ t('player.sleepTimer.cancel') }}
                     </button>
@@ -132,7 +132,7 @@
               <div v-else class="space-y-4">
                 <!-- 按时间 -->
                 <div>
-                  <p class="text-xs text-white/55 mb-2">
+                  <p class="text-xs font-medium text-slate-300 mb-2">
                     {{ t('player.sleepTimer.timeMode') }}
                   </p>
                   <div class="flex flex-wrap gap-2">
@@ -140,17 +140,17 @@
                       v-for="minutes in [15, 30, 60, 90]"
                       :key="minutes"
                       @click="setTimeTimer(minutes)"
-                      class="px-4 py-2 rounded-full text-sm font-medium bg-white/10 text-white/80 active:scale-95 transition-all"
+                      class="px-4 py-2 rounded-full text-sm font-medium bg-slate-800 border border-slate-700 text-slate-100 active:scale-95 transition-all"
                     >
                       {{ minutes }}{{ t('player.sleepTimer.minutes') }}
                     </button>
                   </div>
                   <!-- 自定义时间 -->
                   <div class="flex items-center gap-2 mt-3">
-                    <div class="flex items-center flex-1 bg-white/10 rounded-full overflow-hidden border border-white/10">
+                    <div class="flex items-center flex-1 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
                       <button
                         @click="decreaseMinutes"
-                        class="w-10 h-10 flex items-center justify-center text-white/75 active:bg-white/20"
+                        class="w-10 h-10 flex items-center justify-center text-slate-200 active:bg-slate-700"
                       >
                         <i class="ri-subtract-line text-lg"></i>
                       </button>
@@ -160,12 +160,12 @@
                         inputmode="numeric"
                         pattern="[0-9]*"
                         placeholder="分钟"
-                        class="flex-1 px-2 py-2 text-sm text-center bg-transparent text-white border-0 outline-none placeholder-white/40"
+                        class="flex-1 px-2 py-2 text-sm text-center bg-transparent text-white border-0 outline-none placeholder-slate-400"
                         @input="handleMinutesInput"
                       />
                       <button
                         @click="increaseMinutes"
-                        class="w-10 h-10 flex items-center justify-center text-white/75 active:bg-white/20"
+                        class="w-10 h-10 flex items-center justify-center text-slate-200 active:bg-slate-700"
                       >
                         <i class="ri-add-line text-lg"></i>
                       </button>
@@ -173,7 +173,7 @@
                     <button
                       @click="setCustomTimeTimer"
                       :disabled="!customMinutes || Number(customMinutes) < 1"
-                      class="px-5 py-2.5 rounded-full text-sm font-semibold bg-gradient-to-r from-amber-400 to-orange-500 text-white shadow-md shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 transition-all"
+                      class="px-5 py-2.5 rounded-full text-sm font-semibold bg-gradient-to-r from-amber-600 to-orange-600 text-white shadow-md shadow-amber-600/25 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 transition-all"
                     >
                       {{ t('player.sleepTimer.set') }}
                     </button>
@@ -182,7 +182,7 @@
 
                 <!-- 按歌曲数 -->
                 <div>
-                  <p class="text-xs text-white/50 mb-2">
+                  <p class="text-xs font-medium text-slate-300 mb-2">
                     {{ t('player.sleepTimer.songsMode') }}
                   </p>
                   <div class="flex flex-wrap gap-2">
@@ -190,7 +190,7 @@
                       v-for="songs in [1, 3, 5, 10]"
                       :key="songs"
                       @click="setSongsTimer(songs)"
-                      class="px-4 py-2 rounded-full text-sm font-medium bg-white/10 text-white/70 hover:bg-white/15"
+                      class="px-4 py-2 rounded-full text-sm font-medium bg-slate-800 border border-slate-700 text-slate-100 hover:bg-slate-700"
                     >
                       {{ songs }}{{ t('player.sleepTimer.songs') }}
                     </button>
@@ -200,7 +200,7 @@
                 <!-- 播放列表结束 -->
                 <button
                   @click="setPlaylistEndTimer"
-                  class="w-full py-3 rounded-2xl text-sm font-medium bg-white/10 text-white/70 hover:bg-white/15"
+                  class="w-full py-3 rounded-2xl text-sm font-semibold bg-slate-800 border border-slate-700 text-slate-100 hover:bg-slate-700"
                 >
                   {{ t('player.sleepTimer.playlistEnd') }}
                 </button>

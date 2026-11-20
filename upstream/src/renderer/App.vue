@@ -83,13 +83,32 @@ const lightThemeOverrides: GlobalThemeOverrides = {
     fontWeight: '600'
   },
   Input: {
-    borderRadius: '14px',
-    color: '#EEF5FA',
-    colorFocus: '#FFFFFF'
+    borderRadius: '12px',
+    color: '#F8FAFC',
+    colorFocus: '#FFFFFF',
+    border: '1px solid #CBD5E1',
+    textColor: '#0F172A'
   },
   Switch: {
-    railColorActive: '#F59E0B',
-    boxShadowFocus: '0 0 0 2px rgba(245, 158, 11, 0.25)'
+    railColor: '#CBD5E1',
+    railColorActive: '#D97706',
+    buttonColor: '#FFFFFF',
+    boxShadowFocus: '0 0 0 2px rgba(217, 119, 6, 0.25)'
+  },
+  Radio: {
+    textColor: '#0F172A',
+    dotColorActive: '#D97706',
+    boxShadowActive: 'inset 0 0 0 1px #D97706'
+  },
+  Select: {
+    peers: {
+      InternalSelection: {
+        borderRadius: '12px',
+        color: '#F8FAFC',
+        border: '1px solid #CBD5E1',
+        textColor: '#0F172A'
+      }
+    }
   },
   Tabs: {
     tabBorderRadius: '12px',
@@ -141,13 +160,32 @@ const darkThemeOverrides: GlobalThemeOverrides = {
     textColorFocusPrimary: '#1E1404'
   },
   Input: {
-    borderRadius: '14px',
-    color: '#1C2534',
-    colorFocus: '#222D40'
+    borderRadius: '12px',
+    color: '#1E293B',
+    colorFocus: '#243146',
+    border: '1px solid #475569',
+    textColor: '#F8FAFC'
   },
   Switch: {
+    railColor: '#475569',
     railColorActive: '#F59E0B',
+    buttonColor: '#FFFFFF',
     boxShadowFocus: '0 0 0 2px rgba(255, 197, 51, 0.25)'
+  },
+  Radio: {
+    textColor: '#F1F5F9',
+    dotColorActive: '#FFC533',
+    boxShadowActive: 'inset 0 0 0 1px #FFC533'
+  },
+  Select: {
+    peers: {
+      InternalSelection: {
+        borderRadius: '12px',
+        color: '#1E293B',
+        border: '1px solid #475569',
+        textColor: '#F8FAFC'
+      }
+    }
   },
   Tabs: {
     tabBorderRadius: '12px',
