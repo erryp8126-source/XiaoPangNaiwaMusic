@@ -57,13 +57,24 @@
     </setting-item>
 
     <setting-item
-      :title="t('settings.about.author')"
-      :description="t('settings.about.authorDesc')"
+      title="作者"
+      description="perry · 小庞奶娃音乐作者与维护者"
       clickable
       @click="openAuthor"
     >
       <s-btn @click.stop="openAuthor">
-        <i class="ri-github-line mr-1"></i>{{ t('settings.about.gotoGithub') }}
+        <i class="ri-github-line mr-1"></i>前往 GitHub
+      </s-btn>
+    </setting-item>
+
+    <setting-item
+      title="原始作者"
+      description="algerkong · AlgerMusicPlayer 原项目作者（MIT 开源协议）"
+      clickable
+      @click="openOriginalAuthor"
+    >
+      <s-btn @click.stop="openOriginalAuthor">
+        <i class="ri-github-line mr-1"></i>原项目仓库
       </s-btn>
     </setting-item>
   </setting-section>
@@ -82,14 +93,13 @@ import { checkUpdate, UpdateResult } from '@/utils/update';
 
 import config from '../../../../../package.json';
 import { APP_UPDATE_STATUS, hasAvailableAppUpdate } from '../../../../shared/appUpdate';
-import { SETTINGS_DATA_KEY, SETTINGS_MESSAGE_KEY } from '../keys';
+import { SETTINGS_MESSAGE_KEY } from '../keys';
 import SBtn from '../SBtn.vue';
 import SettingItem from '../SettingItem.vue';
 import SettingSection from '../SettingSection.vue';
 
 const { t } = useI18n();
 const settingsStore = useSettingsStore();
-const setData = inject(SETTINGS_DATA_KEY)!;
 const message = inject(SETTINGS_MESSAGE_KEY)!;
 
 const checking = ref(false);
@@ -165,13 +175,24 @@ const checkForUpdates = async (isClick = false) => {
   }
 };
 
+const AUTHOR_GITHUB_URL = 'https://github.com/erryp8126-source/XiaoPangNaiwaMusic';
+const ORIGINAL_AUTHOR_GITHUB_URL = 'https://github.com/algerkong/AlgerMusicPlayer';
+
+const openExternal = (url: string) => {
+  if ((window as any).AlgerAndroid?.openExternalUrl) {
+    (window as any).AlgerAndroid.openExternalUrl(url);
+  } else {
+    window.open(url, '_blank');
+  }
+};
+
 const openReleasePage = () => {
   if (isElectron) {
     settingsStore.setShowUpdateModal(true);
     return;
   }
 
-  window.open(updateInfo.value.releaseInfo?.html_url || setData.value.authorUrl);
+  openExternal(updateInfo.value.releaseInfo?.html_url || AUTHOR_GITHUB_URL);
 };
 
 const openManualUpdatePage = async () => {
@@ -180,11 +201,15 @@ const openManualUpdatePage = async () => {
     return;
   }
 
-  window.open(updateInfo.value.releaseInfo?.html_url || setData.value.authorUrl);
+  openExternal(updateInfo.value.releaseInfo?.html_url || AUTHOR_GITHUB_URL);
 };
 
 const openAuthor = () => {
-  window.open(setData.value.authorUrl);
+  openExternal(AUTHOR_GITHUB_URL);
+};
+
+const openOriginalAuthor = () => {
+  openExternal(ORIGINAL_AUTHOR_GITHUB_URL);
 };
 
 defineExpose({ checkForUpdates });

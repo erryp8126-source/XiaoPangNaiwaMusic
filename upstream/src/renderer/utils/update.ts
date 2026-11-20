@@ -129,13 +129,9 @@ export const getLatestReleaseInfo = async (): Promise<GithubReleaseInfo | null> 
   try {
     const token = import.meta.env.VITE_GITHUB_TOKEN;
     const headers = {};
-    // 构建 API URL 列表
+    // 构建 API URL 列表（指向当前项目仓库 Releases）
     const apiUrls = [
-      // 原始地址
-      'https://api.github.com/repos/algerkong/AlgerMusicPlayer/releases/latest',
-
-      // 使用代理节点
-      'http://music.alger.fun/package.json'
+      'https://api.github.com/repos/erryp8126-source/XiaoPangNaiwaMusic/releases/latest'
     ];
 
     if (token) {
