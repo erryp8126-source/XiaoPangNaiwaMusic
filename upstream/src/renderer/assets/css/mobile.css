@@ -1,0 +1,109 @@
+/* 移动端 message 容器：悬浮在底部导航和播放条之上 */
+.mobile .n-message-container {
+  top: auto !important;
+  bottom: calc(164px + var(--safe-area-inset-bottom, 0px)) !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  width: auto !important;
+  min-width: 56vw !important;
+  max-width: 88vw !important;
+  padding: 0 !important;
+  z-index: 99999999999 !important;
+}
+
+.mobile .n-message-wrapper {
+  margin: 0 0 8px 0 !important;
+}
+
+.mobile .n-message {
+  padding: 11px 18px !important;
+  border-radius: 9999px !important;
+  font-size: 13.5px !important;
+  font-weight: 500 !important;
+  box-shadow: 0 10px 28px rgba(30, 41, 59, 0.16) !important;
+  backdrop-filter: blur(18px) saturate(160%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(160%) !important;
+  max-width: 86vw !important;
+  border: 1px solid rgba(255, 255, 255, 0.35) !important;
+}
+
+/* 浅色模式默认 message */
+.mobile .n-message {
+  background: rgba(255, 255, 255, 0.92) !important;
+  color: #1e293b !important;
+}
+
+/* 深色模式默认 message */
+:root.dark .mobile .n-message {
+  background: rgba(24, 33, 48, 0.92) !important;
+  color: #f8fafc !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+/* 成功消息 - 奶娃暖阳金琥珀渐变 */
+.mobile .n-message--success-type {
+  background: linear-gradient(135deg, rgba(255, 184, 0, 0.96), rgba(232, 138, 0, 0.96)) !important;
+  color: #ffffff !important;
+  border-color: rgba(255, 232, 163, 0.45) !important;
+}
+
+.mobile .n-message--success-type .n-message__icon {
+  color: #ffffff !important;
+}
+
+/* 错误消息 - 柔和珊瑚红 */
+.mobile .n-message--error-type {
+  background: linear-gradient(135deg, rgba(244, 63, 94, 0.95), rgba(225, 29, 72, 0.95)) !important;
+  color: #ffffff !important;
+  border-color: rgba(255, 180, 195, 0.35) !important;
+}
+
+.mobile .n-message--error-type .n-message__icon {
+  color: #ffffff !important;
+}
+
+/* 警告消息 - 柔橘琥珀 */
+.mobile .n-message--warning-type {
+  background: linear-gradient(135deg, rgba(249, 115, 22, 0.95), rgba(234, 88, 12, 0.95)) !important;
+  color: #ffffff !important;
+}
+
+.mobile .n-message--warning-type .n-message__icon {
+  color: #ffffff !important;
+}
+
+/* 信息消息 - 奶娃天空冰蓝 */
+.mobile .n-message--info-type {
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.95), rgba(14, 165, 233, 0.95)) !important;
+  color: #ffffff !important;
+  border-color: rgba(215, 239, 249, 0.45) !important;
+}
+
+.mobile .n-message--info-type .n-message__icon {
+  color: #ffffff !important;
+}
+
+/* loading 消息 */
+.mobile .n-message--loading-type {
+  background: rgba(30, 41, 59, 0.92) !important;
+  color: #ffffff !important;
+}
+
+/* 隐藏关闭按钮让设计更简洁 */
+.mobile .n-message__close {
+  display: none !important;
+}
+
+.mobile .n-message__icon {
+  margin-right: 8px !important;
+}
+
+/* 弹窗/抽屉移动端圆角精修 */
+.mobile .n-modal.n-card,
+.mobile .n-dialog {
+  border-radius: 24px !important;
+}
+
+.mobile .n-drawer.n-drawer--right-placement {
+  max-width: 92vw !important;
+}

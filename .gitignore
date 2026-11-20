@@ -1,0 +1,31 @@
+# Dependencies & build outputs
+upstream/node_modules/
+upstream/dist/
+upstream/out/
+upstream/build/
+upstream/.eslintcache
+
+# Generated Android WebView assets (built by build_apk.ps1)
+android/app/src/main/assets/www/
+
+# Android & Gradle build caches / local machine config
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+android/captures/
+*.hprof
+*.jks
+*.keystore
+
+# Compiled release APKs (distributed via GitHub Releases)
+releases/*.apk
+
+# IDE & OS metadata
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
+*.log

@@ -1,0 +1,326 @@
+package com.alger.musicplayer
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Color
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.provider.OpenableColumns
+import android.webkit.ConsoleMessage
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.webkit.WebViewAssetLoader
+import com.alger.musicplayer.bridge.AndroidJsBridge
+import com.alger.musicplayer.download.NativeDownloadManager
+import com.alger.musicplayer.local.LocalMusicScanner
+import com.alger.musicplayer.lyric.FloatingLyricManager
+import com.alger.musicplayer.player.MusicPlaybackService
+import com.google.gson.JsonObject
+import org.json.JSONObject
+
+class MainActivity : AppCompatActivity() {
+
+    private lateinit var webView: WebView
+    private lateinit var localScanner: LocalMusicScanner
+    private lateinit var downloadManager: NativeDownloadManager
+    private lateinit var floatingLyricManager: FloatingLyricManager
+    private lateinit var jsBridge: AndroidJsBridge
+
+    private var topInsetDp: Int = 0
+    private var bottomInsetDp: Int = 0
+
+    private var pendingAudioPermissionCallback: ((Boolean) -> Unit)? = null
+    private var pendingFilePickCallback: ((JsonObject?) -> Unit)? = null
+
+    private val requestPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        val audioPerm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.READ_MEDIA_AUDIO
+        } else {
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        }
+        val granted = results[audioPerm] == true || hasAudioPermission()
+        pendingAudioPermissionCallback?.invoke(granted)
+        pendingAudioPermissionCallback = null
+    }
+
+    private val openDocumentLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        val cb = pendingFilePickCallback
+        pendingFilePickCallback = null
+        if (cb == null) return@registerForActivityResult
+        if (uri == null) {
+            cb(null)
+            return@registerForActivityResult
+        }
+        runCatching {
+            val content = contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use {
+                it.readText()
+            } ?: ""
+            var displayName = "plugin"
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) displayName = c.getString(0) ?: displayName
+            }
+            cb(JsonObject().apply {
+                addProperty("name", displayName)
+                addProperty("content", content)
+            })
+        }.onFailure {
+            cb(null)
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // Edge-to-Edge 沉浸式状态栏与手势导航栏
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.statusBarColor = Color.TRANSPARENT
+        window.navigationBarColor = Color.TRANSPARENT
+
+        val app = AlgerApp.instance
+        localScanner = LocalMusicScanner(this) { app.localServerPort }
+        downloadManager = NativeDownloadManager(this) { channel, payloadJson ->
+            pushEventToJs(channel, payloadJson)
+        }
+        floatingLyricManager = FloatingLyricManager(this, app.prefs) { cmd ->
+            if (cmd == "close") {
+                pushEventToJs("floating-lyric-closed", "{}")
+            } else {
+                pushEventToJs("lyric-control-back", JSONObject.quote(cmd))
+            }
+        }
+
+        // 将原生播放器事件回传绑定到当前 WebView
+        MusicPlaybackService.eventEmitter = { channel, payloadJson ->
+            pushEventToJs(channel, payloadJson)
+        }
+
+        webView = WebView(this)
+        setContentView(webView)
+
+        setupInsetsInjection()
+        setupWebView(app)
+        setupBackNavigation()
+        requestInitialNotificationPermission()
+
+        // 如果用户之前开启了悬浮歌词，且权限仍然有效，则自动恢复
+        if (app.prefs.floatingLyricEnabled) {
+            floatingLyricManager.show()
+        }
+    }
+
+    override fun onDestroy() {
+        floatingLyricManager.hide()
+        if (isFinishing) {
+            MusicPlaybackService.eventEmitter = null
+        }
+        webView.destroy()
+        super.onDestroy()
+    }
+
+    private fun setupInsetsInjection() {
+        ViewCompat.setOnApplyWindowInsetsListener(webView) { _, insets ->
+            val sysBars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+            val density = resources.displayMetrics.density
+            topInsetDp = (sysBars.top / density).toInt()
+            bottomInsetDp = (sysBars.bottom / density).toInt()
+            injectSafeAreaCssVars()
+            insets
+        }
+    }
+
+    private fun injectSafeAreaCssVars() {
+        val js = """
+            (function() {
+              document.documentElement.style.setProperty('--safe-area-inset-top', '${topInsetDp}px');
+              document.documentElement.style.setProperty('--safe-area-inset-bottom', '${bottomInsetDp}px');
+            })();
+        """.trimIndent()
+        webView.post { webView.evaluateJavascript(js, null) }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun setupWebView(app: AlgerApp) {
+        val assetLoader = WebViewAssetLoader.Builder()
+            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .build()
+
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            databaseEnabled = true
+            allowFileAccess = true
+            allowContentAccess = true
+            mediaPlaybackRequiresUserGesture = false
+            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            cacheMode = WebSettings.LOAD_DEFAULT
+            useWideViewPort = true
+            loadWithOverviewMode = true
+            setSupportZoom(false)
+            builtInZoomControls = false
+            displayZoomControls = false
+            // 确保前端 isMobile 始终精准识别为 Android 手机端
+            if (!userAgentString.contains("AlgerAndroid")) {
+                userAgentString = "$userAgentString AlgerAndroid/5.1.0 Mobile"
+            }
+        }
+
+        webView.setBackgroundColor(Color.parseColor("#F6FAFD"))
+        applySystemBarAppearance(false)
+
+        jsBridge = AndroidJsBridge(
+            activity = this,
+            app = app,
+            localScanner = localScanner,
+            downloadManager = downloadManager,
+            floatingLyricManager = floatingLyricManager,
+            onStatusBarStyle = { isDark -> applySystemBarAppearance(isDark) },
+            onRequestAudioPermission = { cb -> ensureAudioPermission(cb) },
+            onPickTextFile = { _, cb ->
+                pendingFilePickCallback = cb
+                openDocumentLauncher.launch(arrayOf("text/*", "application/javascript", "application/json", "*/*"))
+            },
+            callbackDispatcher = { callbackId, success, resultJson ->
+                dispatchAsyncCallbackToJs(callbackId, success, resultJson)
+            }
+        )
+
+        webView.addJavascriptInterface(jsBridge, "AlgerAndroid")
+
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(
+                view: WebView,
+                request: WebResourceRequest
+            ): WebResourceResponse? {
+                return assetLoader.shouldInterceptRequest(request.url)
+            }
+
+            override fun shouldOverrideUrlLoading(
+                view: WebView,
+                request: WebResourceRequest
+            ): Boolean {
+                val url = request.url.toString()
+                if (url.startsWith("https://appassets.androidplatform.net/") ||
+                    url.startsWith("http://127.0.0.1:")
+                ) {
+                    return false
+                }
+                // 外链（如 GitHub、会员页、文档）交给系统浏览器打开
+                runCatching {
+                    startActivity(Intent(Intent.ACTION_VIEW, request.url))
+                }
+                return true
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                injectSafeAreaCssVars()
+            }
+        }
+
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                return super.onConsoleMessage(consoleMessage)
+            }
+        }
+
+        webView.loadUrl("https://appassets.androidplatform.net/assets/www/index.html")
+    }
+
+    private fun setupBackNavigation() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                webView.evaluateJavascript(
+                    "(function(){ return window.__algerHandleBack ? window.__algerHandleBack() : false; })()"
+                ) { result ->
+                    if (result != "true") {
+                        // 在首页按返回键时退至后台，保持音乐不中断
+                        moveTaskToBack(true)
+                    }
+                }
+            }
+        })
+    }
+
+    private fun applySystemBarAppearance(isDarkBackground: Boolean) {
+        val controller = WindowCompat.getInsetsController(window, webView)
+        controller.isAppearanceLightStatusBars = !isDarkBackground
+        controller.isAppearanceLightNavigationBars = !isDarkBackground
+        webView.setBackgroundColor(Color.parseColor(if (isDarkBackground) "#0F141C" else "#F6FAFD"))
+    }
+
+    private fun hasAudioPermission(): Boolean {
+        val perm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.READ_MEDIA_AUDIO
+        } else {
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        }
+        return ContextCompat.checkSelfPermission(this, perm) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun ensureAudioPermission(callback: (Boolean) -> Unit) {
+        if (hasAudioPermission()) {
+            callback(true)
+            return
+        }
+        pendingAudioPermissionCallback = callback
+        val perm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.READ_MEDIA_AUDIO
+        } else {
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        }
+        requestPermissionLauncher.launch(arrayOf(perm))
+    }
+
+    private fun requestInitialNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                requestPermissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+            }
+        }
+    }
+
+    private fun dispatchAsyncCallbackToJs(callbackId: String, success: Boolean, resultJson: String) {
+        val quotedId = JSONObject.quote(callbackId)
+        val quotedRes = JSONObject.quote(resultJson)
+        val js = "window.__algerNativeCallback && window.__algerNativeCallback($quotedId, $success, $quotedRes);"
+        runOnUiThread {
+            if (!isDestroyed) {
+                webView.evaluateJavascript(js, null)
+            }
+        }
+    }
+
+    private fun pushEventToJs(channel: String, payloadJson: String) {
+        val quotedChannel = JSONObject.quote(channel)
+        val quotedPayload = JSONObject.quote(payloadJson)
+        val js = "window.__algerNativeEvent && window.__algerNativeEvent($quotedChannel, $quotedPayload);"
+        runOnUiThread {
+            if (!isDestroyed) {
+                webView.evaluateJavascript(js, null)
+            }
+        }
+    }
+}
