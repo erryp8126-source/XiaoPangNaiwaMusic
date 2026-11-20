@@ -2,7 +2,19 @@ import axios from 'axios';
 
 import { getAndroidMusicApiBaseUrl, isAndroid } from '@/utils/androidBridge';
 
-const baseURL = isAndroid() ? getAndroidMusicApiBaseUrl() : `${import.meta.env.VITE_API_MUSIC}`;
+const resolveMusicBaseUrl = () => {
+  if (isAndroid()) {
+    return getAndroidMusicApiBaseUrl();
+  }
+  const pwaMusicApi =
+    typeof localStorage !== 'undefined' ? localStorage.getItem('alger_pwa_music_api_url')?.trim() : '';
+  if (pwaMusicApi) {
+    return pwaMusicApi.replace(/\/+$/, '');
+  }
+  return `${import.meta.env.VITE_API_MUSIC}`;
+};
+
+const baseURL = resolveMusicBaseUrl();
 const request = axios.create({
   baseURL,
   timeout: 15000
@@ -11,9 +23,7 @@ const request = axios.create({
 // 请求拦截器
 request.interceptors.request.use(
   (config) => {
-    if (isAndroid()) {
-      config.baseURL = getAndroidMusicApiBaseUrl();
-    }
+    config.baseURL = resolveMusicBaseUrl();
     return config;
   },
   (error) => {

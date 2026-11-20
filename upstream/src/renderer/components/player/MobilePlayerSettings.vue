@@ -36,9 +36,9 @@
             class="flex-1 overflow-y-auto px-5 pb-6"
             :style="{ paddingBottom: `calc(24px + var(--safe-area-inset-bottom, 0px))` }"
           >
-            <!-- Android 原生快捷操作 -->
+            <!-- Android / iOS 原生快捷操作 -->
             <div v-if="isAndroid" class="mb-6">
-              <div class="grid grid-cols-3 gap-2.5">
+              <div class="grid gap-2.5" :class="isIOS ? 'grid-cols-2' : 'grid-cols-3'">
                 <button
                   @click="handleDownloadCurrent"
                   class="flex flex-col items-center justify-center gap-1.5 py-3.5 rounded-2xl bg-slate-800/95 border border-slate-700 text-slate-100 active:scale-95 transition-all"
@@ -47,6 +47,7 @@
                   <span class="text-xs font-semibold">下载歌曲</span>
                 </button>
                 <button
+                  v-if="!isIOS"
                   @click="toggleAndroidFloatingLyric"
                   class="flex flex-col items-center justify-center gap-1.5 py-3.5 rounded-2xl transition-all active:scale-95 border"
                   :class="
@@ -59,11 +60,20 @@
                   <span class="text-xs font-semibold">{{ floatingLyricOn ? '关闭悬浮词' : '悬浮歌词' }}</span>
                 </button>
                 <button
+                  v-if="!isIOS"
                   @click="showEqModal = true"
                   class="flex flex-col items-center justify-center gap-1.5 py-3.5 rounded-2xl bg-slate-800/95 border border-slate-700 text-slate-100 active:scale-95 transition-all"
                 >
                   <i class="ri-equalizer-line text-xl text-sky-400"></i>
                   <span class="text-xs font-semibold">均衡器 EQ</span>
+                </button>
+                <button
+                  v-else
+                  @click="handleOpenDownloads"
+                  class="flex flex-col items-center justify-center gap-1.5 py-3.5 rounded-2xl bg-slate-800/95 border border-slate-700 text-slate-100 active:scale-95 transition-all"
+                >
+                  <i class="ri-folder-music-line text-xl text-sky-400"></i>
+                  <span class="text-xs font-semibold">下载与本地</span>
                 </button>
               </div>
               <div class="h-px bg-slate-800 my-5"></div>
@@ -227,15 +237,24 @@ import { storeToRefs } from 'pinia';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 
+import { useRouter } from 'vue-router';
+
 import EqControl from '@/components/EQControl.vue';
 import { useDownload } from '@/hooks/useDownload';
 import { usePlayerStore } from '@/store/modules/player';
-import { isAndroid } from '@/utils';
+import { isAndroid, isIOS } from '@/utils';
 
 const { t } = useI18n();
+const router = useRouter();
 const playerStore = usePlayerStore();
 const { sleepTimer, playbackRate } = storeToRefs(playerStore);
 const { downloadMusic } = useDownload();
+
+const handleOpenDownloads = () => {
+  close();
+  playerStore.setMusicFull(false);
+  router.push('/downloads');
+};
 
 const showEqModal = ref(false);
 const floatingLyricOn = ref<boolean>(

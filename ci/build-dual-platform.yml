@@ -1,0 +1,158 @@
+name: Build & Release Android + iOS + PWA
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Build Vue 3 mobile frontend
+        working-directory: upstream
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          npm install --ignore-scripts --legacy-peer-deps
+          npx vite build --outDir ../android/app/src/main/assets/www --emptyOutDir
+
+      - name: Build Android Release APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Rename Android APK
+        run: |
+          mkdir -p artifacts
+          cp android/app/build/outputs/apk/release/app-release.apk artifacts/XiaoPangNaiwaMusic-v5.1.0.apk
+
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XiaoPangNaiwaMusic-Android-APK
+          path: artifacts/XiaoPangNaiwaMusic-v5.1.0.apk
+
+  build-ios:
+    name: Build iOS IPA (Unsigned)
+    runs-on: macos-15
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build Vue 3 mobile frontend into iOS bundle
+        working-directory: upstream
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          npm install --ignore-scripts --legacy-peer-deps
+          npx vite build --outDir ../ios/XiaoPangNaiwaMusic/Resources/www --emptyOutDir
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build iOS Release App (arm64, unsigned)
+        working-directory: ios
+        run: |
+          xcodebuild \
+            -project XiaoPangNaiwaMusic.xcodeproj \
+            -scheme XiaoPangNaiwaMusic \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package Unsigned IPA
+        working-directory: ios
+        run: |
+          mkdir -p build/Payload ../artifacts
+          cp -R build/DerivedData/Build/Products/Release-iphoneos/XiaoPangNaiwaMusic.app build/Payload/
+          cd build
+          zip -qry ../../artifacts/XiaoPangNaiwaMusic-v5.1.0-unsigned.ipa Payload
+
+      - name: Upload iOS IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XiaoPangNaiwaMusic-iOS-IPA
+          path: artifacts/XiaoPangNaiwaMusic-v5.1.0-unsigned.ipa
+
+  build-pwa:
+    name: Build Safari PWA Web Bundle
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build PWA static bundle
+        working-directory: upstream
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          npm install --ignore-scripts --legacy-peer-deps
+          npx vite build --outDir ../dist-pwa --emptyOutDir
+          mkdir -p ../artifacts
+          cd ../dist-pwa && zip -qry ../artifacts/XiaoPangNaiwaMusic-v5.1.0-pwa.zip .
+
+      - name: Upload PWA bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XiaoPangNaiwaMusic-Safari-PWA
+          path: artifacts/XiaoPangNaiwaMusic-v5.1.0-pwa.zip
+
+  release:
+    name: Publish Dual-Platform Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-android, build-ios, build-pwa]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Attach assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/XiaoPangNaiwaMusic-v5.1.0.apk
+            release-assets/XiaoPangNaiwaMusic-v5.1.0-unsigned.ipa
+            release-assets/XiaoPangNaiwaMusic-v5.1.0-pwa.zip
+          generate_release_notes: true

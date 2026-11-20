@@ -150,7 +150,7 @@ const settingSections: SettingSectionConfig[] = [
   { id: 'basic' },
   { id: 'playback' },
   { id: 'application', electron: true },
-  { id: 'network', native: true },
+  { id: 'network' },
   { id: 'system', electron: true },
   { id: 'about' },
   { id: 'donation' }

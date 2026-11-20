@@ -21,7 +21,7 @@
             </span>
           </div>
           <p class="text-[13px] text-slate-600 dark:text-slate-300 mt-1.5 leading-relaxed">
-            基于 AlgerMusicPlayer 深度定制的安卓移动端音乐播放器 · 晴空暖阳治愈视觉
+            基于 AlgerMusicPlayer 深度定制的 Android / iOS / PWA 跨平台音乐播放器 · 晴空暖阳治愈视觉
           </p>
         </div>
       </div>

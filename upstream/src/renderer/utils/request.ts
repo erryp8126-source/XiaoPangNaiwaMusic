@@ -20,6 +20,10 @@ const resolveBaseURL = () => {
   if (isAndroid()) {
     return getAndroidApiBaseUrl();
   }
+  const pwaApi = typeof localStorage !== 'undefined' ? localStorage.getItem('alger_pwa_api_url')?.trim() : '';
+  if (pwaApi) {
+    return pwaApi.replace(/\/+$/, '');
+  }
   return import.meta.env.VITE_API;
 };
 

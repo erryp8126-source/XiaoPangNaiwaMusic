@@ -2,7 +2,9 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" href="./favicon.ico" />
+    <link rel="icon" href="./icon-192.png" type="image/png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
+    <link rel="manifest" href="./manifest.json" />
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
@@ -11,10 +13,14 @@
     <title>小庞奶娃音乐</title>
     <meta
       name="description"
-      content="小庞奶娃音乐 Android 版"
+      content="小庞奶娃音乐 - Android / iOS / Safari PWA 跨平台移动端音乐播放器"
     />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="小庞奶娃音乐" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="#F6FAFD" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0F141C" media="(prefers-color-scheme: dark)" />
 
     <!-- 资源预加载 -->
     <link rel="preload" href="./assets/icon/iconfont.css" as="style" />
@@ -41,5 +47,18 @@
   <body>
     <div id="app"></div>
     <script type="module" src="./main.ts"></script>
+    <script>
+      if (
+        'serviceWorker' in navigator &&
+        !window.AlgerAndroid &&
+        !window.electron &&
+        location.protocol.startsWith('http') &&
+        location.hostname !== '127.0.0.1'
+      ) {
+        window.addEventListener('load', function () {
+          navigator.serviceWorker.register('./sw.js').catch(function () {});
+        });
+      }
+    </script>
   </body>
 </html>

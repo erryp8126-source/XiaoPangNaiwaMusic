@@ -37,7 +37,7 @@
       </setting-item>
 
       <setting-item
-        v-if="isAndroid"
+        v-if="isRealAndroid"
         inline
         title="桌面悬浮歌词"
         description="在手机其他应用上方悬浮显示当前歌词（需授予悬浮窗权限）"
@@ -49,7 +49,7 @@
       </setting-item>
 
       <setting-item
-        v-if="isAndroid"
+        v-if="isRealAndroid"
         inline
         title="均衡器 (EQ)"
         description="使用手机原生硬件音效均衡器调节 10 段频响"
@@ -129,7 +129,7 @@ import EqControl from '@/components/EQControl.vue';
 import AudioDeviceSettings from '@/components/settings/AudioDeviceSettings.vue';
 import MusicSourceSettings from '@/components/settings/MusicSourceSettings.vue';
 import { type Platform } from '@/types/music';
-import { isAndroid, isElectron, isNative } from '@/utils';
+import { isAndroid, isElectron, isNative, isRealAndroid } from '@/utils';
 
 import { SETTINGS_DATA_KEY } from '../keys';
 import SBtn from '../SBtn.vue';

@@ -1,9 +1,9 @@
 <template>
-  <!-- Android 端：内置本地直连代理 + 自定义 API 服务器 + 后台保活 -->
-  <setting-section v-if="isAndroid" title="接口与手机服务">
+  <!-- Android / iOS 原生端：内置本地直连代理 + 自定义 API 服务器 + 后台保活 -->
+  <setting-section v-if="isAndroid" :title="isIOS ? 'iOS 接口与原生服务' : 'Android 接口与手机服务'">
     <setting-item
       title="音乐接口模式"
-      description="默认使用手机内置本地代理直连网易云（无需额外服务器），也可随时切换为自建 NeteaseCloudMusicApi 地址"
+      description="默认使用手机内置本地代理直连音乐接口（无需额外服务器），也可随时切换为自建 NeteaseCloudMusicApi 地址"
     >
       <template #action>
         <n-radio-group v-model:value="androidCfg.mode" @update:value="handleSaveAndroidConfig">
@@ -46,7 +46,7 @@
 
     <setting-item
       title="自定义音源解析接口（可选）"
-      description="留空则使用手机内置多平台解锁引擎（酷我 / 酷狗 / 咪咕 / GD音乐台 / 洛雪脚本）"
+      description="留空则使用手机内置多平台解析引擎（酷我 / 酷狗 / 咪咕 / GD音乐台 / 洛雪脚本）"
     >
       <template #action>
         <div class="flex items-center gap-2 w-full max-md:flex-col">
@@ -61,6 +61,7 @@
     </setting-item>
 
     <setting-item
+      v-if="!isIOS"
       title="后台播放保活"
       description="将本应用加入系统电池优化白名单，防止熄屏后系统限制后台切歌与播放"
     >
@@ -75,14 +76,73 @@
     </setting-item>
 
     <setting-item
+      v-else
+      inline
+      title="iOS 原生后台音频保活"
+      description="已启用 AVAudioSession 后台播放与锁屏/AirPods 自动切歌引擎"
+    >
+      <template #action>
+        <n-tag type="success" size="small" round>已开启</n-tag>
+      </template>
+    </setting-item>
+
+    <setting-item
       title="本地音乐与下载管理"
-      description="扫描手机存储中的本地歌曲，或查看/播放已下载的离线音乐"
+      :description="
+        isIOS
+          ? '支持在 iPhone「文件」App 的「小庞奶娃音乐」目录导入 MP3/FLAC/M4A 本地歌曲，或管理离线下载'
+          : '扫描手机存储中的本地歌曲，或查看/播放已下载的离线音乐'
+      "
     >
       <template #action>
         <div class="flex items-center gap-2">
           <s-btn @click="router.push('/local-music')">本地音乐</s-btn>
           <s-btn @click="router.push('/downloads')">下载管理</s-btn>
         </div>
+      </template>
+    </setting-item>
+  </setting-section>
+
+  <!-- Web / iPhone Safari PWA 端：配置远程 API 与添加到主屏幕指引 -->
+  <setting-section v-if="!isNative" title="Web / Safari PWA 接口设置">
+    <setting-item
+      title="网易云音乐 API 地址"
+      description="网页 / iPhone Safari PWA 模式下需连接远程 NeteaseCloudMusicApi 服务地址"
+    >
+      <template #action>
+        <div class="flex items-center gap-2 w-full max-md:flex-col">
+          <s-input
+            v-model="pwaApiUrl"
+            placeholder="https://your-ncm-api.example.com"
+            width="w-[260px] max-md:w-full"
+          />
+          <s-btn variant="primary" @click="savePwaApiConfig">保存</s-btn>
+        </div>
+      </template>
+    </setting-item>
+
+    <setting-item
+      title="备用音源解析接口（可选）"
+      description="配置自建音频解析服务根地址，留空则使用默认内置配置"
+    >
+      <template #action>
+        <div class="flex items-center gap-2 w-full max-md:flex-col">
+          <s-input
+            v-model="pwaMusicApiUrl"
+            placeholder="https://your-music-parser.example.com"
+            width="w-[260px] max-md:w-full"
+          />
+          <s-btn @click="savePwaApiConfig">保存</s-btn>
+        </div>
+      </template>
+    </setting-item>
+
+    <setting-item
+      title="iPhone Safari 免签安装（PWA 模式）"
+      description="在 iPhone Safari 中点击底部「分享按钮 ↑」→「添加到主屏幕」，即可生成桌面图标并全屏运行（免证书永不过期）"
+    >
+      <template #action>
+        <n-tag type="info" size="small" round>支持 PWA</n-tag>
       </template>
     </setting-item>
   </setting-section>
@@ -154,7 +214,7 @@ import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 
 import ProxySettings from '@/components/settings/ProxySettings.vue';
-import { isAndroid, isElectron } from '@/utils';
+import { isAndroid, isElectron, isIOS, isNative } from '@/utils';
 import {
   type AndroidServerConfig,
   getAndroidApiBaseUrl,
@@ -172,6 +232,20 @@ const { t } = useI18n();
 const router = useRouter();
 const setData = inject(SETTINGS_DATA_KEY)!;
 const message = inject(SETTINGS_MESSAGE_KEY)!;
+
+// ==================== Web / PWA 配置状态 ====================
+const pwaApiUrl = ref<string>(localStorage.getItem('alger_pwa_api_url') || '');
+const pwaMusicApiUrl = ref<string>(localStorage.getItem('alger_pwa_music_api_url') || '');
+
+const savePwaApiConfig = () => {
+  const apiVal = pwaApiUrl.value.trim().replace(/\/+$/, '');
+  const musicVal = pwaMusicApiUrl.value.trim().replace(/\/+$/, '');
+  if (apiVal) localStorage.setItem('alger_pwa_api_url', apiVal);
+  else localStorage.removeItem('alger_pwa_api_url');
+  if (musicVal) localStorage.setItem('alger_pwa_music_api_url', musicVal);
+  else localStorage.removeItem('alger_pwa_music_api_url');
+  message.success('PWA 接口配置已保存并立即生效');
+};
 
 // ==================== Android 配置状态 ====================
 const androidCfg = ref<AndroidServerConfig>(getAndroidServerConfig(true));

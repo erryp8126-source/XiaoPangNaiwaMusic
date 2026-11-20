@@ -1,10 +1,25 @@
 {
-  "name": "Alger Music PWA",
+  "name": "小庞奶娃音乐",
+  "short_name": "奶娃音乐",
+  "description": "小庞奶娃音乐 - 奶娃暖阳治愈风移动端音乐播放器（Android / iOS / Safari PWA）",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F6FAFD",
+  "theme_color": "#F6FAFD",
   "icons": [
+    {
+      "src": "./icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
     {
       "src": "./icon.png",
       "type": "image/png",
-      "sizes": "256x256"
+      "sizes": "512x512",
+      "purpose": "any maskable"
     }
   ]
 }

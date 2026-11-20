@@ -5,8 +5,13 @@ upstream/out/
 upstream/build/
 upstream/.eslintcache
 
-# Generated Android WebView assets (built by build_apk.ps1)
+# Generated WebView / PWA build assets
 android/app/src/main/assets/www/
+ios/XiaoPangNaiwaMusic/Resources/www/*
+!ios/XiaoPangNaiwaMusic/Resources/www/.gitkeep
+ios/build/
+ios/*.xcodeproj/
+dist-pwa/
 
 # Android & Gradle build caches / local machine config
 android/.gradle/
@@ -19,8 +24,11 @@ android/captures/
 *.jks
 *.keystore
 
-# Compiled release APKs (distributed via GitHub Releases)
+# Compiled release artifacts (distributed via GitHub Releases)
 releases/*.apk
+releases/*.ipa
+releases/*.zip
+releases/pwa/
 
 # IDE & OS metadata
 .idea/

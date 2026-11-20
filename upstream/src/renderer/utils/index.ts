@@ -104,7 +104,12 @@ export const isMobile = computed(() => {
 
 export const isElectron = (window as any).electron !== undefined;
 
+export const isIOS = typeof window !== 'undefined' && (window as any).__ALGER_PLATFORM__ === 'ios';
+
+// Android 与 iOS 原生壳均注入统一的 window.AlgerAndroid 桥接对象，便于双端共享 100% 原生播控与本地代理能力
 export const isAndroid = typeof window !== 'undefined' && (window as any).AlgerAndroid !== undefined;
+
+export const isRealAndroid = isAndroid && !isIOS;
 
 export const isNative = isElectron || isAndroid;
 
