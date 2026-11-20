@@ -75,21 +75,31 @@ const setupAndroidBackgroundSync = () => {
       syncTimer = window.setTimeout(() => {
         syncTimer = null;
         void pushQueueToNative();
-      }, 200);
+      }, 60);
     }
   };
 
+  // 监听整个 playList shallowRef 引用（包含同长度换歌单/洗牌）、当前索引、模式、曲目ID、URL 和 FM 状态
   watch(
     () => [
+      getPlayerStore().playList,
       getPlayerStore().playList?.length,
       getPlayerStore().playListIndex,
       getPlayerStore().playMode,
+      getPlayerStore().playMusic?.id,
       getPlayerStore().playMusicUrl,
       getPlayerStore().isFmPlaying
     ],
     () => scheduleQueueSync(false),
     { immediate: true }
   );
+
+  // 切入后台/熄屏瞬间立即强制同步一次最新队列，确保原生后台服务拿到 100% 最新的列表和索引
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      scheduleQueueSync(true);
+    }
+  });
 
   // 监听原生后台服务自动切歌回传事件，无缝同步前端 UI / 歌词 / 索引，绝不打断正在播放的音频
   onAndroidEvent('native-track-changed', async (_, payload: any) => {
@@ -98,8 +108,13 @@ const setupAndroidBackgroundSync = () => {
       const { usePlaylistStore } = await import('@/store/modules/playlist');
       const { usePlayerCoreStore } = await import('@/store/modules/playerCore');
       const { useLyrics } = await import('@/hooks/usePlayerHooks');
+      const { playbackRequestManager } = await import('@/services/playbackRequestManager');
       const playlistStore = usePlaylistStore();
       const playerCore = usePlayerCoreStore();
+
+      // 取消所有滞留在 JS 队列中的旧播放请求，防止迟到的前端请求打断原生已切好的新歌
+      playbackRequestManager.cancelAllRequests?.();
+      localStorage.removeItem('playProgress');
 
       const list = playlistStore.playList || [];
       let matchedIndex = typeof payload.index === 'number' ? payload.index : -1;
@@ -111,7 +126,40 @@ const setupAndroidBackgroundSync = () => {
         if (foundIdx !== -1) {
           matchedIndex = foundIdx;
           matchedSong = list[foundIdx];
+        } else {
+          matchedSong = undefined;
         }
+      }
+
+      // 若是原生层在后台自动补充的推荐新歌或 FM 曲目（前端 playList 尚未包含），动态构造并纳入前端列表
+      if (!matchedSong && payload.songId) {
+        const artistNames = String(payload.artist || '')
+          .split(' / ')
+          .map((n: string) => n.trim())
+          .filter(Boolean);
+        const syntheticSong: SongResult = {
+          id: /^\d+$/.test(String(payload.songId)) ? Number(payload.songId) : payload.songId,
+          name: payload.title || '未知歌曲',
+          picUrl: payload.cover || '',
+          ar: artistNames.map((name: string, i: number) => ({ id: i, name })) as any,
+          al: {
+            id: 0,
+            name: payload.album || '',
+            picUrl: payload.cover || ''
+          } as any,
+          dt: typeof payload.duration === 'number' && payload.duration > 0 ? Math.round(payload.duration * 1000) : 0,
+          playMusicUrl: payload.url || '',
+          source: 'netease',
+          count: 0
+        };
+        if (payload.isFm) {
+          playlistStore.playList = [syntheticSong];
+          matchedIndex = 0;
+        } else {
+          playlistStore.playList = [...list, syntheticSong];
+          matchedIndex = playlistStore.playList.length - 1;
+        }
+        matchedSong = syntheticSong;
       }
 
       if (!matchedSong) return;
@@ -125,6 +173,9 @@ const setupAndroidBackgroundSync = () => {
 
       if (matchedIndex >= 0) {
         playlistStore.playListIndex = matchedIndex;
+      }
+      if (typeof payload.isFm === 'boolean') {
+        playerCore.isFmPlaying = payload.isFm;
       }
       playerCore.playMusic = updatedSong;
       playerCore.playMusicUrl = updatedSong.playMusicUrl || '';
@@ -649,12 +700,13 @@ const setupAudioListeners = () => {
   audioService.on('end', async () => {
     console.log('音频播放结束事件触发');
     clearInterval();
+    localStorage.removeItem('playProgress');
 
     if (getPlayerStore().playMode === 1) {
       // 单曲循环模式
       replayMusic();
     } else if (getPlayerStore().isFmPlaying) {
-      // 私人FM模式：自动获取下一首
+      // 私人FM模式：自动获取下一首，接口异常时自动回退到推荐队列，绝不静音停播
       try {
         const { getPersonalFM } = await import('@/api/home');
         const res = await getPersonalFM();
@@ -678,14 +730,16 @@ const setupAudioListeners = () => {
           getPlayerStore().isFmPlaying = true; // setPlayList 会清除，需重设
           await getPlayerStore().handlePlayMusic(fmSong, true);
         } else {
-          getPlayerStore().setIsPlay(false);
+          getPlayerStore().isFmPlaying = false;
+          getPlayerStore().nextPlay();
         }
       } catch (error) {
-        console.error('FM自动播放下一首失败:', error);
-        getPlayerStore().setIsPlay(false);
+        console.error('FM自动播放下一首失败，回退至推荐列表连播:', error);
+        getPlayerStore().isFmPlaying = false;
+        getPlayerStore().nextPlay();
       }
     } else {
-      // 顺序播放、列表循环、随机播放模式都使用统一的nextPlay方法
+      // 顺序/列表循环/随机/心动模式均统一连续切下一首
       getPlayerStore().nextPlay();
     }
   });

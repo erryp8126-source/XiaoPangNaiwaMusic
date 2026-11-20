@@ -155,8 +155,8 @@ const onToggleFavorite = (event: Event) => {
   // 可选：emit 收藏事件
 };
 const onPlayMusic = () => {
-  baseItem.value?.playMusicEvent(props.item);
   emit('play', props.item);
+  baseItem.value?.playMusicEvent(props.item);
 };
 const onMenuClick = (event: MouseEvent) => baseItem.value?.handleMenuClick(event);
 

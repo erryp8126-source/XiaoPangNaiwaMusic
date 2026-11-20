@@ -146,10 +146,18 @@ export const usePlayerCoreStore = defineStore(
           return;
         }
 
-        // 检查重试次数限制
+        // 检查重试次数限制：若用户仍希望持续播放，则自动跳过当前异常曲目切下一首，绝不直接静音停播
         if (checkPlaybackRetryCount >= MAX_CHECKPLAYBACK_RETRIES) {
-          console.warn(`播放重试已达上限 (${MAX_CHECKPLAYBACK_RETRIES} 次)，停止重试`);
+          console.warn(`播放重试已达上限 (${MAX_CHECKPLAYBACK_RETRIES} 次)，尝试自动切换下一首`);
           checkPlaybackRetryCount = 0;
+          if (userPlayIntent.value) {
+            const { usePlaylistStore } = await import('./playlist');
+            const playlistStore = usePlaylistStore();
+            if (playlistStore.playList.length > 1) {
+              playlistStore.nextPlay();
+              return;
+            }
+          }
           setPlayMusic(false);
           return;
         }
@@ -208,11 +216,23 @@ export const usePlayerCoreStore = defineStore(
           audioService.off('play', onPlayHandler);
           audioService.off('playerror', onPlayErrorHandler);
 
-          // 检查重试次数限制
+          // 检查重试次数限制：若用户仍希望播放，则自动切下一首
           if (checkPlaybackRetryCount >= MAX_CHECKPLAYBACK_RETRIES) {
-            console.warn(`超时重试已达上限 (${MAX_CHECKPLAYBACK_RETRIES} 次)，停止重试`);
+            console.warn(`超时重试已达上限 (${MAX_CHECKPLAYBACK_RETRIES} 次)，尝试自动切换下一首`);
             checkPlaybackRetryCount = 0;
-            setPlayMusic(false);
+            if (userPlayIntent.value) {
+              void (async () => {
+                const { usePlaylistStore } = await import('./playlist');
+                const playlistStore = usePlaylistStore();
+                if (playlistStore.playList.length > 1) {
+                  playlistStore.nextPlay();
+                } else {
+                  setPlayMusic(false);
+                }
+              })();
+            } else {
+              setPlayMusic(false);
+            }
             return;
           }
 
@@ -252,9 +272,15 @@ export const usePlayerCoreStore = defineStore(
 
       const currentSound = audioService.getCurrentSound();
       if (currentSound) {
-        console.log('主动停止并卸载当前音频实例');
-        currentSound.stop();
-        currentSound.unload();
+        if (isAndroid()) {
+          // 原生壳（Android / iOS）切歌时仅解绑旧实例监听，不提前调用 audioStop()，
+          // 防止误取消原生切歌过渡 WakeLock 与后台自动切歌保险丝；由下一次 audioLoad 无缝替换曲目
+          currentSound.off();
+        } else {
+          console.log('主动停止并卸载当前音频实例');
+          currentSound.stop();
+          currentSound.unload();
+        }
       }
 
       // 验证请求是否仍然有效
@@ -420,9 +446,16 @@ export const usePlayerCoreStore = defineStore(
           '当前歌曲ID:',
           playMusic.value.id
         );
-        if (savedProgress.songId === playMusic.value.id) {
-          initialPosition = savedProgress.progress;
-          console.log('[playAudio] 恢复播放进度:', initialPosition);
+        if (
+          savedProgress.songId === playMusic.value.id &&
+          typeof savedProgress.progress === 'number' &&
+          savedProgress.progress > 1
+        ) {
+          const songDurSec = (playMusic.value.dt || playMusic.value.duration || 0) / 1000;
+          if (songDurSec <= 0 || savedProgress.progress < songDurSec - 5) {
+            initialPosition = savedProgress.progress;
+            console.log('[playAudio] 恢复播放进度:', initialPosition);
+          }
         }
 
         // 使用 PreloadService 获取音频
@@ -509,10 +542,8 @@ export const usePlayerCoreStore = defineStore(
             }
           }, 1000);
         } else {
-          // 非操作锁错误，停止播放并通知用户
-          setPlayMusic(false);
-          console.warn('播放音频失败（非操作锁错误），由调用方处理重试');
-          message.error(i18n.global.t('player.playFailed'));
+          // 非操作锁错误：不要清掉 userPlayIntent，交由调用方（如 _nextPlay）自动重试或跳过到下一首
+          console.warn('播放音频失败（非操作锁错误），交由调用方自动重试或切换下一首');
         }
 
         return null;

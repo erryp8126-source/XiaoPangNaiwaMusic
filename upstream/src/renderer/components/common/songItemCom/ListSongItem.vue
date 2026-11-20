@@ -135,8 +135,8 @@ const onToggleFavorite = (event: Event) => {
   baseItem.value?.toggleFavorite(event);
 };
 const onPlayMusic = () => {
-  baseItem.value?.playMusicEvent(props.item);
   emit('play', props.item);
+  baseItem.value?.playMusicEvent(props.item);
 };
 </script>
 

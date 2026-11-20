@@ -4,7 +4,7 @@
     @contextmenu.prevent="handleContextMenu"
     @mouseenter="handleMouseEnter"
     @mouseleave="handleMouseLeave"
-    @dblclick.stop="playMusicEvent(item)"
+    @dblclick.stop="handleDirectPlay"
   >
     <slot name="index"></slot>
     <slot name="select" v-if="selectable"></slot>
@@ -22,7 +22,7 @@
       :is-dislike="isDislike"
       :can-remove="canRemove"
       @update:show="showDropdown = $event"
-      @play="playMusicEvent(item)"
+      @play="handleDirectPlay"
       @play-next="handlePlayNext"
       @download="downloadMusic(item)"
       @download-lyric="downloadLyric(item)"
@@ -86,6 +86,12 @@ const imageLoad = async (event: Event) => {
 // 切换选择状态
 const toggleSelect = () => {
   emits('select', props.item.id, !props.selected);
+};
+
+// 双击或右键菜单播放：先通知父组件更新播放列表上下文，再开始播放
+const handleDirectPlay = () => {
+  emits('play', props.item);
+  playMusicEvent(props.item);
 };
 
 // 把图片处理、艺术家处理等公共方法暴露给子组件

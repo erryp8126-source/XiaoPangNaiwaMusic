@@ -144,7 +144,8 @@ const performSearch = async (isLoadMore = false) => {
       const songs = (data.result.songs || []).map((item: any) => ({
         ...item,
         picUrl: item.al?.picUrl,
-        artists: item.ar
+        artists: item.ar,
+        source: 'netease'
       }));
 
       if (isLoadMore) {
@@ -266,9 +267,13 @@ const handleScroll = (e: Event) => {
   }
 };
 
-// 播放音乐
+// 播放音乐：将当前搜索歌曲列表设为播放队列，保证播完自动连播下一首
 const handlePlay = (item: any) => {
-  playerStore.addToNextPlay(item);
+  if (searchType.value === SEARCH_TYPE.MUSIC && results.value.length > 0) {
+    playerStore.setPlayList(results.value);
+  } else {
+    playerStore.addToNextPlay(item);
+  }
 };
 
 // 返回

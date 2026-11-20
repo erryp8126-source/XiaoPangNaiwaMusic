@@ -518,6 +518,9 @@ const mapPodcastRadioToPlaylistItem = (radio: any) => {
 
 const handlePlayPodcast = (item: any) => {
   const song = mapDjProgramToSong(item);
+  if (displayList.value.length > 0) {
+    playerStore.setPlayList(displayList.value.map(mapDjProgramToSong));
+  }
   playerStore.setPlay(song);
 };
 

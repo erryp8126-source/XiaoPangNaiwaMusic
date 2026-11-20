@@ -590,12 +590,11 @@ const handlePlayMusic = async (item: DownloadedItem) => {
       return;
     }
 
-    // 转换下载项为播放所需的歌曲对象
-    const song: SongResult = {
-      id: item.id,
-      name: item.displayName || item.filename,
+    const toDownloadedSong = (dlItem: DownloadedItem): SongResult => ({
+      id: dlItem.id,
+      name: dlItem.displayName || dlItem.filename,
       ar:
-        item.ar?.map((a) => ({
+        dlItem.ar?.map((a) => ({
           id: 0,
           name: a.name,
           picId: 0,
@@ -610,18 +609,24 @@ const handlePlayMusic = async (item: DownloadedItem) => {
           topicPerson: 0
         })) || [],
       al: {
-        name: item.filename,
+        name: dlItem.filename,
         id: 0,
-        picUrl: item.picUrl,
+        picUrl: dlItem.picUrl,
         pic: 0,
         picId: 0
       } as any,
-      picUrl: item.picUrl,
+      picUrl: dlItem.picUrl,
       // 使用本地文件协议
-      playMusicUrl: getLocalFilePath(item.path),
+      playMusicUrl: getLocalFilePath(dlItem.path),
       source: 'netease' as 'netease',
       count: 0
-    };
+    });
+
+    // 转换下载项为播放所需的歌曲对象，并将全部已下载歌曲加入播放队列
+    const song = toDownloadedSong(item);
+    if (downloadedList.value.length > 0) {
+      playerStore.setPlayList(downloadedList.value.map(toDownloadedSong));
+    }
 
     console.log('开始播放本地音乐:', song.name, '路径:', song.playMusicUrl);
 

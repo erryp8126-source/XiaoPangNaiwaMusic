@@ -89,8 +89,10 @@ const fetchSongs = async () => {
   }
 };
 
-const playSong = (song: SongResult) => {
-  playerStore.setPlay(song);
+const playSong = (_song: SongResult) => {
+  if (songs.value.length > 0) {
+    playerStore.setPlayList(songs.value);
+  }
 };
 
 const playAll = () => {

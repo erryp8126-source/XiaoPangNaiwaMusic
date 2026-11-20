@@ -584,11 +584,17 @@ const handlePlayAll = () => {
   if (!isFullPlaylistLoaded.value) loadFullPlaylist();
 };
 
-const handlePlayItem = (item: any) => {
-  playerStore.setPlay(formatSong(item));
-  if (!playerStore.playList.some((s) => s.id === item.id)) {
-    playerStore.addToNextPlay(formatSong(item));
+const handlePlayItem = (_item: any) => {
+  saveHistory();
+  const list = searchKeyword.value
+    ? filteredSongs.value
+    : isFullPlaylistLoaded.value
+      ? completePlaylist.value
+      : allFilteredSongs.value;
+  if (list.length > 0) {
+    playerStore.setPlayList(list.map(formatSong));
   }
+  if (!isFullPlaylistLoaded.value) loadFullPlaylist();
 };
 
 const handleRemoveSong = async (songId: number) => {

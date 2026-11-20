@@ -407,6 +407,9 @@ const latestNightSong = computed<{
 const handlePlaySong = async (songId: string | number) => {
   const song = playHistoryStore.musicHistory.find((music) => music.id === songId);
   if (song) {
+    if (playHistoryStore.musicHistory.length > 0) {
+      playerStore.setPlayList(playHistoryStore.musicHistory);
+    }
     await playerStore.setPlay(song);
     playerStore.setPlayMusic(true);
   }

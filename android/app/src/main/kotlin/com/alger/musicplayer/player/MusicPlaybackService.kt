@@ -78,7 +78,7 @@ class MusicPlaybackService : Service() {
         const val ACTION_PLAY_PAUSE = "com.alger.musicplayer.ACTION_PLAY_PAUSE"
         const val ACTION_NEXT = "com.alger.musicplayer.ACTION_NEXT"
 
-        private const val MAX_NATIVE_SKIP_FAILS = 5
+        private const val MAX_NATIVE_SKIP_FAILS = 8
 
         @Volatile
         var instance: MusicPlaybackService? = null
@@ -116,9 +116,11 @@ class MusicPlaybackService : Service() {
 
         fun onAppForegroundChanged(inForeground: Boolean) {
             isAppInForeground = inForeground
-            if (inForeground) {
-                mainHandler.post {
+            mainHandler.post {
+                if (inForeground) {
                     instance?.syncStateToWebView()
+                } else {
+                    instance?.onEnteredBackground()
                 }
             }
         }
@@ -158,6 +160,7 @@ class MusicPlaybackService : Service() {
     @Volatile
     private var cachedIsPlaying: Boolean = false
 
+    private var currentSongId: String = ""
     private var currentTitle: String = "小庞奶娃音乐"
     private var currentArtist: String = ""
     private var currentAlbum: String = ""
@@ -166,6 +169,8 @@ class MusicPlaybackService : Service() {
     private var hasNotifiedLoaded: Boolean = false
     private var isForegroundStarted: Boolean = false
     private var isNativeManagedTrack: Boolean = false
+    private var isTransitioningTrack: Boolean = false
+    private var userPaused: Boolean = false
     private var nativeConsecutiveFails: Int = 0
 
     // 原生后台播放队列缓存（由前端实时同步，供息屏/后台自动切歌使用）
@@ -240,7 +245,7 @@ class MusicPlaybackService : Service() {
             ACTION_NEXT -> handleExternalTrackCommand("nexttrack", 1)
             ACTION_PLAY_PAUSE -> {
                 if (::exoPlayer.isInitialized) {
-                    if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                    if (exoPlayer.isPlaying) pause() else play()
                 }
             }
         }
@@ -335,6 +340,7 @@ class MusicPlaybackService : Service() {
                 when (playbackState) {
                     Player.STATE_READY -> {
                         nativeConsecutiveFails = 0
+                        isTransitioningTrack = false
                         releaseTransitionWakeLock()
                         if (!hasNotifiedLoaded) {
                             hasNotifiedLoaded = true
@@ -396,14 +402,17 @@ class MusicPlaybackService : Service() {
                 emitAudioEvent(if (hasNotifiedLoaded) "playerror" else "loaderror", error.message)
                 updateNotification()
 
-                // 若后台原生切歌播放失败，自动尝试跳过下一首，避免后台静音中断
-                if (isNativeManagedTrack && !isAppInForeground && nativeQueue.size > 1 &&
+                // 只要用户没有主动暂停，后台/原生接管期间单曲播放报错时自动跳过并播放下一首，绝不静音断播
+                if (!userPaused && (!isAppInForeground || isNativeManagedTrack) &&
                     nativeConsecutiveFails < MAX_NATIVE_SKIP_FAILS
                 ) {
                     nativeConsecutiveFails++
-                    Log.w(TAG, "Background track failed ($nativeConsecutiveFails/$MAX_NATIVE_SKIP_FAILS), auto skipping...")
+                    acquireTransitionWakeLock(45_000L)
+                    isTransitioningTrack = true
+                    Log.w(TAG, "Track playback failed ($nativeConsecutiveFails/$MAX_NATIVE_SKIP_FAILS), auto skipping to next...")
                     advanceNativeQueue(delta = 1, fromEnded = false)
                 } else {
+                    isTransitioningTrack = false
                     releaseTransitionWakeLock()
                 }
             }
@@ -433,6 +442,34 @@ class MusicPlaybackService : Service() {
 
             override fun hasNextMediaItem(): Boolean = true
             override fun hasPreviousMediaItem(): Boolean = true
+
+            override fun play() {
+                userPaused = false
+                if (exoPlayer.playbackState == Player.STATE_ENDED) {
+                    exoPlayer.seekTo(0L)
+                }
+                super.play()
+            }
+
+            override fun pause() {
+                userPaused = true
+                isTransitioningTrack = false
+                cancelNativeAutoAdvance()
+                releaseTransitionWakeLock()
+                super.pause()
+            }
+
+            override fun setPlayWhenReady(playWhenReady: Boolean) {
+                if (playWhenReady) {
+                    userPaused = false
+                } else {
+                    userPaused = true
+                    isTransitioningTrack = false
+                    cancelNativeAutoAdvance()
+                    releaseTransitionWakeLock()
+                }
+                super.setPlayWhenReady(playWhenReady)
+            }
 
             override fun seekToNext() {
                 handleExternalTrackCommand("nexttrack", 1)
@@ -476,94 +513,267 @@ class MusicPlaybackService : Service() {
         nativeAdvanceJob = null
     }
 
+    private fun onEnteredBackground() {
+        // 若用户在歌曲刚结束切歌的瞬间切入后台/熄屏，立即加速原生接管，避免 WebView 休眠导致切歌卡死
+        if (!userPaused && isTransitioningTrack && pendingAutoNextRunnable != null &&
+            ::exoPlayer.isInitialized && !exoPlayer.isPlaying
+        ) {
+            pendingAutoNextRunnable?.let { uiHandler.removeCallbacks(it) }
+            val tokenId = currentInstanceId
+            val fastTakeover = Runnable {
+                if (!userPaused && currentInstanceId == tokenId &&
+                    ::exoPlayer.isInitialized && !exoPlayer.isPlaying
+                ) {
+                    Log.i(TAG, "Entered background during track transition: taking over natively")
+                    advanceNativeQueue(delta = 1, fromEnded = true)
+                }
+            }
+            pendingAutoNextRunnable = fastTakeover
+            uiHandler.postDelayed(fastTakeover, 300L)
+        }
+    }
+
     private fun handleTrackEnded() {
+        if (userPaused) {
+            isTransitioningTrack = false
+            releaseTransitionWakeLock()
+            return
+        }
+
         // 立刻申请过渡期 WakeLock，防止 ExoPlayer 在 STATE_ENDED 释放锁后 CPU 立刻休眠
-        acquireTransitionWakeLock(30_000L)
+        acquireTransitionWakeLock(45_000L)
+        isTransitioningTrack = true
         val endedInstanceId = currentInstanceId
 
-        // 1. 单曲循环：直接在原生层瞬时重播，无需经过 WebView（后台/锁屏 100% 稳定）
+        // 1. 单曲循环：直接在原生层瞬时重播，无需经过 WebView（前后台/锁屏 100% 稳定）
         if (nativePlayMode == 1 && ::exoPlayer.isInitialized && exoPlayer.currentMediaItem != null) {
             Log.i(TAG, "Single-track loop active: replaying natively")
             exoPlayer.seekTo(0L)
             exoPlayer.playWhenReady = true
             exoPlayer.play()
+            isTransitioningTrack = false
             snapshotPlayerState()
             emitAudioEvent("replayed")
             return
         }
 
-        // 2. 先通知前端 end 事件（前台时由 Vue 完整接管 FM / 定时关闭 / 歌词加载等）
-        emitAudioEvent("end")
-
-        // 3. 启动后台原生兜底切歌：
-        //    - 后台挂起时 400ms 后若 WebView 未响应切歌，立即由 Kotlin 原生解析下一首并播放
-        //    - 前台时也设 2500ms 保险丝，防止 WebView 偶发阻塞
-        if (!nativeIsFm && nativeQueue.isNotEmpty()) {
+        // 2. 后台/熄屏状态：直接由 Kotlin 原生引擎立即接管切下一首（不再发 end 给 WebView 抢跑，彻底杜绝 WebView 休眠或 audioStop 竞争）
+        if (!isAppInForeground) {
+            Log.i(TAG, "Track ended in background: advancing natively immediately (fm=$nativeIsFm, queue=${nativeQueue.size})")
             cancelNativeAutoAdvance()
-            val delayMs = if (isAppInForeground) 2500L else 400L
-            val r = Runnable {
-                if (currentInstanceId == endedInstanceId &&
-                    ::exoPlayer.isInitialized &&
-                    exoPlayer.playbackState == Player.STATE_ENDED
-                ) {
-                    Log.i(TAG, "WebView did not advance within ${delayMs}ms (fg=$isAppInForeground), advancing natively!")
-                    advanceNativeQueue(delta = 1, fromEnded = true)
-                }
-            }
-            pendingAutoNextRunnable = r
-            uiHandler.postDelayed(r, delayMs)
-        } else {
-            releaseTransitionWakeLock()
+            advanceNativeQueue(delta = 1, fromEnded = true)
+            return
         }
+
+        // 3. 前台状态：通知前端 end 事件（完整支持定时关闭、歌单动态更新、自定义脚本音源与歌词加载），
+        //    同时设置 3800ms 原生兜底保险丝，防止前端偶发卡顿或用户刚切到后台时断播
+        emitAudioEvent("end")
+        cancelNativeAutoAdvance()
+        val watchdog = Runnable {
+            if (!userPaused &&
+                currentInstanceId == endedInstanceId &&
+                ::exoPlayer.isInitialized &&
+                !exoPlayer.isPlaying
+            ) {
+                Log.i(TAG, "Foreground WebView did not start next track within 3800ms, advancing natively!")
+                advanceNativeQueue(delta = 1, fromEnded = true)
+            }
+        }
+        pendingAutoNextRunnable = watchdog
+        uiHandler.postDelayed(watchdog, 3800L)
     }
 
     private fun handleExternalTrackCommand(command: String, delta: Int) {
-        acquireTransitionWakeLock(25_000L)
+        userPaused = false
+        acquireTransitionWakeLock(35_000L)
+        isTransitioningTrack = true
+        if (!isAppInForeground) {
+            Log.i(TAG, "External [$command] in background: advancing natively immediately")
+            cancelNativeAutoAdvance()
+            advanceNativeQueue(delta = delta, fromEnded = false)
+            return
+        }
+
         val prevInstanceId = currentInstanceId
         emitMediaControl(command)
-
-        if (!isAppInForeground && !nativeIsFm && nativeQueue.isNotEmpty()) {
-            cancelNativeAutoAdvance()
-            val r = Runnable {
-                if (currentInstanceId == prevInstanceId) {
-                    Log.i(TAG, "External [$command] in background: advancing natively")
-                    advanceNativeQueue(delta = delta, fromEnded = false)
-                }
+        cancelNativeAutoAdvance()
+        val r = Runnable {
+            if (!userPaused && currentInstanceId == prevInstanceId) {
+                Log.i(TAG, "External [$command] did not advance via WebView, advancing natively")
+                advanceNativeQueue(delta = delta, fromEnded = false)
             }
-            pendingAutoNextRunnable = r
-            uiHandler.postDelayed(r, 650L)
         }
+        pendingAutoNextRunnable = r
+        uiHandler.postDelayed(r, 1500L)
+    }
+
+    private fun fetchNativeRecommendedSongs(excludeId: String): List<NativeQueueItem> {
+        val params = mutableMapOf("limit" to "20")
+        if (nativeUserCookie.isNotBlank()) {
+            params["cookie"] = nativeUserCookie
+        }
+        return runCatching {
+            val res = AlgerApp.instance.ncmClient.dispatch("/personalized/newsong", params)
+            val root = JsonParser.parseString(res.body).asJsonObject
+            val arr = root.getAsJsonArray("result") ?: return@runCatching emptyList()
+            val list = ArrayList<NativeQueueItem>(arr.size())
+            arr.forEach { el ->
+                if (!el.isJsonObject) return@forEach
+                val o = el.asJsonObject
+                val id = o.get("id")?.takeIf { !it.isJsonNull }?.asString ?: return@forEach
+                if (id.isBlank() || id == excludeId) return@forEach
+                val name = o.get("name")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                val songObj = o.getAsJsonObject("song")
+                val albumObj = songObj?.getAsJsonObject("album")
+                val artistsArr = songObj?.getAsJsonArray("artists")
+                val artistStr = artistsArr?.mapNotNull { a ->
+                    a.takeIf { it.isJsonObject }?.asJsonObject?.get("name")?.takeIf { !it.isJsonNull }?.asString
+                }?.joinToString(" / ") ?: ""
+                val cover = o.get("picUrl")?.takeIf { !it.isJsonNull }?.asString
+                    ?: albumObj?.get("picUrl")?.takeIf { !it.isJsonNull }?.asString
+                    ?: ""
+                val albumName = albumObj?.get("name")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                val dt = songObj?.get("duration")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                list.add(
+                    NativeQueueItem(
+                        id = id,
+                        name = name,
+                        artist = artistStr,
+                        album = albumName,
+                        cover = cover,
+                        url = "",
+                        source = "netease",
+                        dt = dt
+                    )
+                )
+            }
+            list
+        }.getOrElse { emptyList() }
+    }
+
+    private fun fetchNativeFmSongs(excludeId: String): List<NativeQueueItem> {
+        val params = mutableMapOf<String, String>()
+        if (nativeUserCookie.isNotBlank()) {
+            params["cookie"] = nativeUserCookie
+        }
+        return runCatching {
+            val res = AlgerApp.instance.ncmClient.dispatch("/personal_fm", params)
+            val root = JsonParser.parseString(res.body).asJsonObject
+            val arr = root.getAsJsonArray("data") ?: return@runCatching emptyList()
+            val list = ArrayList<NativeQueueItem>(arr.size())
+            arr.forEach { el ->
+                if (!el.isJsonObject) return@forEach
+                val o = el.asJsonObject
+                val id = o.get("id")?.takeIf { !it.isJsonNull }?.asString ?: return@forEach
+                if (id.isBlank() || id == excludeId) return@forEach
+                val name = o.get("name")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                val albumObj = o.getAsJsonObject("album") ?: o.getAsJsonObject("al")
+                val artistsArr = o.getAsJsonArray("artists") ?: o.getAsJsonArray("ar")
+                val artistStr = artistsArr?.mapNotNull { a ->
+                    a.takeIf { it.isJsonObject }?.asJsonObject?.get("name")?.takeIf { !it.isJsonNull }?.asString
+                }?.joinToString(" / ") ?: ""
+                val cover = albumObj?.get("picUrl")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                val albumName = albumObj?.get("name")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                val dt = o.get("duration")?.takeIf { !it.isJsonNull }?.asLong
+                    ?: o.get("dt")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                list.add(
+                    NativeQueueItem(
+                        id = id,
+                        name = name,
+                        artist = artistStr,
+                        album = albumName,
+                        cover = cover,
+                        url = "",
+                        source = "netease",
+                        dt = dt
+                    )
+                )
+            }
+            list
+        }.getOrElse { emptyList() }
     }
 
     private fun advanceNativeQueue(delta: Int, fromEnded: Boolean) {
-        val queue = nativeQueue
-        if (queue.isEmpty()) {
-            releaseTransitionWakeLock()
-            return
-        }
-
-        // 顺序播放到列表最后一首时自然结束（与前端行为保持一致）
-        if (fromEnded && nativePlayMode == 0 && nativeQueueIndex >= queue.size - 1) {
-            Log.i(TAG, "Sequential playlist reached end, stopping.")
-            releaseTransitionWakeLock()
-            return
-        }
-
-        val startIdx = ((nativeQueueIndex + delta) % queue.size + queue.size) % queue.size
-        val step = if (delta >= 0) 1 else -1
-        val maxAttempts = minOf(MAX_NATIVE_SKIP_FAILS, queue.size)
         val requestToken = currentInstanceId
+        val snapshotIsFm = nativeIsFm
+        val snapshotQueue = nativeQueue
+        val snapshotIndex = nativeQueueIndex
+        val snapshotSongId = currentSongId
 
         nativeAdvanceJob?.cancel()
         nativeAdvanceJob = serviceScope.launch {
+            // 1. 私人漫游 FM 后台原生续播
+            if (snapshotIsFm) {
+                val fmItems = fetchNativeFmSongs(snapshotSongId).ifEmpty {
+                    fetchNativeRecommendedSongs(snapshotSongId)
+                }
+                for (item in fmItems.take(MAX_NATIVE_SKIP_FAILS)) {
+                    val resolvedUrl = resolveItemUrlNatively(item)
+                    if (!resolvedUrl.isNullOrBlank()) {
+                        uiHandler.post {
+                            if (userPaused || currentInstanceId != requestToken) return@post
+                            nativeQueue = listOf(item)
+                            playNativeQueueItem(0, item, resolvedUrl)
+                        }
+                        return@launch
+                    }
+                }
+            }
+
+            // 2. 普通队列：只要用户未点暂停，永不在队列末尾停止（顺序/列表循环/随机均无缝循环；
+            //    若队列为空或仅有 1 首歌，自动拉取推荐新歌追加到队列继续播放！）
+            var workingQueue = snapshotQueue
+            var workingIndex = snapshotIndex
+            if (workingQueue.size <= 1) {
+                val existingIds = workingQueue.map { it.id }.toSet()
+                val recommended = fetchNativeRecommendedSongs(snapshotSongId)
+                    .filter { it.id !in existingIds }
+                if (recommended.isNotEmpty()) {
+                    workingQueue = workingQueue + recommended
+                    if (workingQueue.size == recommended.size) {
+                        workingIndex = -1
+                    }
+                    val updatedQueue = workingQueue
+                    uiHandler.post {
+                        if (!userPaused && currentInstanceId == requestToken) {
+                            nativeQueue = updatedQueue
+                        }
+                    }
+                }
+            }
+
+            if (workingQueue.isEmpty()) {
+                uiHandler.post {
+                    // 彻底无网且队列为空：尝试原地重播当前曲目而不静默卡死
+                    if (!userPaused && currentInstanceId == requestToken &&
+                        ::exoPlayer.isInitialized && exoPlayer.currentMediaItem != null
+                    ) {
+                        exoPlayer.seekTo(0L)
+                        exoPlayer.playWhenReady = true
+                        exoPlayer.play()
+                        isTransitioningTrack = false
+                        emitAudioEvent("replayed")
+                    } else {
+                        isTransitioningTrack = false
+                        releaseTransitionWakeLock()
+                    }
+                }
+                return@launch
+            }
+
+            val size = workingQueue.size
+            val safeIdx = if (workingIndex < 0) -1 else workingIndex.coerceIn(0, size - 1)
+            val startIdx = if (safeIdx < 0) 0 else ((safeIdx + delta) % size + size) % size
+            val step = if (delta >= 0) 1 else -1
+            val maxAttempts = minOf(MAX_NATIVE_SKIP_FAILS, size)
+
             for (attempt in 0 until maxAttempts) {
-                val idx = ((startIdx + attempt * step) % queue.size + queue.size) % queue.size
-                val item = queue[idx]
+                val idx = ((startIdx + attempt * step) % size + size) % size
+                val item = workingQueue[idx]
                 val resolvedUrl = resolveItemUrlNatively(item)
                 if (!resolvedUrl.isNullOrBlank()) {
                     uiHandler.post {
-                        // 若等待期间前端已经主动发起了新的 loadAndPrepare，则放弃本次原生接管
-                        if (currentInstanceId != requestToken) {
+                        if (userPaused || currentInstanceId != requestToken) {
                             return@post
                         }
                         playNativeQueueItem(idx, item, resolvedUrl)
@@ -573,8 +783,21 @@ class MusicPlaybackService : Service() {
                     Log.w(TAG, "Native resolve failed for [${item.name}], trying next ($attempt/$maxAttempts)")
                 }
             }
+
+            // 全部候选解析失败（如断网且仅 1 首已缓存）：尝试原地重播当前已加载媒体，避免断播
             uiHandler.post {
-                releaseTransitionWakeLock()
+                if (!userPaused && currentInstanceId == requestToken &&
+                    size == 1 && ::exoPlayer.isInitialized && exoPlayer.currentMediaItem != null
+                ) {
+                    exoPlayer.seekTo(0L)
+                    exoPlayer.playWhenReady = true
+                    exoPlayer.play()
+                    isTransitioningTrack = false
+                    emitAudioEvent("replayed")
+                } else {
+                    isTransitioningTrack = false
+                    releaseTransitionWakeLock()
+                }
             }
         }
     }
@@ -637,7 +860,10 @@ class MusicPlaybackService : Service() {
         nativeInstanceSeq -= 1
         currentInstanceId = nativeInstanceSeq
         nativeQueueIndex = index
+        currentSongId = item.id
         isNativeManagedTrack = true
+        isTransitioningTrack = true
+        userPaused = false
         hasNotifiedLoaded = false
         currentTitle = item.name.ifBlank { "未知歌曲" }
         currentArtist = item.artist
@@ -678,7 +904,8 @@ class MusicPlaybackService : Service() {
                 "cover" to currentCoverUrl,
                 "duration" to (item.dt / 1000.0),
                 "position" to 0.0,
-                "playing" to true
+                "playing" to true,
+                "isFm" to nativeIsFm
             )
         )
         pendingTrackSyncJson = syncPayload
@@ -689,7 +916,7 @@ class MusicPlaybackService : Service() {
         uiHandler.post {
             runCatching {
                 nativePlayMode = payload.get("playMode")?.asInt ?: nativePlayMode
-                nativeQueueIndex = payload.get("currentIndex")?.asInt ?: nativeQueueIndex
+                val incomingIndex = payload.get("currentIndex")?.asInt ?: nativeQueueIndex
                 nativeMusicQuality = payload.get("musicQuality")?.asString?.ifBlank { "higher" } ?: "higher"
                 nativeIsFm = payload.get("isFm")?.asBoolean ?: false
                 payload.get("cookie")?.takeIf { !it.isJsonNull }?.asString?.let {
@@ -719,7 +946,27 @@ class MusicPlaybackService : Service() {
                             )
                         }
                     }
+                    // 若后台原生刚切完歌且尚未回传 WebView，切勿被延迟的旧队列覆盖导致索引倒退
+                    if (pendingTrackSyncJson != null && isNativeManagedTrack && currentSongId.isNotBlank()) {
+                        val idxInIncoming = parsed.indexOfFirst { it.id == currentSongId }
+                        if (idxInIncoming != -1) {
+                            nativeQueue = parsed
+                            nativeQueueIndex = idxInIncoming
+                        }
+                        return@let
+                    }
                     nativeQueue = parsed
+                    if (currentSongId.isNotBlank() && parsed.isNotEmpty()) {
+                        val safeIdx = incomingIndex.coerceIn(0, parsed.size - 1)
+                        if (parsed[safeIdx].id == currentSongId) {
+                            nativeQueueIndex = safeIdx
+                        } else {
+                            val matchedIdx = parsed.indexOfFirst { it.id == currentSongId }
+                            nativeQueueIndex = if (matchedIdx != -1) matchedIdx else safeIdx
+                        }
+                    } else {
+                        nativeQueueIndex = incomingIndex.coerceAtLeast(0)
+                    }
                 }
             }.onFailure {
                 Log.w(TAG, "syncQueue parse error: ${it.message}")
@@ -765,11 +1012,23 @@ class MusicPlaybackService : Service() {
             }
 
             currentInstanceId = payload.get("instanceId")?.asInt ?: (currentInstanceId + 1)
+            currentSongId = payload.get("songId")?.takeIf { !it.isJsonNull }?.asString ?: ""
             currentTitle = payload.get("title")?.asString?.ifBlank { "未知歌曲" } ?: "未知歌曲"
             currentArtist = payload.get("artist")?.asString ?: ""
             currentAlbum = payload.get("album")?.asString ?: ""
             currentCoverUrl = payload.get("cover")?.asString ?: ""
             val autoplay = payload.get("autoplay")?.asBoolean ?: false
+            userPaused = !autoplay
+            isTransitioningTrack = autoplay
+            if (autoplay) {
+                acquireTransitionWakeLock(30_000L)
+            }
+            if (currentSongId.isNotBlank() && nativeQueue.isNotEmpty()) {
+                val matchedIdx = nativeQueue.indexOfFirst { it.id == currentSongId }
+                if (matchedIdx != -1) {
+                    nativeQueueIndex = matchedIdx
+                }
+            }
             val volume = payload.get("volume")?.asFloat ?: 1.0f
             val rate = payload.get("rate")?.asFloat ?: 1.0f
             val initialSeekSec = payload.get("seekTime")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0
@@ -808,6 +1067,7 @@ class MusicPlaybackService : Service() {
 
     fun play() {
         uiHandler.post {
+            userPaused = false
             if (::exoPlayer.isInitialized) {
                 if (exoPlayer.playbackState == Player.STATE_ENDED) {
                     exoPlayer.seekTo(0L)
@@ -822,6 +1082,10 @@ class MusicPlaybackService : Service() {
 
     fun pause() {
         uiHandler.post {
+            userPaused = true
+            isTransitioningTrack = false
+            cancelNativeAutoAdvance()
+            releaseTransitionWakeLock()
             if (::exoPlayer.isInitialized) {
                 exoPlayer.pause()
                 snapshotPlayerState()
@@ -832,6 +1096,8 @@ class MusicPlaybackService : Service() {
 
     fun stopPlayback() {
         uiHandler.post {
+            userPaused = true
+            isTransitioningTrack = false
             cancelNativeAutoAdvance()
             uiHandler.removeCallbacks(progressTicker)
             releaseTransitionWakeLock()
@@ -1090,7 +1356,7 @@ class MusicPlaybackService : Service() {
             .setSubText(currentAlbum.takeIf { it.isNotBlank() })
             .setContentIntent(contentPending)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setOngoing(isPlaying)
+            .setOngoing(isPlaying || isTransitioningTrack)
             .setOnlyAlertOnce(true)
             .addAction(android.R.drawable.ic_media_previous, "上一首", prevPending)
             .addAction(playPauseIcon, playPauseLabel, playPausePending)

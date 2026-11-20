@@ -462,7 +462,11 @@ const handleScroll = (e: any) => {
 const dateFormat = (time: any) => useDateFormat(time, 'YYYY.MM.DD').value;
 
 const handlePlay = (item: any) => {
-  playerStore.addToNextPlay(item);
+  if (searchType.value === SEARCH_TYPE.MUSIC && searchDetail.value?.songs?.length) {
+    playerStore.setPlayList(searchDetail.value.songs.map(formatSong));
+  } else {
+    playerStore.addToNextPlay(item);
+  }
 };
 
 const handlePlayAll = () => {

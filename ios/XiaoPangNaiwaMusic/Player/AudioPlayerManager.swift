@@ -36,6 +36,7 @@ final class AudioPlayerManager: NSObject {
 
     private var currentInstanceId: Int = 0
     private var nativeInstanceSeq: Int = 0
+    private var currentSongId: String = ""
     private var currentTitle: String = "小庞奶娃音乐"
     private var currentArtist: String = ""
     private var currentAlbum: String = ""
@@ -47,7 +48,10 @@ final class AudioPlayerManager: NSObject {
     private var initialSeekTime: Double = 0
     private var hasNotifiedLoaded: Bool = false
     private var isNativeManagedTrack: Bool = false
+    private var isTransitioningTrack: Bool = false
+    private var userPaused: Bool = false
     private var nativeConsecutiveFails: Int = 0
+    private var transitionBgTaskId: UIBackgroundTaskIdentifier = .invalid
 
     // 后台队列状态
     private var nativeQueue: [NativeQueueItem] = []
@@ -75,6 +79,8 @@ final class AudioPlayerManager: NSObject {
     }
 
     deinit {
+        cancelPendingAutoNext()
+        endTransitionBackgroundTask()
         cleanupCurrentPlayer()
         NotificationCenter.default.removeObserver(self)
     }
@@ -184,11 +190,21 @@ final class AudioPlayerManager: NSObject {
                 self.currentInstanceId += 1
             }
 
+            self.currentSongId = "\(payload["songId"] ?? "")"
             self.currentTitle = ((payload["title"] as? String)?.isEmpty == false) ? (payload["title"] as! String) : "未知歌曲"
             self.currentArtist = (payload["artist"] as? String) ?? ""
             self.currentAlbum = (payload["album"] as? String) ?? ""
             self.currentCoverUrl = (payload["cover"] as? String) ?? ""
             self.desiredAutoplay = (payload["autoplay"] as? Bool) ?? false
+            self.userPaused = !self.desiredAutoplay
+            self.isTransitioningTrack = self.desiredAutoplay
+            if self.desiredAutoplay {
+                self.beginTransitionBackgroundTask()
+            }
+            if !self.currentSongId.isEmpty,
+               let matchedIdx = self.nativeQueue.firstIndex(where: { $0.id == self.currentSongId }) {
+                self.nativeQueueIndex = matchedIdx
+            }
             self.desiredVolume = Float((payload["volume"] as? Double) ?? 1.0)
             self.desiredRate = Float((payload["rate"] as? Double) ?? 1.0)
             self.initialSeekTime = (payload["seekTime"] as? Double) ?? 0
@@ -241,6 +257,8 @@ final class AudioPlayerManager: NSObject {
                 switch playerItem.status {
                 case .readyToPlay:
                     self.nativeConsecutiveFails = 0
+                    self.isTransitioningTrack = false
+                    self.endTransitionBackgroundTask()
                     self.updateCachedMetrics()
                     if self.initialSeekTime > 0 {
                         let t = CMTime(seconds: self.initialSeekTime, preferredTimescale: 1000)
@@ -258,9 +276,14 @@ final class AudioPlayerManager: NSObject {
                 case .failed:
                     let msg = playerItem.error?.localizedDescription ?? "AVPlayer load failed"
                     self.emitAudioEvent(type: self.hasNotifiedLoaded ? "playerror" : "loaderror", errorMsg: msg)
-                    if self.isNativeManagedTrack && !self.isAppInForeground && self.nativeQueue.count > 1 && self.nativeConsecutiveFails < 5 {
+                    if !self.userPaused && (!self.isAppInForeground || self.isNativeManagedTrack) && self.nativeConsecutiveFails < 8 {
                         self.nativeConsecutiveFails += 1
+                        self.isTransitioningTrack = true
+                        self.beginTransitionBackgroundTask()
                         self.advanceNativeQueue(delta: 1, fromEnded: false)
+                    } else {
+                        self.isTransitioningTrack = false
+                        self.endTransitionBackgroundTask()
                     }
                 default:
                     break
@@ -309,6 +332,7 @@ final class AudioPlayerManager: NSObject {
         DispatchQueue.main.async { [weak self] in
             guard let self = self, let p = self.player else { return }
             self.configureAudioSession()
+            self.userPaused = false
             self.desiredAutoplay = true
             // 如果已播到结尾，回到起点重播
             if self.cachedDurationSec > 0 && self.cachedPositionSec >= self.cachedDurationSec - 0.5 {
@@ -322,6 +346,10 @@ final class AudioPlayerManager: NSObject {
     func pause() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            self.userPaused = true
+            self.isTransitioningTrack = false
+            self.cancelPendingAutoNext()
+            self.endTransitionBackgroundTask()
             self.desiredAutoplay = false
             self.player?.pause()
             self.cachedIsPlaying = false
@@ -334,7 +362,10 @@ final class AudioPlayerManager: NSObject {
     func stop() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            self.userPaused = true
+            self.isTransitioningTrack = false
             self.cancelPendingAutoNext()
+            self.endTransitionBackgroundTask()
             self.cleanupCurrentPlayer()
             self.cachedIsPlaying = false
             self.cachedPositionSec = 0
@@ -399,7 +430,7 @@ final class AudioPlayerManager: NSObject {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             if let mode = payload["playMode"] as? Int { self.nativePlayMode = mode }
-            if let idx = payload["currentIndex"] as? Int { self.nativeQueueIndex = idx }
+            let incomingIdx = (payload["currentIndex"] as? Int) ?? self.nativeQueueIndex
             if let q = payload["musicQuality"] as? String, !q.isEmpty { self.nativeMusicQuality = q }
             if let fm = payload["isFm"] as? Bool { self.nativeIsFm = fm }
             if let c = payload["cookie"] as? String { self.nativeUserCookie = c }
@@ -407,7 +438,7 @@ final class AudioPlayerManager: NSObject {
                 self.nativeUnblockSources = srcs
             }
             if let items = payload["items"] as? [[String: Any]] {
-                self.nativeQueue = items.map { o in
+                let parsed = items.map { o in
                     NativeQueueItem(
                         id: "\(o["id"] ?? "")",
                         name: (o["name"] as? String) ?? "",
@@ -419,6 +450,26 @@ final class AudioPlayerManager: NSObject {
                         dt: (o["dt"] as? NSNumber)?.int64Value ?? 0
                     )
                 }
+                if self.pendingTrackSyncJson != nil && self.isNativeManagedTrack && !self.currentSongId.isEmpty {
+                    if let idx = parsed.firstIndex(where: { $0.id == self.currentSongId }) {
+                        self.nativeQueue = parsed
+                        self.nativeQueueIndex = idx
+                    }
+                    return
+                }
+                self.nativeQueue = parsed
+                if !self.currentSongId.isEmpty && !parsed.isEmpty {
+                    let safeIdx = max(0, min(incomingIdx, parsed.count - 1))
+                    if parsed[safeIdx].id == self.currentSongId {
+                        self.nativeQueueIndex = safeIdx
+                    } else if let matchedIdx = parsed.firstIndex(where: { $0.id == self.currentSongId }) {
+                        self.nativeQueueIndex = matchedIdx
+                    } else {
+                        self.nativeQueueIndex = safeIdx
+                    }
+                } else {
+                    self.nativeQueueIndex = max(0, incomingIdx)
+                }
             }
         }
     }
@@ -429,7 +480,31 @@ final class AudioPlayerManager: NSObject {
             self.isAppInForeground = inForeground
             if inForeground {
                 self.syncStateToWebView()
+            } else if !self.userPaused && self.isTransitioningTrack && self.pendingAutoNextWorkItem != nil && !self.cachedIsPlaying {
+                self.cancelPendingAutoNext()
+                let tokenId = self.currentInstanceId
+                let fastWork = DispatchWorkItem { [weak self] in
+                    guard let self = self, !self.userPaused, self.currentInstanceId == tokenId, !self.cachedIsPlaying else { return }
+                    self.advanceNativeQueue(delta: 1, fromEnded: true)
+                }
+                self.pendingAutoNextWorkItem = fastWork
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: fastWork)
             }
+        }
+    }
+
+    private func beginTransitionBackgroundTask() {
+        if transitionBgTaskId != .invalid { return }
+        transitionBgTaskId = UIApplication.shared.beginBackgroundTask(withName: "XiaoPangTrackTransition") { [weak self] in
+            self?.endTransitionBackgroundTask()
+        }
+    }
+
+    private func endTransitionBackgroundTask() {
+        if transitionBgTaskId != .invalid {
+            let id = transitionBgTaskId
+            transitionBgTaskId = .invalid
+            UIApplication.shared.endBackgroundTask(id)
         }
     }
 
@@ -459,14 +534,24 @@ final class AudioPlayerManager: NSObject {
     }
 
     private func handleTrackEnded() {
+        if userPaused {
+            isTransitioningTrack = false
+            endTransitionBackgroundTask()
+            return
+        }
+
+        beginTransitionBackgroundTask()
+        isTransitioningTrack = true
         let endedId = currentInstanceId
 
         // 1. 单曲循环：直接在 iOS 原生层瞬时重播
         if nativePlayMode == 1, let p = player {
             p.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
                 DispatchQueue.main.async {
-                    guard let self = self else { return }
+                    guard let self = self, !self.userPaused else { return }
                     self.desiredAutoplay = true
+                    self.isTransitioningTrack = false
+                    self.endTransitionBackgroundTask()
                     p.playImmediately(atRate: max(0.25, min(4.0, self.desiredRate)))
                     self.cachedPositionSec = 0
                     self.cachedIsPlaying = true
@@ -477,60 +562,172 @@ final class AudioPlayerManager: NSObject {
             return
         }
 
-        // 2. 通知前端 end 事件
-        emitAudioEvent(type: "end")
-
-        // 3. 后台原生自动切歌保险丝（后台 0.35s 接管，前台 2.5s 兜底）
-        if !nativeIsFm && !nativeQueue.isEmpty {
+        // 2. 后台/熄屏状态：直接由 iOS 原生层立刻接管连播（不再与休眠的 WKWebView 竞争）
+        if !isAppInForeground {
             cancelPendingAutoNext()
-            let delay: TimeInterval = isAppInForeground ? 2.5 : 0.35
-            let work = DispatchWorkItem { [weak self] in
-                guard let self = self, self.currentInstanceId == endedId else { return }
-                self.advanceNativeQueue(delta: 1, fromEnded: true)
-            }
-            pendingAutoNextWorkItem = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+            advanceNativeQueue(delta: 1, fromEnded: true)
+            return
         }
+
+        // 3. 前台状态：通知前端 end 事件，同时挂起 3.8s 原生保险丝兜底
+        emitAudioEvent(type: "end")
+        cancelPendingAutoNext()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, !self.userPaused, self.currentInstanceId == endedId, !self.cachedIsPlaying else { return }
+            self.advanceNativeQueue(delta: 1, fromEnded: true)
+        }
+        pendingAutoNextWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.8, execute: work)
     }
 
     private func handleExternalTrackCommand(_ cmd: String, delta: Int) {
+        userPaused = false
+        beginTransitionBackgroundTask()
+        isTransitioningTrack = true
+        if !isAppInForeground {
+            cancelPendingAutoNext()
+            advanceNativeQueue(delta: delta, fromEnded: false)
+            return
+        }
         let prevId = currentInstanceId
         emitMediaControl(cmd)
-        if !isAppInForeground && !nativeIsFm && !nativeQueue.isEmpty {
-            cancelPendingAutoNext()
-            let work = DispatchWorkItem { [weak self] in
-                guard let self = self, self.currentInstanceId == prevId else { return }
-                self.advanceNativeQueue(delta: delta, fromEnded: false)
-            }
-            pendingAutoNextWorkItem = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.65, execute: work)
+        cancelPendingAutoNext()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, !self.userPaused, self.currentInstanceId == prevId else { return }
+            self.advanceNativeQueue(delta: delta, fromEnded: false)
+        }
+        pendingAutoNextWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+    }
+
+    private func fetchNativeRecommendedSongs(excludeId: String, cookie: String) -> [NativeQueueItem] {
+        var params: [String: String] = ["limit": "20"]
+        if !cookie.isEmpty { params["cookie"] = cookie }
+        let res = ncmClient.dispatch(path: "/personalized/newsong", params: params)
+        guard let d = res.body.data(using: .utf8),
+              let root = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+              let arr = root["result"] as? [[String: Any]] else { return [] }
+        return arr.compactMap { o in
+            let id = "\(o["id"] ?? "")"
+            guard !id.isEmpty, id != excludeId else { return nil }
+            let name = (o["name"] as? String) ?? ""
+            let songObj = o["song"] as? [String: Any]
+            let albumObj = songObj?["album"] as? [String: Any]
+            let artistsArr = songObj?["artists"] as? [[String: Any]]
+            let artistStr = artistsArr?.compactMap { $0["name"] as? String }.joined(separator: " / ") ?? ""
+            let cover = (o["picUrl"] as? String) ?? (albumObj?["picUrl"] as? String) ?? ""
+            let albumName = (albumObj?["name"] as? String) ?? ""
+            let dt = (songObj?["duration"] as? NSNumber)?.int64Value ?? 0
+            return NativeQueueItem(id: id, name: name, artist: artistStr, album: albumName, cover: cover, url: "", source: "netease", dt: dt)
+        }
+    }
+
+    private func fetchNativeFmSongs(excludeId: String, cookie: String) -> [NativeQueueItem] {
+        var params: [String: String] = [:]
+        if !cookie.isEmpty { params["cookie"] = cookie }
+        let res = ncmClient.dispatch(path: "/personal_fm", params: params)
+        guard let d = res.body.data(using: .utf8),
+              let root = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+              let arr = root["data"] as? [[String: Any]] else { return [] }
+        return arr.compactMap { o in
+            let id = "\(o["id"] ?? "")"
+            guard !id.isEmpty, id != excludeId else { return nil }
+            let name = (o["name"] as? String) ?? ""
+            let albumObj = (o["album"] as? [String: Any]) ?? (o["al"] as? [String: Any])
+            let artistsArr = (o["artists"] as? [[String: Any]]) ?? (o["ar"] as? [[String: Any]])
+            let artistStr = artistsArr?.compactMap { $0["name"] as? String }.joined(separator: " / ") ?? ""
+            let cover = (albumObj?["picUrl"] as? String) ?? ""
+            let albumName = (albumObj?["name"] as? String) ?? ""
+            let dt = ((o["duration"] ?? o["dt"]) as? NSNumber)?.int64Value ?? 0
+            return NativeQueueItem(id: id, name: name, artist: artistStr, album: albumName, cover: cover, url: "", source: "netease", dt: dt)
         }
     }
 
     private func advanceNativeQueue(delta: Int, fromEnded: Bool) {
         let queueSnapshot = nativeQueue
-        let modeSnapshot = nativePlayMode
         let indexSnapshot = nativeQueueIndex
         let qualitySnapshot = nativeMusicQuality
         let sourcesSnapshot = nativeUnblockSources
         let cookieSnapshot = nativeUserCookie
+        let isFmSnapshot = nativeIsFm
+        let songIdSnapshot = currentSongId
         let tokenId = currentInstanceId
-
-        guard !queueSnapshot.isEmpty else { return }
-        if fromEnded && modeSnapshot == 0 && indexSnapshot >= queueSnapshot.count - 1 {
-            return
-        }
-
-        let count = queueSnapshot.count
-        let startIdx = ((indexSnapshot + delta) % count + count) % count
-        let step = delta >= 0 ? 1 : -1
-        let maxAttempts = min(5, count)
 
         resolveQueue.async { [weak self] in
             guard let self = self else { return }
+
+            // 1. 私人漫游 FM 后台原生续播
+            if isFmSnapshot {
+                var fmItems = self.fetchNativeFmSongs(excludeId: songIdSnapshot, cookie: cookieSnapshot)
+                if fmItems.isEmpty {
+                    fmItems = self.fetchNativeRecommendedSongs(excludeId: songIdSnapshot, cookie: cookieSnapshot)
+                }
+                for item in fmItems.prefix(8) {
+                    if let resolved = self.resolveItemUrlNatively(
+                        item: item,
+                        quality: qualitySnapshot,
+                        sources: sourcesSnapshot,
+                        cookie: cookieSnapshot
+                    ) {
+                        DispatchQueue.main.async {
+                            guard !self.userPaused, self.currentInstanceId == tokenId else { return }
+                            self.nativeQueue = [item]
+                            self.playNativeQueueItem(index: 0, item: item, url: resolved)
+                        }
+                        return
+                    }
+                }
+            }
+
+            // 2. 普通队列：不点暂停永远不中断（末尾自动循环，空/单曲队列自动拉取推荐新歌续播）
+            var workingQueue = queueSnapshot
+            var workingIndex = indexSnapshot
+            if workingQueue.count <= 1 {
+                let existingIds = Set(workingQueue.map { $0.id })
+                let rec = self.fetchNativeRecommendedSongs(excludeId: songIdSnapshot, cookie: cookieSnapshot)
+                    .filter { !existingIds.contains($0.id) }
+                if !rec.isEmpty {
+                    workingQueue.append(contentsOf: rec)
+                    if workingQueue.count == rec.count {
+                        workingIndex = -1
+                    }
+                    let updated = workingQueue
+                    DispatchQueue.main.async {
+                        if !self.userPaused && self.currentInstanceId == tokenId {
+                            self.nativeQueue = updated
+                        }
+                    }
+                }
+            }
+
+            guard !workingQueue.isEmpty else {
+                DispatchQueue.main.async {
+                    if !self.userPaused && self.currentInstanceId == tokenId, let p = self.player {
+                        p.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+                        p.playImmediately(atRate: max(0.25, min(4.0, self.desiredRate)))
+                        self.cachedPositionSec = 0
+                        self.cachedIsPlaying = true
+                        self.isTransitioningTrack = false
+                        self.endTransitionBackgroundTask()
+                        self.emitAudioEvent(type: "replayed")
+                        self.updateNowPlayingInfo()
+                    } else {
+                        self.isTransitioningTrack = false
+                        self.endTransitionBackgroundTask()
+                    }
+                }
+                return
+            }
+
+            let count = workingQueue.count
+            let safeIdx = workingIndex < 0 ? -1 : max(0, min(workingIndex, count - 1))
+            let startIdx = safeIdx < 0 ? 0 : ((safeIdx + delta) % count + count) % count
+            let step = delta >= 0 ? 1 : -1
+            let maxAttempts = min(8, count)
+
             for attempt in 0..<maxAttempts {
                 let idx = ((startIdx + attempt * step) % count + count) % count
-                let item = queueSnapshot[idx]
+                let item = workingQueue[idx]
                 if let resolved = self.resolveItemUrlNatively(
                     item: item,
                     quality: qualitySnapshot,
@@ -538,10 +735,26 @@ final class AudioPlayerManager: NSObject {
                     cookie: cookieSnapshot
                 ) {
                     DispatchQueue.main.async {
-                        guard self.currentInstanceId == tokenId else { return }
+                        guard !self.userPaused, self.currentInstanceId == tokenId else { return }
                         self.playNativeQueueItem(index: idx, item: item, url: resolved)
                     }
                     return
+                }
+            }
+
+            DispatchQueue.main.async {
+                if !self.userPaused && self.currentInstanceId == tokenId && count == 1, let p = self.player {
+                    p.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+                    p.playImmediately(atRate: max(0.25, min(4.0, self.desiredRate)))
+                    self.cachedPositionSec = 0
+                    self.cachedIsPlaying = true
+                    self.isTransitioningTrack = false
+                    self.endTransitionBackgroundTask()
+                    self.emitAudioEvent(type: "replayed")
+                    self.updateNowPlayingInfo()
+                } else {
+                    self.isTransitioningTrack = false
+                    self.endTransitionBackgroundTask()
                 }
             }
         }
@@ -587,7 +800,10 @@ final class AudioPlayerManager: NSObject {
         nativeInstanceSeq -= 1
         currentInstanceId = nativeInstanceSeq
         nativeQueueIndex = index
+        currentSongId = item.id
         isNativeManagedTrack = true
+        isTransitioningTrack = true
+        userPaused = false
         currentTitle = item.name.isEmpty ? "未知歌曲" : item.name
         currentArtist = item.artist
         currentAlbum = item.album
@@ -610,7 +826,8 @@ final class AudioPlayerManager: NSObject {
             "cover": currentCoverUrl,
             "duration": cachedDurationSec,
             "position": 0.0,
-            "playing": true
+            "playing": true,
+            "isFm": nativeIsFm
         ]
         if let d = try? JSONSerialization.data(withJSONObject: payload),
            let s = String(data: d, encoding: .utf8) {
