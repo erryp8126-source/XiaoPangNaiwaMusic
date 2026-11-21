@@ -6,6 +6,7 @@ export default {
   sections: {
     basic: 'Basic Settings',
     playback: 'Playback Settings',
+    sync: 'Cloud Sync',
     application: 'Application Settings',
     network: 'Network Settings',
     system: 'System Management',

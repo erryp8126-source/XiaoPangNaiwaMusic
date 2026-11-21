@@ -72,12 +72,21 @@ export const usePlayHistoryStore = defineStore(
     // ==================== 音乐记录 ====================
 
     const addMusic = (music: SongResult): void => {
+      const now = Date.now();
       const index = musicHistory.value.findIndex((item) => item.id === music.id);
       if (index !== -1) {
-        musicHistory.value[index].count = (musicHistory.value[index].count || 0) + 1;
-        musicHistory.value.unshift(musicHistory.value.splice(index, 1)[0]);
+        const existing = musicHistory.value.splice(index, 1)[0] as SongResult & {
+          lastPlayTime?: number;
+        };
+        existing.count = (existing.count || 0) + 1;
+        existing.lastPlayTime = now;
+        musicHistory.value.unshift(existing);
       } else {
-        musicHistory.value.unshift({ ...music, count: 1 });
+        musicHistory.value.unshift({
+          ...music,
+          count: 1,
+          lastPlayTime: now
+        } as SongResult);
       }
       if (musicHistory.value.length > MAX_HISTORY_SIZE) {
         musicHistory.value.pop();
@@ -215,6 +224,122 @@ export const usePlayHistoryStore = defineStore(
       clearPodcastRadioHistory();
     };
 
+    // ==================== 云同步精简导出与双向合并 ====================
+
+    const stripHeavySongFields = (item: any) => {
+      if (!item || typeof item !== 'object') return item;
+      const { lyric, playMusicUrl, ...rest } = item;
+      const isLocal = typeof playMusicUrl === 'string' && playMusicUrl.startsWith('local://');
+      return isLocal ? { ...rest, playMusicUrl } : rest;
+    };
+
+    const mergeListById = <T extends Record<string, any>>(
+      localList: T[],
+      remoteList: T[],
+      stripHeavy = false
+    ): T[] => {
+      const map = new Map<string, { item: T; order: number }>();
+      const ingest = (list: T[], baseOrder: number) => {
+        if (!Array.isArray(list)) return;
+        list.forEach((raw, idx) => {
+          if (!raw || raw.id === undefined || raw.id === null) return;
+          const item = stripHeavy ? stripHeavySongFields(raw) : { ...raw };
+          const key = String(item.id);
+          const prev = map.get(key);
+          if (!prev) {
+            map.set(key, { item, order: baseOrder + idx });
+          } else {
+            const mergedCount = Math.max(Number(prev.item.count) || 0, Number(item.count) || 0);
+            const prevTime = Number(prev.item.lastPlayTime) || 0;
+            const nextTime = Number(item.lastPlayTime) || 0;
+            const mergedTime = Math.max(prevTime, nextTime);
+            // 保留字段更完整的条目元数据，再用更新的时间戳与更大的播放次数覆盖
+            const mergedItem = {
+              ...item,
+              ...prev.item,
+              ...(prev.item.picUrl ? {} : item.picUrl ? { picUrl: item.picUrl } : {}),
+              ...(prev.item.al ? {} : item.al ? { al: item.al } : {}),
+              ...(prev.item.ar ? {} : item.ar ? { ar: item.ar } : {}),
+              ...(mergedCount > 0 ? { count: mergedCount } : {}),
+              ...(mergedTime > 0 ? { lastPlayTime: mergedTime } : {})
+            } as T;
+            map.set(key, { item: mergedItem, order: Math.min(prev.order, baseOrder + idx) });
+          }
+        });
+      };
+
+      ingest(localList, 0);
+      ingest(remoteList, 10000);
+
+      return Array.from(map.values())
+        .sort((a, b) => {
+          const ta = Number(a.item.lastPlayTime) || 0;
+          const tb = Number(b.item.lastPlayTime) || 0;
+          if (ta !== tb) return tb - ta;
+          return a.order - b.order;
+        })
+        .slice(0, MAX_HISTORY_SIZE)
+        .map((entry) => entry.item);
+    };
+
+    const getCompactSnapshot = () => ({
+      musicHistory: musicHistory.value.slice(0, MAX_HISTORY_SIZE).map(stripHeavySongFields),
+      playlistHistory: playlistHistory.value.slice(0, MAX_HISTORY_SIZE),
+      albumHistory: albumHistory.value.slice(0, MAX_HISTORY_SIZE),
+      podcastHistory: podcastHistory.value.slice(0, MAX_HISTORY_SIZE),
+      podcastRadioHistory: podcastRadioHistory.value.slice(0, MAX_HISTORY_SIZE)
+    });
+
+    const mergeRemoteHistory = (
+      remote: {
+        musicHistory?: any[];
+        playlistHistory?: any[];
+        albumHistory?: any[];
+        podcastHistory?: any[];
+        podcastRadioHistory?: any[];
+      },
+      mode: 'merge' | 'replace' = 'merge'
+    ): void => {
+      if (!remote || typeof remote !== 'object') return;
+      if (mode === 'replace') {
+        if (Array.isArray(remote.musicHistory)) {
+          musicHistory.value = remote.musicHistory.slice(0, MAX_HISTORY_SIZE);
+        }
+        if (Array.isArray(remote.playlistHistory)) {
+          playlistHistory.value = remote.playlistHistory.slice(0, MAX_HISTORY_SIZE);
+        }
+        if (Array.isArray(remote.albumHistory)) {
+          albumHistory.value = remote.albumHistory.slice(0, MAX_HISTORY_SIZE);
+        }
+        if (Array.isArray(remote.podcastHistory)) {
+          podcastHistory.value = remote.podcastHistory.slice(0, MAX_HISTORY_SIZE);
+        }
+        if (Array.isArray(remote.podcastRadioHistory)) {
+          podcastRadioHistory.value = remote.podcastRadioHistory.slice(0, MAX_HISTORY_SIZE);
+        }
+        return;
+      }
+
+      if (Array.isArray(remote.musicHistory)) {
+        musicHistory.value = mergeListById(musicHistory.value, remote.musicHistory, true);
+      }
+      if (Array.isArray(remote.playlistHistory)) {
+        playlistHistory.value = mergeListById(playlistHistory.value, remote.playlistHistory);
+      }
+      if (Array.isArray(remote.albumHistory)) {
+        albumHistory.value = mergeListById(albumHistory.value, remote.albumHistory);
+      }
+      if (Array.isArray(remote.podcastHistory)) {
+        podcastHistory.value = mergeListById(podcastHistory.value, remote.podcastHistory);
+      }
+      if (Array.isArray(remote.podcastRadioHistory)) {
+        podcastRadioHistory.value = mergeListById(
+          podcastRadioHistory.value,
+          remote.podcastRadioHistory
+        );
+      }
+    };
+
     // ==================== 数据迁移 ====================
 
     /**
@@ -317,7 +442,9 @@ export const usePlayHistoryStore = defineStore(
 
       // 通用
       clearAll,
-      migrateFromLocalStorage
+      migrateFromLocalStorage,
+      getCompactSnapshot,
+      mergeRemoteHistory
     };
   },
   {

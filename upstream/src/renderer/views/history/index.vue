@@ -37,34 +37,96 @@
           </div>
         </div>
 
-        <!-- Source Tabs (Local/Cloud) -->
-        <div
-          v-if="currentCategory !== 'podcasts'"
-          class="flex items-center bg-sky-50/90 dark:bg-slate-800/80 rounded-full p-1 h-9 flex-shrink-0"
-        >
-          <button
-            class="px-3 h-7 rounded-full text-xs font-semibold transition-all duration-200"
-            :class="
-              currentTab === 'local'
-                ? 'bg-white dark:bg-slate-700 text-primary shadow-sm'
-                : 'text-slate-500 dark:text-slate-400'
-            "
-            @click="handleTabChange('local')"
+        <!-- Source Tabs (Local/Cloud) + Personal Cloud Sync Quick Action -->
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <div
+            v-if="currentCategory !== 'podcasts'"
+            class="flex items-center bg-sky-50/90 dark:bg-slate-800/80 rounded-full p-1 h-9 flex-shrink-0"
           >
-            {{ t('history.tabs.local') }}
+            <button
+              class="px-3 h-7 rounded-full text-xs font-semibold transition-all duration-200"
+              :class="
+                currentTab === 'local'
+                  ? 'bg-white dark:bg-slate-700 text-primary shadow-sm'
+                  : 'text-slate-500 dark:text-slate-400'
+              "
+              @click="handleTabChange('local')"
+            >
+              {{ t('history.tabs.local') }}
+            </button>
+            <button
+              class="px-3 h-7 rounded-full text-xs font-semibold transition-all duration-200"
+              :class="
+                currentTab === 'cloud'
+                  ? 'bg-white dark:bg-slate-700 text-primary shadow-sm'
+                  : 'text-slate-500 dark:text-slate-400'
+              "
+              @click="handleTabChange('cloud')"
+            >
+              {{ t('history.tabs.cloud') }}
+            </button>
+          </div>
+
+          <button
+            type="button"
+            class="h-9 px-3 rounded-full text-xs font-bold transition-all active:scale-95 flex items-center gap-1.5 border"
+            :class="
+              cloudSyncStore.isConfigured
+                ? 'bg-sky-50 border-sky-200/90 text-sky-700 dark:bg-sky-500/15 dark:border-sky-400/30 dark:text-sky-300'
+                : 'bg-amber-50 border-amber-200/90 text-amber-700 dark:bg-amber-500/15 dark:border-amber-400/30 dark:text-amber-300'
+            "
+            :disabled="cloudSyncStore.syncing"
+            @click="handleQuickCloudSync"
+          >
+            <i
+              class="text-sm"
+              :class="
+                cloudSyncStore.syncing
+                  ? 'ri-loader-4-line animate-spin'
+                  : cloudSyncStore.isConfigured
+                    ? 'ri-cloud-line'
+                    : 'ri-upload-cloud-2-line'
+              "
+            ></i>
+            <span>{{
+              cloudSyncStore.syncing
+                ? '同步中'
+                : cloudSyncStore.isConfigured
+                  ? '同步'
+                  : '口令云同步'
+            }}</span>
           </button>
+
           <button
-            class="px-3 h-7 rounded-full text-xs font-semibold transition-all duration-200"
-            :class="
-              currentTab === 'cloud'
-                ? 'bg-white dark:bg-slate-700 text-primary shadow-sm'
-                : 'text-slate-500 dark:text-slate-400'
-            "
-            @click="handleTabChange('cloud')"
+            v-if="cloudSyncStore.isConfigured"
+            type="button"
+            class="h-9 w-9 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300 flex items-center justify-center active:scale-95 transition-transform"
+            title="云同步设置"
+            @click="handleOpenCloudSyncSettings"
           >
-            {{ t('history.tabs.cloud') }}
+            <i class="ri-settings-3-line text-sm"></i>
           </button>
         </div>
+      </div>
+
+      <!-- 云端模式状态条（扫码/UID 提示 & 刷新） -->
+      <div
+        v-if="currentTab === 'cloud' && currentCategory !== 'podcasts' && userStore.user?.userId"
+        class="flex items-center justify-between gap-2 px-3 py-1.5 rounded-xl bg-sky-50/80 dark:bg-slate-800/70 text-[11.5px] text-slate-600 dark:text-slate-300"
+      >
+        <div class="flex items-center gap-1.5 truncate">
+          <i class="ri-cloud-line text-sky-500 flex-shrink-0"></i>
+          <span class="truncate">{{ cloudStatusText }}</span>
+        </div>
+        <button
+          type="button"
+          class="text-sky-600 dark:text-sky-400 font-bold flex items-center gap-1 flex-shrink-0 active:opacity-70"
+          :disabled="loading"
+          @click="handleRefreshCloud"
+        >
+          <i class="ri-refresh-line" :class="{ 'animate-spin': loading }"></i>
+          <span>刷新</span>
+        </button>
       </div>
     </div>
 
@@ -218,13 +280,41 @@
             </div>
           </template>
 
-          <div v-if="displayList.length === 0 && !loading" class="text-center py-12 text-gray-400">
+          <div
+            v-if="displayList.length === 0 && !loading"
+            class="text-center py-10 px-4 text-gray-400"
+          >
             <div
-              class="w-20 h-20 mx-auto rounded-full bg-gray-100 dark:bg-neutral-800 flex items-center justify-center mb-4"
+              class="w-18 h-18 mx-auto rounded-full bg-gray-100 dark:bg-neutral-800 flex items-center justify-center mb-3.5"
             >
-              <i class="ri-history-line text-3xl text-gray-300 dark:text-gray-600"></i>
+              <i
+                class="text-3xl text-gray-300 dark:text-gray-600"
+                :class="currentTab === 'cloud' ? 'ri-cloud-off-line' : 'ri-history-line'"
+              ></i>
             </div>
-            <p>{{ t('history.noData') }}</p>
+            <p class="text-sm font-medium text-slate-600 dark:text-slate-300">
+              {{ currentTab === 'cloud' && cloudEmptyHint ? cloudEmptyHint : t('history.noData') }}
+            </p>
+            <div
+              v-if="currentTab === 'cloud'"
+              class="mt-4 flex items-center justify-center gap-2.5 flex-wrap"
+            >
+              <button
+                v-if="!userStore.hasNeteaseAuth"
+                type="button"
+                class="px-4 py-2 rounded-full text-xs font-bold bg-amber-500 text-white shadow-sm active:scale-95 transition-transform"
+                @click="router.push('/login')"
+              >
+                <i class="ri-qr-code-line mr-1"></i>扫码 / UID 登录网易云
+              </button>
+              <button
+                type="button"
+                class="px-4 py-2 rounded-full text-xs font-bold bg-sky-500 text-white shadow-sm active:scale-95 transition-transform"
+                @click="handleOpenCloudSyncSettings"
+              >
+                <i class="ri-upload-cloud-2-line mr-1"></i>一键口令云同步（免登录）
+              </button>
+            </div>
           </div>
 
           <div v-if="loading" class="space-y-2 pt-2">
@@ -255,16 +345,23 @@
 
 <script setup lang="ts">
 import { useMessage } from 'naive-ui';
-import { onMounted, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 
 import { getMusicDetail } from '@/api/music';
-import { getRecentAlbums, getRecentPlaylists, getRecentSongs } from '@/api/user';
+import {
+  getRecentAlbums,
+  getRecentPlaylists,
+  getRecentSongs,
+  getUserPlaylist,
+  getUserRecord
+} from '@/api/user';
 import AlbumItem from '@/components/common/AlbumItem.vue';
 import { navigateToMusicList } from '@/components/common/MusicListNavigator';
 import PlaylistItem from '@/components/common/PlaylistItem.vue';
 import SongItem from '@/components/common/SongItem.vue';
+import { useCloudSyncStore } from '@/store/modules/cloudSync';
 import { usePlayerStore } from '@/store/modules/player';
 import { usePlayHistoryStore } from '@/store/modules/playHistory';
 import { useUserStore } from '@/store/modules/user';
@@ -288,6 +385,7 @@ const message = useMessage();
 const router = useRouter();
 const playHistoryStore = usePlayHistoryStore();
 const userStore = useUserStore();
+const cloudSyncStore = useCloudSyncStore();
 const scrollbarRef = ref();
 const loading = ref(false);
 const noMore = ref(false);
@@ -300,80 +398,188 @@ const cloudRecords = ref<HistoryRecord[]>([]);
 const cloudPlaylists = ref<any[]>([]);
 const cloudAlbums = ref<any[]>([]);
 const currentPodcastSubTab = ref<'episodes' | 'radios'>('episodes');
+const cloudModeUsed = ref<'recent' | 'uid-record' | 'none'>('none');
+const cloudEmptyHint = ref('');
+
+const cloudStatusText = computed(() => {
+  if (userStore.hasNeteaseAuth) {
+    if (cloudModeUsed.value === 'uid-record') {
+      return '已从网易云听歌排行拉取云端记录（扫码/账号登录，无需手动抓 Cookie）';
+    }
+    return '已同步网易云云端最近播放（扫码/账号均支持，听歌会自动打卡同步）';
+  }
+  if (userStore.user?.userId) {
+    return 'UID 免 Cookie 模式：已拉取网易云公开听歌排行与歌单';
+  }
+  return '';
+});
+
+const handleOpenCloudSyncSettings = () => {
+  router.push({ path: '/set', query: { section: 'sync' } });
+};
+
+const handleQuickCloudSync = async () => {
+  if (!cloudSyncStore.isConfigured) {
+    handleOpenCloudSyncSettings();
+    return;
+  }
+  const res = await cloudSyncStore.syncNow(false);
+  if (res.ok) {
+    message.success(res.message);
+    if (currentTab.value === 'local') {
+      currentPage.value = 1;
+      noMore.value = false;
+      await loadHistoryData();
+    }
+  } else {
+    message.error(res.message);
+  }
+};
+
+const handleRefreshCloud = async () => {
+  if (currentCategory.value === 'songs') cloudRecords.value = [];
+  else if (currentCategory.value === 'playlists') cloudPlaylists.value = [];
+  else if (currentCategory.value === 'albums') cloudAlbums.value = [];
+  await handleTabChange('cloud');
+};
 
 // 无限滚动相关配置
 const pageSize = 100;
 const currentPage = ref(1);
 
-// 获取云端播放记录
+// 通过公开 /user/record 接口免 Cookie 拉取网易云听歌排行（先最近一周，再全部兜底）
+const fetchUidPublicRecords = async (uid: number): Promise<HistoryRecord[]> => {
+  for (const recordType of [1, 0]) {
+    try {
+      const res = await getUserRecord(uid, recordType);
+      const list = recordType === 1 ? res.data?.weekData : res.data?.allData;
+      if (Array.isArray(list) && list.length > 0) {
+        cloudModeUsed.value = 'uid-record';
+        return list
+          .filter((item: any) => item?.song?.id)
+          .map((item: any) => ({
+            id: item.song.id,
+            score: item.score,
+            source: 'netease' as const,
+            count: item.playCount || 1,
+            data: item.song
+          }));
+      }
+    } catch {
+      // 尝试下一个 type
+    }
+  }
+  return [];
+};
+
+// 获取云端播放记录（支持扫码/手机号/Cookie 全量接口，并支持仅 UID 免 Cookie 降级拉取）
 const getCloudRecords = async () => {
-  if (!userStore.user?.userId || userStore.loginType !== 'cookie') {
-    message.warning(t('history.needLogin'));
+  cloudEmptyHint.value = '';
+  const uid = userStore.user?.userId;
+  if (!uid) {
+    cloudModeUsed.value = 'none';
+    cloudEmptyHint.value = '未登录网易云：可扫码/填 UID 免 Cookie 查看网易云记录，或直接启用个人云同步';
     return [];
   }
 
-  try {
-    const res = await getRecentSongs(1000);
-    if (res.data?.data?.list) {
-      return res.data.data.list.map((item: any) => ({
-        id: item.data?.id,
-        playTime: item.playTime,
-        source: 'netease',
-        count: 1,
-        data: item.data
-      }));
+  // 1. 扫码 / 手机号 / Cookie 任意有效登录：直接拉网易云最近播放，不再强卡 loginType === 'cookie'
+  if (userStore.hasNeteaseAuth) {
+    try {
+      const res = await getRecentSongs(1000);
+      if (Array.isArray(res.data?.data?.list) && res.data.data.list.length > 0) {
+        cloudModeUsed.value = 'recent';
+        return res.data.data.list.map((item: any) => ({
+          id: item.data?.id,
+          playTime: item.playTime,
+          source: 'netease' as const,
+          count: 1,
+          data: item.data
+        }));
+      }
+    } catch (error: any) {
+      console.warn('getRecentSongs 失败，自动回退 /user/record:', error);
     }
-    return [];
-  } catch (error: any) {
-    console.error(t('history.getCloudRecordFailed'), error);
-    if (error?.response?.status !== 301 && error?.response?.data?.code !== -2) {
-      message.error(t('history.getCloudRecordFailed'));
-    }
-    return [];
   }
+
+  // 2. UID 免 Cookie 模式（或 recent 接口返回空时的自动兜底）
+  const fallbackList = await fetchUidPublicRecords(uid);
+  if (fallbackList.length > 0) {
+    return fallbackList;
+  }
+
+  cloudEmptyHint.value = userStore.hasNeteaseAuth
+    ? '暂未获取到网易云云端最近播放记录，可以先听几首歌或开启个人云同步'
+    : '未获取到该 UID 的公开听歌排行（可能网易云隐私已设为私密），建议改用「扫码登录」或开启免登录个人云同步';
+  return [];
 };
 
-// 获取云端歌单播放记录
+// 获取云端歌单播放记录（支持扫码/账号登录 + UID 免 Cookie 歌单兜底）
 const getCloudPlaylists = async () => {
-  if (!userStore.user?.userId || userStore.loginType !== 'cookie') {
-    message.warning(t('history.needLogin'));
+  cloudEmptyHint.value = '';
+  const uid = userStore.user?.userId;
+  if (!uid) {
+    cloudEmptyHint.value = '未登录网易云：可扫码/填 UID 免 Cookie 查看歌单，或启用个人云同步';
     return [];
   }
 
+  if (userStore.hasNeteaseAuth) {
+    try {
+      const res = await getRecentPlaylists(100);
+      if (Array.isArray(res.data?.data?.list) && res.data.data.list.length > 0) {
+        return res.data.data.list.map((item: any) => ({
+          id: item.data?.id,
+          name: item.data?.name,
+          coverImgUrl: item.data?.coverImgUrl,
+          picUrl: item.data?.picUrl,
+          trackCount: item.data?.trackCount,
+          playCount: item.data?.playCount,
+          creator: item.data?.creator,
+          playTime: item.playTime
+        }));
+      }
+    } catch (error: any) {
+      console.warn('getRecentPlaylists 失败，尝试 /user/playlist 兜底:', error);
+    }
+  }
+
+  // UID 免 Cookie 兜底：拉取用户公开歌单
   try {
-    const res = await getRecentPlaylists(100);
-    if (res.data?.data?.list) {
-      return res.data.data.list.map((item: any) => ({
-        id: item.data?.id,
-        name: item.data?.name,
-        coverImgUrl: item.data?.coverImgUrl,
-        picUrl: item.data?.picUrl,
-        trackCount: item.data?.trackCount,
-        playCount: item.data?.playCount,
-        creator: item.data?.creator,
-        playTime: item.playTime
+    const res = await getUserPlaylist(uid, 100, 0);
+    if (Array.isArray(res.data?.playlist) && res.data.playlist.length > 0) {
+      return res.data.playlist.map((pl: any) => ({
+        id: pl.id,
+        name: pl.name,
+        coverImgUrl: pl.coverImgUrl,
+        picUrl: pl.coverImgUrl,
+        trackCount: pl.trackCount,
+        playCount: pl.playCount,
+        creator: pl.creator
       }));
     }
-    return [];
   } catch (error: any) {
     console.error(t('history.getCloudRecordFailed'), error);
-    if (error?.response?.status !== 301 && error?.response?.data?.code !== -2) {
-      message.error(t('history.getCloudRecordFailed'));
-    }
-    return [];
   }
+  cloudEmptyHint.value = '暂无云端歌单记录，可尝试刷新或启用个人云同步';
+  return [];
 };
 
-// 获取云端专辑播放记录
+// 获取云端专辑播放记录（支持扫码/手机号/Cookie，不再强制手动抓 Cookie）
 const getCloudAlbums = async () => {
-  if (!userStore.user?.userId || userStore.loginType !== 'cookie') {
-    message.warning(t('history.needLogin'));
+  cloudEmptyHint.value = '';
+  const uid = userStore.user?.userId;
+  if (!uid) {
+    cloudEmptyHint.value = '未登录网易云：可扫码登录查看云端专辑记录，或直接开启个人云同步';
+    return [];
+  }
+  if (!userStore.hasNeteaseAuth) {
+    cloudEmptyHint.value =
+      '网易云最近播放专辑需扫码登录查看；也可不登录网易云，直接启用下方个人云同步来跨设备同步本地专辑历史';
     return [];
   }
 
   try {
     const res = await getRecentAlbums(100);
-    if (res.data?.data?.list) {
+    if (Array.isArray(res.data?.data?.list)) {
       return res.data.data.list.map((item: any) => ({
         id: item.data?.id,
         name: item.data?.name,

@@ -99,8 +99,11 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
 
     private func loadLocalApp() {
         let port = services.httpServer.port
-        if let url = URL(string: "http://127.0.0.1:\(port)/__app/index.html") {
-            webView.load(URLRequest(url: url))
+        let ver = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "1"
+        if let url = URL(string: "http://127.0.0.1:\(port)/__app/index.html?v=\(ver)") {
+            var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+            req.cachePolicy = .reloadIgnoringLocalCacheData
+            webView.load(req)
         }
     }
 

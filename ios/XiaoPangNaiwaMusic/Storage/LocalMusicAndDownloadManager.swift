@@ -180,6 +180,18 @@ final class LocalMusicAndDownloadManager {
         }
     }
 
+    func saveTextFile(filename: String, content: String) -> [String: Any] {
+        let safe = sanitizeFilename(filename)
+        let name = safe.isEmpty ? "xiaopang-music-backup.json" : safe
+        let dest = getDownloadDir().appendingPathComponent(name)
+        do {
+            try content.write(to: dest, atomically: true, encoding: .utf8)
+            return ["success": true, "path": dest.path]
+        } catch {
+            return ["success": false, "error": error.localizedDescription]
+        }
+    }
+
     // MARK: - 本地音乐扫描
 
     func scanWithStats() -> [String: Any] {

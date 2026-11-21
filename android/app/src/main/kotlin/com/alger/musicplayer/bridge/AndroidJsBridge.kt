@@ -15,6 +15,7 @@ import com.alger.musicplayer.download.NativeDownloadManager
 import com.alger.musicplayer.local.LocalMusicScanner
 import com.alger.musicplayer.lyric.FloatingLyricManager
 import com.alger.musicplayer.player.AudioCacheManager
+import com.alger.musicplayer.player.ListeningStatsTracker
 import com.alger.musicplayer.player.MusicPlaybackService
 import com.google.gson.Gson
 import com.google.gson.JsonObject
@@ -113,6 +114,12 @@ class AndroidJsBridge(
                         val res = downloadManager.saveLyricFile(fn, content)
                         callbackDispatcher(callbackId, true, gson.toJson(res))
                     }
+                    "save-text-file" -> {
+                        val fn = payload.get("filename")?.asString ?: "xiaopang-music-backup.json"
+                        val content = payload.get("content")?.asString ?: ""
+                        val res = downloadManager.saveTextFile(fn, content)
+                        callbackDispatcher(callbackId, true, gson.toJson(res))
+                    }
                     "get-downloads-path" -> {
                         callbackDispatcher(
                             callbackId,
@@ -138,6 +145,18 @@ class AndroidJsBridge(
                                 }
                             }
                         }
+                    }
+                    "get-listening-stats" -> {
+                        callbackDispatcher(callbackId, true, ListeningStatsTracker.getStatsJson(activity))
+                    }
+                    "reset-listening-stats" -> {
+                        callbackDispatcher(callbackId, true, ListeningStatsTracker.resetStats(activity).toString())
+                    }
+                    "merge-listening-stats" -> {
+                        val incoming = payload.get("stats")?.let {
+                            if (it.isJsonPrimitive) it.asString else gson.toJson(it)
+                        } ?: "{}"
+                        callbackDispatcher(callbackId, true, ListeningStatsTracker.mergeStatsJson(activity, incoming))
                     }
                     else -> {
                         callbackDispatcher(callbackId, true, "null")
@@ -409,6 +428,21 @@ class AndroidJsBridge(
     @JavascriptInterface
     fun clearAudioCache(): Boolean {
         return AudioCacheManager.clearCache(activity)
+    }
+
+    @JavascriptInterface
+    fun getListeningStats(): String {
+        return ListeningStatsTracker.getStatsJson(activity)
+    }
+
+    @JavascriptInterface
+    fun resetListeningStats(): Boolean {
+        return ListeningStatsTracker.resetStats(activity)
+    }
+
+    @JavascriptInterface
+    fun mergeListeningStats(statsJson: String): String {
+        return ListeningStatsTracker.mergeStatsJson(activity, statsJson)
     }
 
     @JavascriptInterface

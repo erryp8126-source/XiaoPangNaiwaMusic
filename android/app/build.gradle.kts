@@ -32,8 +32,8 @@ android {
     applicationId = "com.alger.musicplayer"
     minSdk = 26
     targetSdk = 35
-    versionCode = 51102
-    versionName = "5.1.1"
+    versionCode = 51201
+    versionName = "5.1.2"
   }
 
   signingConfigs {

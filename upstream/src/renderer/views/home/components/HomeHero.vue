@@ -1,5 +1,5 @@
 <template>
-  <div class="hero-section mb-7 md:mb-10">
+  <div class="hero-section mb-7 md:mb-10 w-full max-w-full min-w-0">
     <!-- Skeleton Loading -->
     <div v-if="loading" class="space-y-4">
       <div class="flex gap-3 overflow-hidden md:hidden">
@@ -15,9 +15,9 @@
     </div>
 
     <!-- Main Content -->
-    <div v-else class="space-y-4">
+    <div v-else class="space-y-4 w-full max-w-full min-w-0">
       <!-- 奶娃萌趣快捷入口（移动端横向磨砂方圆图标条） -->
-      <nav class="scrollbar-hide flex gap-3 overflow-x-auto pb-1 pt-0.5 md:hidden">
+      <nav class="scrollbar-hide flex w-full max-w-full min-w-0 gap-3 overflow-x-auto pb-1 pt-0.5 md:hidden">
         <button
           v-for="(item, index) in quickNavItems"
           :key="item.key"
@@ -497,6 +497,15 @@ const quickNavItems = computed(() => {
       show: true
     },
     {
+      key: 'listeningStats',
+      label: '听歌统计',
+      icon: 'ri-bar-chart-2-fill',
+      tintClass: 'bg-violet-100/90 text-violet-500 dark:bg-violet-500/20 dark:text-violet-300',
+      active: false,
+      action: () => router.push('/listening-stats'),
+      show: true
+    },
+    {
       key: 'localMusic',
       label: t('comp.localMusic'),
       icon: 'ri-folder-music-fill',
@@ -689,27 +698,35 @@ onActivated(() => {
   }
 }
 
-/* Hero grid — 移动端单列舒展排布，平板/桌面 3:2 并排 */
+/* Hero grid — 移动端单列舒展排布，平板/桌面 3:2 并排（强制 minmax(0, ...) 防止长歌名撑破屏幕宽度） */
 .hero-grid {
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  max-width: 100%;
 }
 
 @media (min-width: 768px) {
   .hero-grid {
-    grid-template-columns: 3fr 2fr;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
   }
 }
 
 .hero-grid > .hero-card {
   height: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 .hero-grid > .hero-card > .daily-card {
   height: 100%;
   min-height: 170px;
+  width: 100%;
+  max-width: 100%;
 }
 .hero-grid > .hero-card > .fm-card {
   height: 100%;
   min-height: 128px;
+  width: 100%;
+  max-width: 100%;
 }
 
 .quick-tile-icon {

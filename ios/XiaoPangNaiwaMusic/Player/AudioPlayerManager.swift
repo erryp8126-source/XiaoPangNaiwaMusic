@@ -202,6 +202,13 @@ final class AudioPlayerManager: NSObject {
             self.currentAlbum = (payload["album"] as? String) ?? ""
             self.currentCoverUrl = (payload["cover"] as? String) ?? ""
             self.currentPlayUrl = urlStr
+            ListeningStatsTracker.shared.onTrackChanged(
+                songId: self.currentSongId,
+                title: self.currentTitle,
+                artist: self.currentArtist,
+                cover: self.currentCoverUrl,
+                playing: false
+            )
             self.preResolvedForInstanceId = 0
             self.preResolvedItem = nil
             self.preResolvedUrl = ""
@@ -310,6 +317,13 @@ final class AudioPlayerManager: NSObject {
                 let playingNow = (p.timeControlStatus == .playing)
                 if playingNow != self.cachedIsPlaying {
                     self.cachedIsPlaying = playingNow
+                    ListeningStatsTracker.shared.onPlayStateChanged(
+                        playing: playingNow,
+                        songId: self.currentSongId,
+                        title: self.currentTitle,
+                        artist: self.currentArtist,
+                        cover: self.currentCoverUrl
+                    )
                     self.updateCachedMetrics()
                     self.emitAudioEvent(type: playingNow ? "play" : "pause")
                     self.updateNowPlayingInfo()
@@ -333,6 +347,7 @@ final class AudioPlayerManager: NSObject {
             guard let self = self, self.currentInstanceId == instanceForCallbacks else { return }
             self.updateCachedMetrics()
             if self.cachedIsPlaying {
+                ListeningStatsTracker.shared.flushPeriodic()
                 self.emitAudioEvent(type: "timeupdate")
             }
         }
@@ -366,6 +381,13 @@ final class AudioPlayerManager: NSObject {
             self.desiredAutoplay = false
             self.player?.pause()
             self.cachedIsPlaying = false
+            ListeningStatsTracker.shared.onPlayStateChanged(
+                playing: false,
+                songId: self.currentSongId,
+                title: self.currentTitle,
+                artist: self.currentArtist,
+                cover: self.currentCoverUrl
+            )
             self.updateCachedMetrics()
             self.emitAudioEvent(type: "pause")
             self.updateNowPlayingInfo()
@@ -381,6 +403,13 @@ final class AudioPlayerManager: NSObject {
             self.endTransitionBackgroundTask()
             self.cleanupCurrentPlayer()
             self.cachedIsPlaying = false
+            ListeningStatsTracker.shared.onPlayStateChanged(
+                playing: false,
+                songId: self.currentSongId,
+                title: self.currentTitle,
+                artist: self.currentArtist,
+                cover: self.currentCoverUrl
+            )
             self.cachedPositionSec = 0
             self.updateNowPlayingInfo()
         }
@@ -927,6 +956,13 @@ final class AudioPlayerManager: NSObject {
         currentAlbum = item.album
         currentCoverUrl = item.cover
         currentPlayUrl = url
+        ListeningStatsTracker.shared.onTrackChanged(
+            songId: currentSongId,
+            title: currentTitle,
+            artist: currentArtist,
+            cover: currentCoverUrl,
+            playing: false
+        )
         preResolvedForInstanceId = 0
         preResolvedItem = nil
         preResolvedUrl = ""

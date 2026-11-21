@@ -142,6 +142,42 @@ export const useFavoriteStore = defineStore('favorite', () => {
     return dislikeList.value.includes(id);
   };
 
+  /**
+   * 合并来自云同步/备份的收藏与不喜欢列表（去重保留顺序）
+   */
+  const mergeRemoteFavorites = (
+    remoteFavorites?: Array<number | string>,
+    remoteDislikes?: Array<number | string>,
+    mode: 'merge' | 'replace' = 'merge'
+  ) => {
+    const mergeIdList = (
+      localArr: Array<number | string>,
+      remoteArr?: Array<number | string>
+    ): Array<number | string> => {
+      if (!Array.isArray(remoteArr)) return localArr;
+      if (mode === 'replace') return Array.from(new Set(remoteArr));
+      const merged = [...localArr];
+      for (const id of remoteArr) {
+        const exists = merged.some((existingId) =>
+          typeof id === 'string' && id.includes('--')
+            ? isBilibiliIdMatch(existingId, id)
+            : existingId === id
+        );
+        if (!exists) merged.push(id);
+      }
+      return merged;
+    };
+
+    if (Array.isArray(remoteFavorites)) {
+      favoriteList.value = mergeIdList(favoriteList.value, remoteFavorites);
+      setLocalStorageItem('favoriteList', favoriteList.value);
+    }
+    if (Array.isArray(remoteDislikes)) {
+      dislikeList.value = mergeIdList(dislikeList.value, remoteDislikes);
+      setLocalStorageItem('dislikeList', dislikeList.value);
+    }
+  };
+
   return {
     // 状态
     favoriteList,
@@ -154,6 +190,7 @@ export const useFavoriteStore = defineStore('favorite', () => {
     removeFromDislikeList,
     initializeFavoriteList,
     isFavorite,
-    isDisliked
+    isDisliked,
+    mergeRemoteFavorites
   };
 });

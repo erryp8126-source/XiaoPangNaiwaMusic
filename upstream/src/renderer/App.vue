@@ -24,6 +24,8 @@ import { useRouter } from 'vue-router';
 
 import DisclaimerModal from '@/components/common/DisclaimerModal.vue';
 import TrafficWarningDrawer from '@/components/TrafficWarningDrawer.vue';
+import { useCloudSyncStore } from '@/store/modules/cloudSync';
+import { useListeningStatsStore } from '@/store/modules/listeningStats';
 import { usePlayerStore } from '@/store/modules/player';
 import { usePlayerCoreStore } from '@/store/modules/playerCore';
 import { useSettingsStore } from '@/store/modules/settings';
@@ -40,6 +42,8 @@ import { useAppShortcuts } from './utils/appShortcuts';
 
 const { locale } = useI18n();
 const settingsStore = useSettingsStore();
+const listeningStatsStore = useListeningStatsStore();
+const cloudSyncStore = useCloudSyncStore();
 const playerStore = usePlayerStore();
 const playerCoreStore = usePlayerCoreStore();
 const userStore = useUserStore();
@@ -335,6 +339,8 @@ onMounted(async () => {
   if (isLyricWindow.value) {
     return;
   }
+  listeningStatsStore.initWebFallbackTracking();
+  cloudSyncStore.runAutoSyncOnLaunch();
 
   // 检查网络状态，离线时自动跳转到本地音乐页面
   if (!navigator.onLine) {

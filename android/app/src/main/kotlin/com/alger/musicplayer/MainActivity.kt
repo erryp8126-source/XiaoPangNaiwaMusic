@@ -262,7 +262,13 @@ class MainActivity : AppCompatActivity() {
                 view: WebView,
                 request: WebResourceRequest
             ): WebResourceResponse? {
-                return assetLoader.shouldInterceptRequest(request.url)
+                val res = assetLoader.shouldInterceptRequest(request.url)
+                if (res != null && request.url.path?.endsWith("index.html") == true) {
+                    res.responseHeaders = (res.responseHeaders?.toMutableMap() ?: mutableMapOf()).apply {
+                        put("Cache-Control", "no-store, no-cache, must-revalidate")
+                    }
+                }
+                return res
             }
 
             override fun shouldOverrideUrlLoading(
@@ -295,7 +301,20 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        webView.loadUrl("https://appassets.androidplatform.net/assets/www/index.html")
+        val curVersionCode = runCatching {
+            androidx.core.content.pm.PackageInfoCompat.getLongVersionCode(
+                packageManager.getPackageInfo(packageName, 0)
+            )
+        }.getOrDefault(0L)
+        val webMetaPrefs = getSharedPreferences("alger_webview_meta", MODE_PRIVATE)
+        val lastVersionCode = webMetaPrefs.getLong("last_version_code", -1L)
+        if (curVersionCode > 0L && curVersionCode != lastVersionCode) {
+            // 覆盖升级新版 APK 时自动清掉 WebView 旧版 JS/HTML 缓存（绝不影响 localStorage 里的历史与收藏）
+            webView.clearCache(true)
+            webMetaPrefs.edit().putLong("last_version_code", curVersionCode).apply()
+        }
+
+        webView.loadUrl("https://appassets.androidplatform.net/assets/www/index.html?v=$curVersionCode")
     }
 
     private fun setupBackNavigation() {

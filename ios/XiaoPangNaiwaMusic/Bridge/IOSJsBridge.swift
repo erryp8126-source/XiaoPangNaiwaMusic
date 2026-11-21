@@ -256,8 +256,29 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
                 let content = (payload["lrcContent"] as? String) ?? ""
                 let res = self.storageManager.saveLyricFile(filename: fn, lrcContent: content)
                 self.callbackDispatcher(callbackId, true, self.jsonString(res))
+            case "save-text-file":
+                let fn = (payload["filename"] as? String) ?? "xiaopang-music-backup.json"
+                let content = (payload["content"] as? String) ?? ""
+                let res = self.storageManager.saveTextFile(filename: fn, content: content)
+                self.callbackDispatcher(callbackId, true, self.jsonString(res))
             case "get-downloads-path":
                 self.callbackDispatcher(callbackId, true, self.jsonQuote(self.storageManager.getDownloadDir().path))
+            case "get-listening-stats":
+                self.callbackDispatcher(callbackId, true, ListeningStatsTracker.shared.getStatsJson())
+            case "reset-listening-stats":
+                let ok = ListeningStatsTracker.shared.resetStats()
+                self.callbackDispatcher(callbackId, true, ok ? "true" : "false")
+            case "merge-listening-stats":
+                let incomingStr: String
+                if let s = payload["stats"] as? String {
+                    incomingStr = s
+                } else if let obj = payload["stats"], JSONSerialization.isValidJSONObject(obj) {
+                    incomingStr = self.jsonString(obj)
+                } else {
+                    incomingStr = "{}"
+                }
+                let merged = ListeningStatsTracker.shared.mergeStatsJson(incomingStr)
+                self.callbackDispatcher(callbackId, true, merged)
             case "select-local-music-source":
                 let res: [String: Any] = [
                     "canceled": false,

@@ -47,6 +47,10 @@
           <playback-tab />
         </div>
 
+        <div v-show="currentSection === 'sync'" class="animate-fade-in">
+          <cloud-sync-tab />
+        </div>
+
         <div v-show="currentSection === 'application'" class="animate-fade-in">
           <application-tab />
         </div>
@@ -75,6 +79,7 @@ import { useDebounceFn } from '@vueuse/core';
 import { useDialog, useMessage } from 'naive-ui';
 import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { useRoute } from 'vue-router';
 
 import PlayBottom from '@/components/common/PlayBottom.vue';
 import { useSettingsStore } from '@/store/modules/settings';
@@ -86,6 +91,7 @@ import { SETTINGS_DATA_KEY, SETTINGS_DIALOG_KEY, SETTINGS_MESSAGE_KEY } from './
 import AboutTab from './tabs/AboutTab.vue';
 import ApplicationTab from './tabs/ApplicationTab.vue';
 import BasicTab from './tabs/BasicTab.vue';
+import CloudSyncTab from './tabs/CloudSyncTab.vue';
 import NetworkTab from './tabs/NetworkTab.vue';
 import PlaybackTab from './tabs/PlaybackTab.vue';
 import SystemTab from './tabs/SystemTab.vue';
@@ -94,6 +100,7 @@ const settingsStore = useSettingsStore();
 const message = useMessage();
 const dialog = useDialog();
 const { t } = useI18n();
+const route = useRoute();
 
 // ==================== 设置数据管理 ====================
 const saveSettings = useDebounceFn((data) => {
@@ -144,6 +151,7 @@ type SettingSectionConfig = {
 const settingSections: SettingSectionConfig[] = [
   { id: 'basic' },
   { id: 'playback' },
+  { id: 'sync' },
   { id: 'application', electron: true },
   { id: 'network' },
   { id: 'system', electron: true },
@@ -163,6 +171,17 @@ const navSections = computed(() => {
 });
 
 const currentSection = ref('basic');
+
+watch(
+  () => route.query.section,
+  (sec) => {
+    const val = typeof sec === 'string' ? sec : '';
+    if (val && settingSections.some((s) => s.id === val)) {
+      currentSection.value = val;
+    }
+  },
+  { immediate: true }
+);
 
 // ==================== 初始化 ====================
 onMounted(() => {

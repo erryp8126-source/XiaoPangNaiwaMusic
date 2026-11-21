@@ -616,6 +616,32 @@ class NeteaseApiClient(private val prefs: AppPrefs) {
                 params,
                 "weapi"
             )
+            "/scrobble" -> {
+                val songId = params["id"] ?: ""
+                val sourceId = params["sourceid"] ?: params["sourceId"] ?: ""
+                val playSec = intParam(params, "time", 120)
+                val logEntry = mapOf(
+                    "action" to "play",
+                    "json" to mapOf(
+                        "download" to 0,
+                        "end" to "playend",
+                        "id" to (songId.toLongOrNull() ?: songId),
+                        "sourceId" to sourceId,
+                        "time" to playSec,
+                        "type" to "song",
+                        "wifi" to 0,
+                        "source" to "list",
+                        "mainsite" to 1,
+                        "content" to ""
+                    )
+                )
+                ncmRequest(
+                    "/api/feedback/weblog",
+                    mapOf("logs" to gson.toJson(listOf(logEntry))),
+                    params,
+                    "weapi"
+                )
+            }
             "/user/follows" -> ncmRequest(
                 "/api/user/getfollows/${params["uid"] ?: ""}",
                 mapOf(

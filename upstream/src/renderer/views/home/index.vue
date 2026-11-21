@@ -1,7 +1,7 @@
 <template>
-  <div class="home-container h-full w-full bg-transparent transition-colors duration-300">
+  <div class="home-container h-full w-full max-w-full overflow-x-hidden bg-transparent transition-colors duration-300">
     <n-scrollbar class="h-full">
-      <div class="home-content w-full pb-44 pt-3 page-padding">
+      <div class="home-content w-full max-w-full overflow-x-hidden box-border pb-44 pt-3 page-padding">
         <!-- 移动端顶部暖阳快捷搜索胶囊 -->
         <button
           type="button"
@@ -69,6 +69,13 @@ const router = useRouter();
 <style lang="scss" scoped>
 .home-container {
   position: relative;
+}
+
+:deep(.n-scrollbar-content) {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+  box-sizing: border-box;
 }
 
 .home-search-pill {

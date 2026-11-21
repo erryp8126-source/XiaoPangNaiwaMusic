@@ -21,12 +21,24 @@
           <i class="ri-history-line"></i>
           <span>{{ t('history.title') }}</span>
         </button>
+        <button
+          type="button"
+          class="mobile-seg-btn"
+          :class="{ active: mobileTab === 'stats' }"
+          @click="mobileTab = 'stats'"
+        >
+          <i class="ri-bar-chart-2-fill"></i>
+          <span>听歌统计</span>
+        </button>
       </div>
     </div>
 
     <div class="flex gap-6 flex-1 min-h-0">
       <favorite v-if="!isMobile || mobileTab === 'favorite'" class="flex-item" />
       <history-list v-if="!isMobile || mobileTab === 'history'" class="flex-item" />
+      <n-scrollbar v-if="isMobile && mobileTab === 'stats'" class="flex-1">
+        <listening-stats-panel class="px-0.5 pt-1" />
+      </n-scrollbar>
     </div>
   </div>
 </template>
@@ -35,6 +47,7 @@
 import { ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
+import ListeningStatsPanel from '@/components/stats/ListeningStatsPanel.vue';
 import { isMobile } from '@/utils';
 import Favorite from '@/views/favorite/index.vue';
 import HistoryList from '@/views/history/index.vue';
@@ -44,7 +57,7 @@ defineOptions({
 });
 
 const { t } = useI18n();
-const mobileTab = ref<'favorite' | 'history'>('favorite');
+const mobileTab = ref<'favorite' | 'history' | 'stats'>('favorite');
 </script>
 
 <style scoped lang="scss">

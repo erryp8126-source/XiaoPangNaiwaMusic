@@ -425,6 +425,28 @@ final class NeteaseApiClient {
             return ncmRequest("/api/play-record/album/list", rawData: ["limit": intParam(params, "limit", 100)], queryParams: params, defaultCrypto: "weapi")
         case "/record/recent/dj":
             return ncmRequest("/api/play-record/djradio/list", rawData: ["limit": intParam(params, "limit", 100)], queryParams: params, defaultCrypto: "weapi")
+        case "/scrobble":
+            let songIdStr = params["id"] ?? ""
+            let songIdVal: Any = Int64(songIdStr) ?? songIdStr
+            let sourceId = params["sourceid"] ?? params["sourceId"] ?? ""
+            let playSec = intParam(params, "time", 120)
+            let innerJson: [String: Any] = [
+                "download": 0,
+                "end": "playend",
+                "id": songIdVal,
+                "sourceId": sourceId,
+                "time": playSec,
+                "type": "song",
+                "wifi": 0,
+                "source": "list",
+                "mainsite": 1,
+                "content": ""
+            ]
+            let logEntry: [[String: Any]] = [[
+                "action": "play",
+                "json": innerJson
+            ]]
+            return ncmRequest("/api/feedback/weblog", rawData: ["logs": jsonString(logEntry)], queryParams: params, defaultCrypto: "weapi")
         case "/user/follows":
             return ncmRequest("/api/user/getfollows/\(params["uid"] ?? "")", rawData: [
                 "offset": intParam(params, "offset", 0),

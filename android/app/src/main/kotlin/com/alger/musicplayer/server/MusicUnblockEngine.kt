@@ -257,6 +257,7 @@ class MusicUnblockEngine {
         val customClient = client.newBuilder()
             .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
             .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+            .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)
             .build()
 
         val reqBuilder = Request.Builder().url(url)

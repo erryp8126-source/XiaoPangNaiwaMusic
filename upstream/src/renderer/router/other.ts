@@ -88,6 +88,17 @@ const otherRouter = [
     component: () => import('@/views/heatmap/index.vue')
   },
   {
+    path: '/listening-stats',
+    name: 'listeningStats',
+    meta: {
+      title: '听歌统计',
+      keepAlive: false,
+      showInMenu: false,
+      back: true
+    },
+    component: () => import('@/views/listening-stats/index.vue')
+  },
+  {
     path: '/history-recommend',
     name: 'historyRecommend',
     meta: {

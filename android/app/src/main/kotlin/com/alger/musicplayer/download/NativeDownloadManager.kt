@@ -217,6 +217,23 @@ class NativeDownloadManager(
         }
     }
 
+    fun saveTextFile(filename: String, content: String): JsonObject {
+        return try {
+            val safe = sanitizeFilename(filename).ifBlank { "xiaopang-music-backup.json" }
+            val outFile = File(getDownloadDir(), safe)
+            outFile.writeText(content, Charsets.UTF_8)
+            JsonObject().apply {
+                addProperty("success", true)
+                addProperty("path", outFile.absolutePath)
+            }
+        } catch (e: Exception) {
+            JsonObject().apply {
+                addProperty("success", false)
+                addProperty("error", e.message ?: "保存失败")
+            }
+        }
+    }
+
     fun getDownloadedList(): JsonArray {
         synchronized(indexLock) {
             val raw = loadIndexArray()

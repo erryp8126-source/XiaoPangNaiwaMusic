@@ -19,7 +19,7 @@ export default {
     cloud: '云端记录'
   },
   getCloudRecordFailed: '获取云端记录失败',
-  needLogin: '请使用cookie登录以查看云端记录',
+  needLogin: '登录网易云（扫码/UID 均可）即可查看云端记录，也可免登录开启个人云同步',
   merging: '正在合并记录...',
   noDescription: '暂无描述',
   noData: '暂无记录',

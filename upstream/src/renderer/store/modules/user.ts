@@ -21,14 +21,36 @@ function getLocalStorageItem<T>(key: string, defaultValue: T): T {
   }
 }
 
+function getRawLoginType(): 'token' | 'cookie' | 'qr' | 'uid' | null {
+  try {
+    const raw = localStorage.getItem('loginType');
+    if (!raw) return null;
+    const cleaned = raw.replace(/^"+|"+$/g, '').trim();
+    if (cleaned === 'token' || cleaned === 'cookie' || cleaned === 'qr' || cleaned === 'uid') {
+      return cleaned;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export const useUserStore = defineStore('user', () => {
   // 状态
   const user = ref<UserData | null>(getLocalStorageItem('user', null));
   const userDetail = ref<IUserDetail | null>(null);
   const recordList = ref<any[]>([]);
-  const loginType = ref<'token' | 'cookie' | 'qr' | 'uid' | null>(
-    getLocalStorageItem('loginType', null)
-  );
+  const loginType = ref<'token' | 'cookie' | 'qr' | 'uid' | null>(getRawLoginType());
+  const hasNeteaseAuth = computed(() => {
+    if (!user.value?.userId) return false;
+    if (loginType.value === 'uid') return false;
+    return Boolean(
+      localStorage.getItem('token') ||
+        loginType.value === 'cookie' ||
+        loginType.value === 'qr' ||
+        loginType.value === 'token'
+    );
+  });
   const searchValue = ref('');
   const searchType = ref(1);
   // 收藏的专辑 ID 列表
@@ -189,6 +211,7 @@ export const useUserStore = defineStore('user', () => {
     // 状态
     user,
     loginType,
+    hasNeteaseAuth,
     searchValue,
     searchType,
     collectedAlbumIds,

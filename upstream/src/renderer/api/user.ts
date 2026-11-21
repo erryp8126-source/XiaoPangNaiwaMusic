@@ -47,6 +47,23 @@ export function getRecentAlbums(limit: number = 100) {
   } as any);
 }
 
+// 听歌打卡（同步单曲播放记录到网易云云端）
+// /scrobble?id=xxx&sourceid=xxx&time=120
+export function scrobbleSong(params: {
+  id: number | string;
+  sourceid?: number | string;
+  time?: number;
+}) {
+  return request.get('/scrobble', {
+    params: {
+      id: params.id,
+      sourceid: params.sourceid || '',
+      time: Math.max(10, Math.round(params.time || 120))
+    },
+    noRetry: true
+  } as any);
+}
+
 // 获取用户关注列表
 // /user/follows?uid=32953014
 export function getUserFollows(uid: number, limit: number = 30, offset: number = 0) {

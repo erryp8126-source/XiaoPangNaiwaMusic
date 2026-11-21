@@ -26,6 +26,13 @@
   </a>
 </p>
 
+<p align="center">
+  <b>⚡ 快速开始：</b>
+  <a href="https://github.com/erryp8126-source/XiaoPangNaiwaMusic/releases/latest"><b>下载最新 Android APK / iOS IPA (v5.1.2)</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://erryp8126-source.github.io/XiaoPangNaiwaMusic/"><b>iPhone / 浏览器免签在线体验</b></a>
+</p>
+
 ---
 
 ## 实机界面预览
@@ -67,6 +74,9 @@
 | **10 段原生硬件均衡器 (EQ)** | 支持 (`audiofx.Equalizer`) | 暂不支持（安全直出） | 网页直出 |
 | **本地音频扫描 & 离线下载管理** | 支持 (`MediaStore`) | 支持（iPhone「文件」导入） | 不支持 |
 | **应用内检查更新 & 固定签名覆盖升级** | 支持 | 跳转 Release 下载 | 自动在线更新 |
+| **原生听歌时长统计（息屏计秒 / 7天趋势 / 24h 作息 / 排行）** | 支持（息屏原生计秒） | 支持（息屏原生计秒） | 支持（网页计秒） |
+| **一键口令云同步（免登录 / 免 Cookie / AES-256 端到端加密）** | 支持（三端互通） | 支持（三端互通） | 支持（三端互通） |
+| **网易云扫码 / UID 免 Cookie 云端播放历史 & 自动听歌打卡** | 支持 | 支持 | 支持 |
 
 ---
 
@@ -93,6 +103,12 @@
 - 已自动托管至 GitHub Pages：**https://erryp8126-source.github.io/XiaoPangNaiwaMusic/**
 - 在 iPhone Safari 打开上方链接，点击「分享 → 添加到主屏幕」即可免证书全屏使用，并在「设置 → 网络」填写自定义 API 服务地址。
 
+### 5. 一键口令云同步 & 原生听歌时长统计（`v5.1.2` 新增）
+- **一键口令云同步（普通人 3 秒上手）**：打开「设置 → 云同步与备份」，点一下生成专属同步口令（如 `NAIWA-xxxx-xxxx`），客户端采用 **PBKDF2 + AES-256-GCM 端到端加密**后同步至云端（服务端仅保存不可逆 SHA-256 哈希与密文）；换机或在 iPhone Safari 网页版输入口令即可 3 秒双向合并**播放历史 + 我喜欢 + 听歌时长统计**。
+- **极客高级同步 & 离线备份**：底部折叠提供 **WebDAV（坚果云 / InfiniCLOUD / Alist，原生无跨域直连）**、**GitHub 私有 Gist** 与**微信/本地 JSON 一键迁移备份**。
+- **网易云扫码 / UID 免 Cookie 同步**：修复上游硬卡 Cookie 的限制，扫码登录即可直接拉取云端最近播放与心动模式（播放满 30 秒自动听歌打卡回传），仅填 UID 也可免 Cookie 拉取公开听歌排行。
+- **原生听歌时长统计**：Android 与 iOS 原生播放引擎息屏全程精确计秒，可视化展示今日/本周/累计听歌时长、连续听歌天数、乐迷等级徽章、近 7 天柱状图、24 小时作息时段分布与 Top 歌手/单曲排行。
+
 ---
 
 ## 目录结构
@@ -102,6 +118,7 @@ XiaoPangNaiwaMusic/
 ├── upstream/        # Vue 3 + TypeScript + Tailwind CSS 三端共享前端源码
 ├── android/         # Kotlin + Media3 ExoPlayer + NanoHTTPD Android 原生工程
 ├── ios/             # 纯 Swift + AVPlayer + NWListener iOS 原生工程 (XcodeGen)
+├── sync-server/     # 一键口令云同步 Supabase 免费版建表与 RLS 安全 RPC 脚本
 ├── docs/            # 开发者技术文档 (DEVELOPMENT.md) 与实机运行截图
 ├── .github/workflows/# GitHub Actions 云端自动编译发布 Android APK + iOS IPA + PWA + GitHub Pages
 ├── build_apk.ps1    # Windows 一键本地编译 Android APK 脚本

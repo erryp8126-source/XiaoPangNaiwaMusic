@@ -241,6 +241,7 @@ class MusicPlaybackService : Service() {
         override fun run() {
             if (::exoPlayer.isInitialized && exoPlayer.isPlaying) {
                 snapshotPlayerState()
+                ListeningStatsTracker.flushPeriodic(this@MusicPlaybackService)
                 emitAudioEvent("timeupdate")
                 uiHandler.postDelayed(this, 200)
             }
@@ -298,6 +299,14 @@ class MusicPlaybackService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        ListeningStatsTracker.onPlayStateChanged(
+            this,
+            false,
+            currentSongId,
+            currentTitle,
+            currentArtist,
+            currentCoverUrl
+        )
         cancelNativeAutoAdvance()
         seekConfirmRunnable?.let { uiHandler.removeCallbacks(it) }
         uiHandler.removeCallbacks(progressTicker)
@@ -437,6 +446,14 @@ class MusicPlaybackService : Service() {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 snapshotPlayerState()
                 FloatingLyricManager.activeInstance?.onNativePlayStateChanged(isPlaying)
+                ListeningStatsTracker.onPlayStateChanged(
+                    this@MusicPlaybackService,
+                    isPlaying,
+                    currentSongId,
+                    currentTitle,
+                    currentArtist,
+                    currentCoverUrl
+                )
                 if (isPlaying) {
                     uiHandler.removeCallbacks(progressTicker)
                     uiHandler.post(progressTicker)
@@ -789,6 +806,14 @@ class MusicPlaybackService : Service() {
         snapshotPlayerState()
         FloatingLyricManager.activeInstance?.onNativeTrackChanged(currentSongId, currentTitle, currentArtist)
         FloatingLyricManager.activeInstance?.onNativePlayStateChanged(true)
+        ListeningStatsTracker.onTrackChanged(
+            this,
+            currentSongId,
+            currentTitle,
+            currentArtist,
+            currentCoverUrl,
+            true
+        )
         ensureForegroundNotification()
         updateNotification()
         fetchCoverArtworkAsync(currentCoverUrl, currentInstanceId)
@@ -1173,6 +1198,14 @@ class MusicPlaybackService : Service() {
         snapshotPlayerState()
         FloatingLyricManager.activeInstance?.onNativeTrackChanged(currentSongId, currentTitle, currentArtist)
         FloatingLyricManager.activeInstance?.onNativePlayStateChanged(true)
+        ListeningStatsTracker.onTrackChanged(
+            this,
+            currentSongId,
+            currentTitle,
+            currentArtist,
+            currentCoverUrl,
+            true
+        )
         ensureForegroundNotification()
         updateNotification()
         fetchCoverArtworkAsync(currentCoverUrl, currentInstanceId)
@@ -1320,6 +1353,14 @@ class MusicPlaybackService : Service() {
             currentCoverUrl = payload.get("cover")?.asString ?: ""
             currentPlayUrl = url
             FloatingLyricManager.activeInstance?.onNativeTrackChanged(currentSongId, currentTitle, currentArtist)
+            ListeningStatsTracker.onTrackChanged(
+                this,
+                currentSongId,
+                currentTitle,
+                currentArtist,
+                currentCoverUrl,
+                false
+            )
             prequeuedForInstanceId = 0
             prequeuedNextSongId = ""
             val autoplay = payload.get("autoplay")?.asBoolean ?: false

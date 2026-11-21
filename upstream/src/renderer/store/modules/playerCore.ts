@@ -47,6 +47,7 @@ export const usePlayerCoreStore = defineStore(
     let checkPlayTime: NodeJS.Timeout | null = null;
     let checkPlaybackRetryCount = 0;
     const MAX_CHECKPLAYBACK_RETRIES = 3;
+    let scrobbleTimer: number | null = null;
 
     // ==================== Computed ====================
     const currentSong = computed(() => playMusic.value);
@@ -387,6 +388,46 @@ export const usePlayerCoreStore = defineStore(
           }
         } else {
           playHistoryStore.addMusic(music);
+        }
+
+        // 触发免 Cookie 个人云同步节流上传（若用户已配置 WebDAV / GitHub Gist）
+        import('./cloudSync')
+          .then(({ useCloudSyncStore }) => {
+            useCloudSyncStore().scheduleAutoSyncAfterPlay();
+          })
+          .catch(() => {});
+
+        // 若已扫码/账号登录网易云，连续播放满 30 秒自动向网易云打卡同步云端最近播放
+        if (scrobbleTimer !== null) {
+          window.clearTimeout(scrobbleTimer);
+          scrobbleTimer = null;
+        }
+        if (
+          shouldPlay &&
+          !music.isPodcast &&
+          typeof music.id === 'number' &&
+          music.source !== 'bilibili' &&
+          !music.playMusicUrl?.startsWith('local://')
+        ) {
+          const targetId = music.id;
+          const sourceId = music.al?.id || music.song?.album?.id || '';
+          const durationSec = Math.max(
+            30,
+            Math.round(((music.dt || music.song?.duration || 180000) as number) / 1000)
+          );
+          scrobbleTimer = window.setTimeout(async () => {
+            scrobbleTimer = null;
+            try {
+              if (playMusic.value?.id !== targetId || !play.value) return;
+              const { useUserStore } = await import('./user');
+              const userStore = useUserStore();
+              if (!userStore.hasNeteaseAuth) return;
+              const { scrobbleSong } = await import('@/api/user');
+              await scrobbleSong({ id: targetId, sourceid: sourceId, time: durationSec });
+            } catch {
+              // 静默忽略打卡失败，不影响播放
+            }
+          }, 30000);
         }
 
         // 获取歌曲详情

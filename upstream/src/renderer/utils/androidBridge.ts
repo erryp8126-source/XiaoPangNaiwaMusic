@@ -47,6 +47,9 @@ export interface AndroidBridgeInterface {
   exitApp?(): void;
   getAudioCacheSize?(): number;
   clearAudioCache?(): boolean;
+  getListeningStats?(): string;
+  resetListeningStats?(): boolean;
+  mergeListeningStats?(statsJson: string): string;
 }
 
 declare global {

@@ -1,0 +1,34 @@
+name: Keep Quick Sync Alive
+
+on:
+  schedule:
+    # 每 3 天执行一次轻量心跳，避免 Supabase 免费版 7 天无流量自动休眠
+    - cron: '0 4 */3 * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase Quick Sync RPC
+        env:
+          SUPABASE_SYNC_URL: ${{ secrets.SUPABASE_SYNC_URL }}
+          SUPABASE_SYNC_ANON_KEY: ${{ secrets.SUPABASE_SYNC_ANON_KEY }}
+        run: |
+          if [ -z "$SUPABASE_SYNC_URL" ] || [ -z "$SUPABASE_SYNC_ANON_KEY" ]; then
+            echo "SUPABASE_SYNC_URL or SUPABASE_SYNC_ANON_KEY is not configured yet, skipping."
+            exit 0
+          fi
+          CLEAN_URL="${SUPABASE_SYNC_URL%/}"
+          AUTH_ARGS=(-H "apikey: ${SUPABASE_SYNC_ANON_KEY}" -H "Content-Type: application/json")
+          if [[ "$SUPABASE_SYNC_ANON_KEY" == eyJ* ]]; then
+            AUTH_ARGS+=(-H "Authorization: Bearer ${SUPABASE_SYNC_ANON_KEY}")
+          fi
+          HTTP_CODE=$(curl -sS -o /tmp/ping_resp.txt -w "%{http_code}" \
+            -X POST "${CLEAN_URL}/rest/v1/rpc/ping_sync" \
+            "${AUTH_ARGS[@]}" \
+            -d '{}')
+          echo "HTTP ${HTTP_CODE}: $(cat /tmp/ping_resp.txt)"
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            exit 1
+          fi

@@ -36,8 +36,8 @@ export const useIntelligenceModeStore = defineStore('intelligenceMode', () => {
     const playlistStore = usePlaylistStore();
     const { t } = i18n.global;
 
-    // 检查是否使用cookie登录
-    if (!userStore.user || userStore.loginType !== 'cookie') {
+    // 检查是否已具备有效网易云登录凭证（扫码/手机号/Cookie 均可，仅 UID 不可）
+    if (!userStore.hasNeteaseAuth) {
       message.warning(t('player.playBar.intelligenceMode.needCookieLogin'));
       return;
     }
