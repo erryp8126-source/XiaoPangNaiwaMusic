@@ -179,6 +179,46 @@ final class LocalMusicAndDownloadManager: NSObject, URLSessionDownloadDelegate {
         }
     }
 
+    /// 供 XCTest 在模拟器内直接驱动 URLSessionDownloadDelegate 真实回调链（不发起外部网络请求）
+    @discardableResult
+    func registerDownloadTaskForTesting(
+        songId: String,
+        filename: String,
+        songInfo: [String: Any] = [:]
+    ) -> (session: URLSession, task: URLSessionDownloadTask) {
+        let safeName = sanitizeFilename(filename)
+        let finalFilename = safeName.isEmpty ? "test_song.mp3" : safeName
+        let destUrl = getDownloadDir().appendingPathComponent(finalFilename)
+        let req = URLRequest(url: URL(string: "https://music.163.com/song/media/outer/url?id=\(songId).mp3")!)
+        let task = downloadSession.downloadTask(with: req)
+        let ctx = DownloadTaskContext(
+            songId: songId,
+            finalFilename: finalFilename,
+            destUrl: destUrl,
+            songInfo: songInfo
+        )
+        ctx.task = task
+        tasksLock.lock()
+        activeDownloads[task.taskIdentifier] = ctx
+        tasksLock.unlock()
+
+        emitEvent("music-download-queued", [
+            "id": songId,
+            "filename": finalFilename,
+            "songInfo": songInfo
+        ])
+        emitEvent("music-download-progress", [
+            "filename": finalFilename,
+            "progress": 0,
+            "loaded": 0,
+            "total": 0,
+            "path": "",
+            "status": "downloading",
+            "songInfo": songInfo
+        ])
+        return (downloadSession, task)
+    }
+
     // MARK: - URLSessionTaskDelegate / URLSessionDownloadDelegate
 
     func urlSession(

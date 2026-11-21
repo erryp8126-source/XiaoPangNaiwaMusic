@@ -126,22 +126,28 @@ jobs:
         run: |
           SIM_UDID=$(xcrun simctl list devices available -j | node -e "
             const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
-            for (const [runtime, devices] of Object.entries(data.devices || {})) {
-              if (!runtime.includes('iOS')) continue;
+            const runtimes = Object.keys(data.devices || {}).filter(r => r.includes('iOS')).sort().reverse();
+            for (const runtime of runtimes) {
+              const devices = data.devices[runtime] || [];
               const iphone = devices.find(d => d.isAvailable && /iPhone/.test(d.name));
               if (iphone) { console.log(iphone.udid); process.exit(0); }
             }
             process.exit(1);
           ")
           echo "Selected iOS Simulator UDID: $SIM_UDID"
-          xcrun simctl boot "$SIM_UDID" || true
+          xcrun simctl boot "$SIM_UDID" >/dev/null 2>&1 || true
+          xcrun simctl bootstatus "$SIM_UDID" -b
           xcodebuild \
             -project XiaoPangNaiwaMusic.xcodeproj \
             -scheme XiaoPangNaiwaMusic \
             -configuration Debug \
             -sdk iphonesimulator \
-            -destination "id=$SIM_UDID" \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
             -derivedDataPath build/SimDerivedData \
+            -parallel-testing-enabled NO \
+            -disable-concurrent-destination-testing \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 30 \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=YES \

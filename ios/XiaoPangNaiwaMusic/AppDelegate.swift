@@ -45,6 +45,15 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        // XCTest 宿主模式下跳过本地 HTTP 服务与全屏 WKWebView 启动，避免无头 CI 模拟器中 WebContent 进程阻塞测试
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            let win = UIWindow(frame: UIScreen.main.bounds)
+            win.rootViewController = UIViewController()
+            win.makeKeyAndVisible()
+            self.window = win
+            return true
+        }
+
         AppServices.shared.boot()
         application.beginReceivingRemoteControlEvents()
 

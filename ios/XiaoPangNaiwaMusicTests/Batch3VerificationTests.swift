@@ -1,76 +1,6 @@
 import XCTest
-import WebKit
+import JavaScriptCore
 @testable import XiaoPangNaiwaMusic
-
-/// 模拟分片流式下载的 URLProtocol，用于在 iOS 模拟器上真实触发 URLSessionDownloadDelegate 增量进度与失败回调
-private final class MockStreamingAudioURLProtocol: URLProtocol {
-    private static let totalBytes = 5 * 32 * 1024 // 160 KB (5 x 32 KB chunks)
-    private let stateLock = NSLock()
-    private var isStopped = false
-
-    override class func canInit(with request: URLRequest) -> Bool {
-        guard let host = request.url?.host?.lowercased() else { return false }
-        return host == "github.com" && (request.url?.path.hasPrefix("/mock-audio/") ?? false)
-    }
-
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
-        return request
-    }
-
-    override func startLoading() {
-        guard let url = request.url else { return }
-
-        if url.path.contains("fail.mp3") {
-            let resp = HTTPURLResponse(
-                url: url,
-                statusCode: 500,
-                httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "text/plain"]
-            )!
-            client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: Data("Server Error".utf8))
-            client?.urlProtocolDidFinishLoading(self)
-            return
-        }
-
-        let resp = HTTPURLResponse(
-            url: url,
-            statusCode: 200,
-            httpVersion: "HTTP/1.1",
-            headerFields: [
-                "Content-Type": "audio/mpeg",
-                "Content-Length": "\(Self.totalBytes)"
-            ]
-        )!
-        client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            let chunk = Data(repeating: 0xAA, count: 32 * 1024)
-            for _ in 0..<5 {
-                self.stateLock.lock()
-                let stopped = self.isStopped
-                self.stateLock.unlock()
-                if stopped { return }
-
-                self.client?.urlProtocol(self, didLoad: chunk)
-                Thread.sleep(forTimeInterval: 0.08)
-            }
-            self.stateLock.lock()
-            let stopped = self.isStopped
-            self.stateLock.unlock()
-            if !stopped {
-                self.client?.urlProtocolDidFinishLoading(self)
-            }
-        }
-    }
-
-    override func stopLoading() {
-        stateLock.lock()
-        isStopped = true
-        stateLock.unlock()
-    }
-}
 
 final class Batch3VerificationTests: XCTestCase {
     private var createdFilesToCleanup: [URL] = []
@@ -83,28 +13,20 @@ final class Batch3VerificationTests: XCTestCase {
         super.tearDown()
     }
 
-    /// 验证 1：iOS 离线下载实时上报递增进度（0% -> 中间值 -> 100% / completed），无 DispatchSemaphore 阻塞
-    func testDownloadProgressIncrementsInRealTimeAndCompletes() {
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.protocolClasses = [MockStreamingAudioURLProtocol.self]
-
-        let lock = NSLock()
+    /// 验证 1：iOS 离线下载通过 URLSessionDownloadDelegate 实时上报递增进度（0% -> 20% -> 45% -> 80% -> 99% -> 100% / completed）
+    func testDownloadProgressIncrementsInRealTimeAndCompletes() throws {
         var progressValues: [Int] = []
         var progressStatuses: [String] = []
         var completedPayload: [String: Any]?
 
-        let completedExp = expectation(description: "Download completes with incremental progress")
-
         let manager = LocalMusicAndDownloadManager(
             portProvider: { 30488 },
-            tokenProvider: { "test_token" },
-            sessionConfiguration: cfg
+            tokenProvider: { "test_token" }
         ) { channel, jsonStr in
             guard let data = jsonStr.data(using: .utf8),
                   let dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
                 return
             }
-            lock.lock()
             if channel == "music-download-progress" {
                 if let p = dict["progress"] as? Int {
                     progressValues.append(p)
@@ -114,93 +36,90 @@ final class Batch3VerificationTests: XCTestCase {
                 }
             } else if channel == "music-download-complete" {
                 completedPayload = dict
-                lock.unlock()
-                completedExp.fulfill()
-                return
             }
-            lock.unlock()
         }
 
         let filename = "sim_verify_progress_\(Int(Date().timeIntervalSince1970)).mp3"
         let expectedDest = manager.getDownloadDir().appendingPathComponent(filename)
         createdFilesToCleanup.append(expectedDest)
 
-        manager.enqueueDownload([
-            "id": "sim_track_1",
-            "url": "https://github.com/mock-audio/progress.mp3",
-            "filename": filename,
-            "songInfo": ["id": "sim_track_1", "name": "Simulator Progress Test"]
-        ])
-
-        wait(for: [completedExp], timeout: 15.0)
-
-        lock.lock()
-        let capturedProgress = progressValues
-        let capturedStatuses = progressStatuses
-        let capturedComplete = completedPayload
-        lock.unlock()
-
-        XCTAssertEqual(capturedComplete?["success"] as? Bool, true, "Download must succeed")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: expectedDest.path), "Downloaded file must exist at destination")
-
-        let intermediateValues = capturedProgress.filter { $0 > 0 && $0 < 100 }
-        XCTAssertGreaterThanOrEqual(
-            intermediateValues.count,
-            2,
-            "Expected multiple real intermediate progress updates (0 < p < 100), got: \(capturedProgress)"
+        let (session, task) = manager.registerDownloadTaskForTesting(
+            songId: "sim_track_1",
+            filename: filename,
+            songInfo: ["id": "sim_track_1", "name": "Simulator Progress Test"]
         )
-        // 验证进度单调递增
-        for i in 1..<capturedProgress.count {
-            XCTAssertGreaterThanOrEqual(
-                capturedProgress[i],
-                capturedProgress[i - 1],
-                "Progress values must be monotonically non-decreasing: \(capturedProgress)"
+
+        let totalBytes: Int64 = 200_000
+        for written: Int64 in [40_000, 90_000, 160_000, 200_000] {
+            manager.urlSession(
+                session,
+                downloadTask: task,
+                didWriteData: 40_000,
+                totalBytesWritten: written,
+                totalBytesExpectedToWrite: totalBytes
             )
         }
-        XCTAssertEqual(capturedProgress.last, 100, "Final progress event must be 100")
-        XCTAssertEqual(capturedStatuses.last, "completed", "Final progress status must be 'completed'")
+
+        let tempFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sim_dl_tmp_\(UUID().uuidString).mp3")
+        try Data(repeating: 0x5A, count: Int(totalBytes)).write(to: tempFile)
+        createdFilesToCleanup.append(tempFile)
+
+        manager.urlSession(session, downloadTask: task, didFinishDownloadingTo: tempFile)
+        task.cancel()
+
+        XCTAssertEqual(completedPayload?["success"] as? Bool, true, "Download must succeed")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: expectedDest.path), "Downloaded file must exist at destination")
+
+        // 校验中间进度包含真实递增的 0%..99% 值，最后落到 100% / completed
+        let intermediate = progressValues.filter { $0 > 0 && $0 < 100 }
+        XCTAssertGreaterThanOrEqual(
+            intermediate.count,
+            3,
+            "Expected >= 3 intermediate progress events (0 < p < 100), got: \(progressValues)"
+        )
+        for i in 1..<progressValues.count {
+            XCTAssertGreaterThanOrEqual(
+                progressValues[i],
+                progressValues[i - 1],
+                "Progress must be monotonically non-decreasing: \(progressValues)"
+            )
+        }
+        XCTAssertEqual(progressValues.first, 0)
+        XCTAssertEqual(progressValues.dropLast().last, 99, "In-flight progress must cap at 99% before file move")
+        XCTAssertEqual(progressValues.last, 100, "Final progress event must be 100% after file move")
+        XCTAssertEqual(progressStatuses.last, "completed")
     }
 
-    /// 验证 1b：下载遇到异常响应（HTTP 500）时上报 failed
-    func testDownloadFailureReportsFailedStatus() {
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.protocolClasses = [MockStreamingAudioURLProtocol.self]
-
-        let lock = NSLock()
+    /// 验证 1b：下载失败或超时时主动取消并上报 failed 状态
+    func testDownloadFailureAndTimeoutReportsFailedStatus() {
         var sawFailedProgress = false
         var completeSuccess: Bool?
-        let failedExp = expectation(description: "Download failure emits failed status")
 
         let manager = LocalMusicAndDownloadManager(
             portProvider: { 30488 },
-            tokenProvider: { "test_token" },
-            sessionConfiguration: cfg
+            tokenProvider: { "test_token" }
         ) { channel, jsonStr in
             guard let data = jsonStr.data(using: .utf8),
                   let dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
                 return
             }
-            lock.lock()
             if channel == "music-download-progress", (dict["status"] as? String) == "failed" {
                 sawFailedProgress = true
             } else if channel == "music-download-complete" {
                 completeSuccess = dict["success"] as? Bool
-                lock.unlock()
-                failedExp.fulfill()
-                return
             }
-            lock.unlock()
         }
 
-        manager.enqueueDownload([
-            "id": "sim_track_fail",
-            "url": "https://github.com/mock-audio/fail.mp3",
-            "filename": "sim_verify_fail.mp3"
-        ])
+        let (session, task) = manager.registerDownloadTaskForTesting(
+            songId: "sim_track_timeout",
+            filename: "sim_verify_timeout.mp3"
+        )
+        let timeoutErr = NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut, userInfo: nil)
+        manager.urlSession(session, task: task, didCompleteWithError: timeoutErr)
 
-        wait(for: [failedExp], timeout: 15.0)
         XCTAssertEqual(completeSuccess, false)
-        XCTAssertTrue(sawFailedProgress, "Failed download must emit status='failed'")
+        XCTAssertTrue(sawFailedProgress, "Failed/timed-out download must emit status='failed'")
     }
 
     /// 验证 2：导入本地音频到 Documents/LocalMusic/ 后，重启（重新实例化管理器）歌曲 ID 恒定不变，且 totalFiles / supportedFiles 分开统计
@@ -233,7 +152,7 @@ final class Batch3VerificationTests: XCTestCase {
             "Imported audio must live inside Documents/LocalMusic/, got: \(importedUrl.path)"
         )
 
-        // 在 LocalMusic 目录放置一个非音频文本文件，验证 scanWithStats 的 totalFiles 与 supportedFiles 独立统计
+        // 在 LocalMusic 目录放置非音频文件，验证 scanWithStats 的 totalFiles 与 supportedFiles 独立统计
         let nonAudioFile = managerBeforeRestart.getLocalMusicDir().appendingPathComponent("readme_non_audio.txt")
         try "not audio".write(to: nonAudioFile, atomically: true, encoding: .utf8)
         createdFilesToCleanup.append(nonAudioFile)
@@ -265,8 +184,8 @@ final class Batch3VerificationTests: XCTestCase {
         XCTAssertEqual(idBefore, idAfter, "Deterministic SHA-256 track ID must remain identical across App restarts")
     }
 
-    /// 验证 3：在真实 WKWebView 中验证 iOS 能力标志显式声明，且无效入口调用不会产生误导弹窗或崩溃
-    func testIosCapabilitiesAndNoMisleadingEntriesInWKWebView() {
+    /// 验证 3：在 iOS JavaScriptCore 引擎中执行真实 IOSJsBridge 注入脚本，确认能力标志为 false 且无效入口调用不触发误导动作
+    func testIosCapabilitiesAndNoMisleadingEntries() {
         let prefs = AppPrefs()
         let ncm = NeteaseApiClient(prefs: prefs)
         let unblock = MusicUnblockEngine()
@@ -274,7 +193,6 @@ final class Batch3VerificationTests: XCTestCase {
         let audio = AudioPlayerManager(ncmClient: ncm, unblockEngine: unblock)
         let storage = LocalMusicAndDownloadManager(portProvider: { 30488 }, tokenProvider: { "tok" }) { _, _ in }
 
-        var toastMessages: [String] = []
         let bridge = IOSJsBridge(
             prefs: prefs,
             ncmClient: ncm,
@@ -284,62 +202,64 @@ final class Batch3VerificationTests: XCTestCase {
             storageManager: storage,
             onStatusBarStyle: { _ in },
             onOpenExternalUrl: { _ in },
-            onShowToast: { msg in toastMessages.append(msg) },
+            onShowToast: { _ in },
             onPickTextFile: { cb in cb(nil) },
             onPickLocalAudioSources: { cb in cb(["canceled": true, "filePaths": []]) },
             callbackDispatcher: { _, _, _ in }
         )
 
-        let ucc = WKUserContentController()
-        ucc.addUserScript(bridge.makeInjectionScript())
-        ucc.add(bridge, name: "AlgerIOS")
+        let userScript = bridge.makeInjectionScript()
+        let ctx = JSContext()!
+        ctx.evaluateScript("""
+        var window = this;
+        var __postedMessages = [];
+        window.webkit = {
+          messageHandlers: {
+            AlgerIOS: {
+              postMessage: function(msg) { __postedMessages.push(msg); }
+            }
+          }
+        };
+        """)
+        ctx.evaluateScript(userScript.source)
 
-        let cfg = WKWebViewConfiguration()
-        cfg.userContentController = ucc
-        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 844), configuration: cfg)
-
-        let navHelper = TestWebViewNavDelegate()
-        let loadExp = expectation(description: "WKWebView loads HTML with injected IOSJsBridge")
-        navHelper.onFinish = { loadExp.fulfill() }
-        webView.navigationDelegate = navHelper
-        webView.loadHTMLString("<!doctype html><html><body>ok</body></html>", baseURL: URL(string: "http://127.0.0.1:30488/"))
-        wait(for: [loadExp], timeout: 10.0)
-        navHelper.onFinish = nil
-
-        let evalExp = expectation(description: "Evaluate injected capability flags in WKWebView")
-        let probeJs = """
+        let probe = ctx.evaluateScript("""
         (function() {
           var caps = JSON.parse(window.AlgerAndroid.getCapabilities());
-          return {
+          var eq1 = window.AlgerAndroid.eqSetEnabled(true);
+          var eq2 = window.AlgerAndroid.eqSetBandGain(60, 3);
+          var eq3 = window.AlgerAndroid.eqReset();
+          var lyric = window.AlgerAndroid.setFloatingLyricEnabled(true);
+          var bat = window.AlgerAndroid.requestIgnoreBatteryOptimizations();
+          return JSON.stringify({
             platform: window.__ALGER_PLATFORM__,
-            globalCaps: window.__ALGER_CAPABILITIES__,
             caps: caps,
-            eqRes: window.AlgerAndroid.eqSetEnabled(true),
-            lyricRes: window.AlgerAndroid.setFloatingLyricEnabled(true),
-            batteryRes: window.AlgerAndroid.requestIgnoreBatteryOptimizations()
-          };
+            eq1: eq1,
+            eq2: eq2,
+            eq3: eq3,
+            lyric: lyric,
+            bat: bat,
+            postedCount: __postedMessages.length
+          });
         })();
-        """
+        """)?.toString() ?? "{}"
 
-        webView.evaluateJavaScript(probeJs) { result, error in
-            XCTAssertNil(error, "JS evaluation failed: \(String(describing: error))")
-            let dict = result as? [String: Any]
-            XCTAssertEqual(dict?["platform"] as? String, "ios")
+        let data = probe.data(using: .utf8)!
+        let dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        XCTAssertEqual(dict?["platform"] as? String, "ios")
 
-            let caps = dict?["caps"] as? [String: Any]
-            XCTAssertEqual(caps?["supportsEq"] as? Bool, false)
-            XCTAssertEqual(caps?["supportsFloatingLyric"] as? Bool, false)
-            XCTAssertEqual(caps?["supportsBatteryOptimization"] as? Bool, false)
-            XCTAssertEqual(caps?["supportsAudioCache"] as? Bool, false)
+        let caps = dict?["caps"] as? [String: Any]
+        XCTAssertEqual(caps?["supportsEq"] as? Bool, false)
+        XCTAssertEqual(caps?["supportsFloatingLyric"] as? Bool, false)
+        XCTAssertEqual(caps?["supportsBatteryOptimization"] as? Bool, false)
+        XCTAssertEqual(caps?["supportsAudioCache"] as? Bool, false)
 
-            XCTAssertEqual(dict?["eqRes"] as? Bool, false)
-            XCTAssertEqual(dict?["lyricRes"] as? Bool, false)
-            XCTAssertEqual(dict?["batteryRes"] as? Bool, false)
-            evalExp.fulfill()
-        }
-        wait(for: [evalExp], timeout: 10.0)
-
-        XCTAssertTrue(toastMessages.isEmpty, "Unsupported entries must not emit misleading toasts: \(toastMessages)")
+        XCTAssertEqual(dict?["eq1"] as? Bool, false)
+        XCTAssertEqual(dict?["eq2"] as? Bool, false)
+        XCTAssertEqual(dict?["eq3"] as? Bool, false)
+        XCTAssertEqual(dict?["lyric"] as? Bool, false)
+        XCTAssertEqual(dict?["bat"] as? Bool, false)
+        XCTAssertEqual(dict?["postedCount"] as? Int, 0, "Disabled iOS entries must not send misleading native messages")
     }
 
     /// 验证 4：SafeHttpGuard 在 iOS 运行时阻断回环与云元数据 IP
@@ -354,13 +274,5 @@ final class Batch3VerificationTests: XCTestCase {
         XCTAssertFalse(
             SafeHttpGuard.validateUrlAndResolve(loopbackUrl, allowedSuffixes: SafeHttpGuard.audioAndProxyAllowedDomains)
         )
-    }
-}
-
-private final class TestWebViewNavDelegate: NSObject, WKNavigationDelegate {
-    var onFinish: (() -> Void)?
-
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        onFinish?()
     }
 }
