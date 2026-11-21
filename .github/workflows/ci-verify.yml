@@ -150,4 +150,10 @@ jobs:
           XCTEST_BIN=$(xcrun --sdk iphonesimulator --find xctest)
           TEST_BUNDLE="$PWD/build/SimProducts/Debug-iphonesimulator/XiaoPangNaiwaMusicTests.xctest"
           test -d "$TEST_BUNDLE"
+          xcrun simctl boot "$SIM_UDID" </dev/null >/dev/null 2>&1 || true
+          set +e
           xcrun simctl spawn "$SIM_UDID" "$XCTEST_BIN" "$TEST_BUNDLE"
+          TEST_EXIT=$?
+          set -e
+          xcrun simctl shutdown "$SIM_UDID" </dev/null >/dev/null 2>&1 || true
+          exit $TEST_EXIT
