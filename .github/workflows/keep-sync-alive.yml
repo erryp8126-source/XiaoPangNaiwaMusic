@@ -16,8 +16,8 @@ jobs:
           SUPABASE_SYNC_ANON_KEY: ${{ secrets.SUPABASE_SYNC_ANON_KEY }}
         run: |
           if [ -z "$SUPABASE_SYNC_URL" ] || [ -z "$SUPABASE_SYNC_ANON_KEY" ]; then
-            echo "SUPABASE_SYNC_URL or SUPABASE_SYNC_ANON_KEY is not configured yet, skipping."
-            exit 0
+            echo "::error::SUPABASE_SYNC_URL or SUPABASE_SYNC_ANON_KEY secret is missing!"
+            exit 1
           fi
           CLEAN_URL="${SUPABASE_SYNC_URL%/}"
           AUTH_ARGS=(-H "apikey: ${SUPABASE_SYNC_ANON_KEY}" -H "Content-Type: application/json")

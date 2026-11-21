@@ -197,7 +197,8 @@ final class AudioPlayerManager: NSObject {
             }
 
             self.currentSongId = "\(payload["songId"] ?? "")"
-            self.currentTitle = ((payload["title"] as? String)?.isEmpty == false) ? (payload["title"] as! String) : "未知歌曲"
+            let rawTitle = (payload["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            self.currentTitle = rawTitle.isEmpty ? "未知歌曲" : rawTitle
             self.currentArtist = (payload["artist"] as? String) ?? ""
             self.currentAlbum = (payload["album"] as? String) ?? ""
             self.currentCoverUrl = (payload["cover"] as? String) ?? ""
@@ -658,9 +659,15 @@ final class AudioPlayerManager: NSObject {
             guard !workingQueue.isEmpty else { return }
             let count = workingQueue.count
             let safeIdx = workingIndex < 0 ? -1 : max(0, min(workingIndex, count - 1))
-            let startIdx = safeIdx < 0 ? 0 : (safeIdx + 1) % count
-            for attempt in 0..<min(6, count) {
-                let idx = (startIdx + attempt) % count
+            let candidateIndices: [Int]
+            if self.nativePlayMode == 2 && count > 1 {
+                // 真随机模式：打乱候选索引并排除当前曲目
+                candidateIndices = (0..<count).filter { $0 != safeIdx }.shuffled()
+            } else {
+                let startIdx = safeIdx < 0 ? 0 : (safeIdx + 1) % count
+                candidateIndices = (0..<count).map { (startIdx + $0) % count }
+            }
+            for idx in candidateIndices.prefix(6) {
                 let item = workingQueue[idx]
                 if count > 1 && item.id == songIdSnapshot { continue }
                 if let resolved = self.resolveItemUrlNatively(item: item, quality: qualitySnapshot, sources: sourcesSnapshot, cookie: cookieSnapshot) {
@@ -868,12 +875,16 @@ final class AudioPlayerManager: NSObject {
 
             let count = workingQueue.count
             let safeIdx = workingIndex < 0 ? -1 : max(0, min(workingIndex, count - 1))
-            let startIdx = safeIdx < 0 ? 0 : ((safeIdx + delta) % count + count) % count
-            let step = delta >= 0 ? 1 : -1
-            let maxAttempts = min(8, count)
+            let candidateIndices: [Int]
+            if self.nativePlayMode == 2 && count > 1 {
+                candidateIndices = (0..<count).filter { $0 != safeIdx }.shuffled()
+            } else {
+                let startIdx = safeIdx < 0 ? 0 : ((safeIdx + delta) % count + count) % count
+                let step = delta >= 0 ? 1 : -1
+                candidateIndices = (0..<count).map { ((startIdx + $0 * step) % count + count) % count }
+            }
 
-            for attempt in 0..<maxAttempts {
-                let idx = ((startIdx + attempt * step) % count + count) % count
+            for idx in candidateIndices.prefix(8) {
                 let item = workingQueue[idx]
                 if let resolved = self.resolveItemUrlNatively(
                     item: item,

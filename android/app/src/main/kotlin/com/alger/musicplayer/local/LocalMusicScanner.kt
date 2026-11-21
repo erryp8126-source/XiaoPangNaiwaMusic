@@ -16,7 +16,8 @@ import java.net.URLEncoder
  */
 class LocalMusicScanner(
     private val context: Context,
-    private val localServerPortProvider: () -> Int
+    private val localServerPortProvider: () -> Int,
+    private val localAuthTokenProvider: () -> String = { "" }
 ) {
     private val supportedExts = setOf(".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac", ".opus", ".wma")
 
@@ -153,15 +154,16 @@ class LocalMusicScanner(
 
     fun parseMetadata(filePaths: List<String>): JsonArray {
         val port = localServerPortProvider()
+        val tokenParam = localAuthTokenProvider().takeIf { it.isNotBlank() }?.let { "&token=${enc(it)}" } ?: ""
         val result = JsonArray()
 
         for (filePath in filePaths) {
             val cached = scannedCache[filePath]
             if (cached != null) {
                 val coverUrl = if (cached.albumId > 0) {
-                    "http://127.0.0.1:$port/local-cover?albumId=${cached.albumId}&path=${enc(filePath)}"
+                    "http://127.0.0.1:$port/local-cover?albumId=${cached.albumId}&path=${enc(filePath)}$tokenParam"
                 } else {
-                    "http://127.0.0.1:$port/local-cover?path=${enc(filePath)}"
+                    "http://127.0.0.1:$port/local-cover?path=${enc(filePath)}$tokenParam"
                 }
                 result.add(JsonObject().apply {
                     addProperty("filePath", cached.filePath)
@@ -179,13 +181,13 @@ class LocalMusicScanner(
             }
 
             // 未在 MediaStore 缓存中的文件使用 MediaMetadataRetriever 解析
-            val meta = extractViaRetriever(filePath, port)
+            val meta = extractViaRetriever(filePath, port, tokenParam)
             result.add(meta)
         }
         return result
     }
 
-    private fun extractViaRetriever(filePath: String, port: Int): JsonObject {
+    private fun extractViaRetriever(filePath: String, port: Int, tokenParam: String): JsonObject {
         val file = File(filePath)
         var title = extractFilename(filePath)
         var artist = "未知艺术家"
@@ -222,7 +224,7 @@ class LocalMusicScanner(
             addProperty("album", album)
             addProperty("duration", duration)
             if (hasCover) {
-                addProperty("cover", "http://127.0.0.1:$port/local-cover?path=${enc(filePath)}")
+                addProperty("cover", "http://127.0.0.1:$port/local-cover?path=${enc(filePath)}$tokenParam")
             } else {
                 add("cover", null)
             }

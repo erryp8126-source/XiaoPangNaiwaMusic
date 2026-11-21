@@ -102,7 +102,7 @@ class MainActivity : AppCompatActivity() {
         window.navigationBarColor = Color.TRANSPARENT
 
         val app = AlgerApp.instance
-        localScanner = LocalMusicScanner(this) { app.localServerPort }
+        localScanner = LocalMusicScanner(this, { app.localServerPort }, { app.localAuthToken })
         downloadManager = NativeDownloadManager(this) { channel, payloadJson ->
             pushEventToJs(channel, payloadJson)
         }
@@ -270,7 +270,7 @@ class MainActivity : AppCompatActivity() {
             displayZoomControls = false
             // 确保前端 isMobile 始终精准识别为 Android 手机端
             if (!userAgentString.contains("AlgerAndroid")) {
-                userAgentString = "$userAgentString AlgerAndroid/5.1.0 Mobile"
+                userAgentString = "$userAgentString AlgerAndroid/${BuildConfig.VERSION_NAME} Mobile"
             }
         }
 

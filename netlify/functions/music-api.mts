@@ -19,23 +19,134 @@ const require = createRequire(import.meta.url);
 const ncmApi: Record<string, any> = require("netease-cloud-music-api-alger");
 
 const DEFAULT_CN_IP = "116.25.146.177";
+const MAX_BODY_BYTES = 64 * 1024; // 限制单次请求体最大 64 KB，防资源滥用
+
+/** 严格 CORS 来源白名单：仅允许自有部署域名与本地开发调试 */
+const EXACT_ALLOWED_ORIGINS = new Set([
+  "https://xiaopang-naiwa-music.netlify.app",
+  "https://erryp8126-source.github.io",
+]);
+
+function isTrustedOrigin(origin: string): boolean {
+  const normalized = origin.trim().replace(/\/+$/, "").toLowerCase();
+  if (EXACT_ALLOWED_ORIGINS.has(normalized)) return true;
+  if (/^https:\/\/[a-z0-9-]+--xiaopang-naiwa-music\.netlify\.app$/.test(normalized)) return true;
+  if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalized)) return true;
+  return false;
+}
+
+/** 仅开放前端实际调用的网易云路由白名单，杜绝将 250+ 全量接口暴露为任意开放代理 */
+const ALLOWED_ROUTES = new Set([
+  // 认证与账号
+  "/login/qr/key",
+  "/login/qr/create",
+  "/login/qr/check",
+  "/login/status",
+  "/login/cellphone",
+  "/logout",
+  "/user/account",
+  "/user/detail",
+  "/user/playlist",
+  "/user/record",
+  "/user/follows",
+  "/user/followeds",
+  // 首页与推荐
+  "/banner",
+  "/personalized",
+  "/personalized/newsong",
+  "/personalized/mv",
+  "/personalized/privatecontent",
+  "/personalized/djprogram",
+  "/recommend/songs",
+  "/recommend/songs/dislike",
+  "/history/recommend/songs",
+  "/history/recommend/songs/detail",
+  "/personal_fm",
+  "/fm_trash",
+  // 搜索
+  "/cloudsearch",
+  "/search/default",
+  "/search/hot/detail",
+  "/search/suggest",
+  // 歌曲、歌词与互动
+  "/song/detail",
+  "/song/url/v1",
+  "/song/download/url/v1",
+  "/song/music/detail",
+  "/lyric/new",
+  "/like",
+  "/likelist",
+  "/scrobble",
+  "/playmode/intelligence/list",
+  // 歌单、榜单与专辑
+  "/playlist/catlist",
+  "/playlist/detail",
+  "/playlist/create",
+  "/playlist/tracks",
+  "/playlist/subscribe",
+  "/playlist/import/name/task/create",
+  "/playlist/import/task/status",
+  "/top/playlist",
+  "/top/playlist/highquality",
+  "/toplist",
+  "/album",
+  "/album/new",
+  "/album/newest",
+  "/album/sub",
+  "/album/sublist",
+  "/top/album",
+  // 歌手与 MV
+  "/artist/detail",
+  "/artist/songs",
+  "/artist/album",
+  "/artist/new/song",
+  "/top/artists",
+  "/mv/all",
+  "/mv/detail",
+  "/mv/url",
+  // 播客 / 电台
+  "/dj/banner",
+  "/dj/catelist",
+  "/dj/category/recommend",
+  "/dj/detail",
+  "/dj/personalize/recommend",
+  "/dj/program",
+  "/dj/program/detail",
+  "/dj/radio/hot",
+  "/dj/recommend",
+  "/dj/recommend/type",
+  "/dj/sub",
+  "/dj/sublist",
+  "/dj/today/perfered",
+  "/dj/toplist",
+  "/comment/dj",
+  // 最近播放
+  "/record/recent/song",
+  "/record/recent/playlist",
+  "/record/recent/album",
+  "/record/recent/dj",
+]);
+
+const AUTH_COOKIE_ROUTES = new Set([
+  "/login/qr/check",
+  "/login/cellphone",
+  "/login/status",
+  "/logout",
+]);
 
 let cachedAnonCookie = "";
 let anonInitPromise: Promise<string> | null = null;
 
-function buildCorsHeaders(req: Request): Record<string, string> {
-  const origin = req.headers.get("origin");
+function buildCorsHeaders(origin: string | null): Record<string, string> {
   const headers: Record<string, string> = {
-    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With, Cookie",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",
   };
-  if (origin) {
+  if (origin && isTrustedOrigin(origin)) {
     headers["Access-Control-Allow-Origin"] = origin;
     headers["Access-Control-Allow-Credentials"] = "true";
-  } else {
-    headers["Access-Control-Allow-Origin"] = "*";
   }
   return headers;
 }
@@ -120,17 +231,16 @@ function upgradeNeteaseUrlsToHttps(body: any): any {
 
 async function handleMusicUnblock(params: Record<string, any>, corsHeaders: Record<string, string>): Promise<Response> {
   const id = String(params.id || "").trim();
-  if (!id) {
+  if (!/^\d{1,16}$/.test(id)) {
     return Response.json(
-      { code: 400, message: "Missing song id", data: null },
+      { code: 400, message: "Invalid song id", data: null },
       { status: 400, headers: corsHeaders }
     );
   }
 
-  let songName = String(params.name || "").trim();
-  let artistName = String(params.artist || "").trim();
+  let songName = String(params.name || "").trim().slice(0, 80);
+  let artistName = String(params.artist || "").trim().slice(0, 80);
 
-  // 如果前端只传了 id，则先通过网易云 song_detail 自动反查歌名与歌手，提升跨平台匹配准确率
   if (!songName) {
     try {
       const anonCookie = await ensureAnonymousCookie();
@@ -141,15 +251,16 @@ async function handleMusicUnblock(params: Record<string, any>, corsHeaders: Reco
       });
       const song = detail?.body?.songs?.[0];
       if (song) {
-        songName = song.name || "";
-        artistName = Array.isArray(song.ar) ? song.ar.map((a: any) => a.name).join(" ") : "";
+        songName = String(song.name || "").slice(0, 80);
+        artistName = Array.isArray(song.ar)
+          ? song.ar.map((a: any) => a.name).join(" ").slice(0, 80)
+          : "";
       }
     } catch {
-      // continue to direct GDMusic netease id lookup
+      // continue to direct lookup
     }
   }
 
-  // 1. 优先尝试 GD音乐台（直接支持网易云 ID + 酷我/酷狗/咪咕多源检索，且多数直接返回 HTTPS 链接）
   const tryGdMusic = async (source: string, trackId: string): Promise<string | null> => {
     try {
       const urlResp = await fetch(
@@ -173,7 +284,6 @@ async function handleMusicUnblock(params: Record<string, any>, corsHeaders: Reco
     return null;
   };
 
-  // 1a. 先用网易云原 ID 直查 GDMusic
   const directUrl = await tryGdMusic("netease", id);
   if (directUrl) {
     return Response.json(
@@ -182,7 +292,6 @@ async function handleMusicUnblock(params: Record<string, any>, corsHeaders: Reco
     );
   }
 
-  // 1b. 用歌名+歌手跨源检索 kuwo / joox / migu
   if (songName) {
     const keyword = `${songName} ${artistName}`.trim();
     for (const source of ["kuwo", "joox", "netease"]) {
@@ -222,7 +331,6 @@ async function handleMusicUnblock(params: Record<string, any>, corsHeaders: Reco
 }
 
 const SPECIAL_ROUTES: Record<string, string> = {
-  "/daily_signin": "daily_signin",
   "/fm_trash": "fm_trash",
   "/personal_fm": "personal_fm",
 };
@@ -234,55 +342,101 @@ function resolveModuleName(apiPath: string): string {
 }
 
 export default async (req: Request, _context: Context): Promise<Response> => {
-  const corsHeaders = buildCorsHeaders(req);
+  const origin = req.headers.get("origin");
+  if (origin && !isTrustedOrigin(origin)) {
+    return Response.json(
+      { code: 403, msg: "Forbidden Origin" },
+      { status: 403, headers: { Vary: "Origin" } }
+    );
+  }
+
+  const corsHeaders = buildCorsHeaders(origin);
 
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
 
+  if (req.method !== "GET" && req.method !== "POST" && req.method !== "HEAD") {
+    return Response.json(
+      { code: 405, msg: "Method Not Allowed" },
+      { status: 405, headers: corsHeaders }
+    );
+  }
+
   const reqUrl = new URL(req.url);
-  // 兼容 /api/xxx 与 /.netlify/functions/music-api/xxx
   let apiPath = reqUrl.pathname
     .replace(/^\/\.netlify\/functions\/music-api/, "")
-    .replace(/^\/api(?=\/|$)/, "");
+    .replace(/^\/api(?=\/|$)/, "")
+    .replace(/\/+$/, "");
   if (!apiPath.startsWith("/")) apiPath = `/${apiPath}`;
 
   if (apiPath === "/" || apiPath === "/health") {
     return Response.json(
-      { ok: true, service: "xiaopang-naiwa-music-api", version: "5.1.3" },
+      { ok: true, service: "xiaopang-naiwa-music-api", version: "5.1.4" },
       { status: 200, headers: corsHeaders }
     );
   }
 
-  // 解析 Query + JSON/Form Body 参数
+  // 检查请求体体积上限（防大包滥用）
+  const declaredLen = Number(req.headers.get("content-length") || "0");
+  if (Number.isFinite(declaredLen) && declaredLen > MAX_BODY_BYTES) {
+    return Response.json(
+      { code: 413, msg: "Payload Too Large" },
+      { status: 413, headers: corsHeaders }
+    );
+  }
+
   const params: Record<string, any> = {};
   reqUrl.searchParams.forEach((value, key) => {
-    params[key] = value;
+    if (value.length <= 8192) {
+      params[key] = value;
+    }
   });
 
-  if (req.method !== "GET" && req.method !== "HEAD") {
+  if (req.method === "POST") {
     const contentType = req.headers.get("content-type") || "";
     try {
-      if (contentType.includes("application/json")) {
-        const jsonBody = await req.json();
-        if (jsonBody && typeof jsonBody === "object") {
-          Object.assign(params, jsonBody);
+      const rawText = await req.text();
+      if (new TextEncoder().encode(rawText).byteLength > MAX_BODY_BYTES) {
+        return Response.json(
+          { code: 413, msg: "Payload Too Large" },
+          { status: 413, headers: corsHeaders }
+        );
+      }
+      if (rawText.trim()) {
+        if (contentType.includes("application/json")) {
+          const jsonBody = JSON.parse(rawText);
+          if (jsonBody && typeof jsonBody === "object" && !Array.isArray(jsonBody)) {
+            Object.assign(params, jsonBody);
+          }
+        } else if (contentType.includes("application/x-www-form-urlencoded")) {
+          const form = new URLSearchParams(rawText);
+          form.forEach((value, key) => {
+            params[key] = value;
+          });
         }
-      } else if (contentType.includes("application/x-www-form-urlencoded")) {
-        const text = await req.text();
-        const form = new URLSearchParams(text);
-        form.forEach((value, key) => {
-          params[key] = value;
-        });
       }
     } catch {
-      // ignore empty/malformed body
+      return Response.json(
+        { code: 400, msg: "Malformed request body" },
+        { status: 400, headers: corsHeaders }
+      );
     }
   }
 
-  // 专属多平台音源解析入口（Web / Safari PWA 播放 VIP/灰歌回退）
+  // 严禁外部传入 proxy 或 realIP 滥用服务端做跳板/SSRF
+  delete params.proxy;
+  delete params.realIP;
+
   if (apiPath === "/music") {
     return handleMusicUnblock(params, corsHeaders);
+  }
+
+  if (!ALLOWED_ROUTES.has(apiPath)) {
+    return Response.json(
+      { code: 404, msg: `Route not allowed: ${apiPath}` },
+      { status: 404, headers: corsHeaders }
+    );
   }
 
   const moduleName = resolveModuleName(apiPath);
@@ -294,10 +448,9 @@ export default async (req: Request, _context: Context): Promise<Response> => {
     );
   }
 
-  // 合并浏览器 Cookie、显式传参 cookie 与匿名 MUSIC_A Cookie
   const headerCookies = parseCookieHeader(req.headers.get("cookie"));
   let cookieStr = mergeCookieString(headerCookies, params.cookie);
-  if (!cookieStr.includes("MUSIC_U=") && !cookieStr.includes("MUSIC_A=") && moduleName !== "register_anonimous") {
+  if (!cookieStr.includes("MUSIC_U=") && !cookieStr.includes("MUSIC_A=")) {
     const anon = await ensureAnonymousCookie();
     if (anon) {
       cookieStr = mergeCookieString(parseCookieHeader(anon), cookieStr);
@@ -307,7 +460,7 @@ export default async (req: Request, _context: Context): Promise<Response> => {
   const callParams: Record<string, any> = {
     ...params,
     cookie: cookieStr,
-    realIP: params.realIP || DEFAULT_CN_IP,
+    realIP: DEFAULT_CN_IP,
   };
 
   try {
@@ -322,7 +475,6 @@ export default async (req: Request, _context: Context): Promise<Response> => {
     const resHeaders = new Headers(corsHeaders);
     resHeaders.set("Content-Type", "application/json; charset=utf-8");
 
-    // 静态列表类接口适度开启短缓存，提升首页秒开体验
     if (
       req.method === "GET" &&
       status === 200 &&
@@ -335,8 +487,9 @@ export default async (req: Request, _context: Context): Promise<Response> => {
       resHeaders.set("Cache-Control", "no-store");
     }
 
+    // 仅在登录/登出认证类路由上按需回写 Set-Cookie，避免普通浏览接口不必要地透传 Cookie
     const setCookies: string[] = Array.isArray(result?.cookie) ? result.cookie : [];
-    if (!params.noCookie && setCookies.length > 0) {
+    if (AUTH_COOKIE_ROUTES.has(apiPath) && !params.noCookie && setCookies.length > 0) {
       for (const rawCookie of setCookies) {
         if (typeof rawCookie === "string" && rawCookie.trim()) {
           const patched = rawCookie.includes("SameSite=")
@@ -369,4 +522,10 @@ export default async (req: Request, _context: Context): Promise<Response> => {
 
 export const config: Config = {
   path: "/api/*",
+  rateLimit: {
+    windowLimit: 180,
+    windowSize: 60,
+    aggregateBy: ["ip", "domain"],
+    action: "rate_limit",
+  },
 };

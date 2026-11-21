@@ -192,6 +192,25 @@ final class MusicUnblockEngine {
         return nil
     }
 
+    static func isSafePublicHttpUrl(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            return false
+        }
+        guard let host = url.host?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines), !host.isEmpty else {
+            return false
+        }
+        if host == "localhost" || host == "127.0.0.1" || host == "0.0.0.0" || host == "::1" || host.hasSuffix(".local") {
+            return false
+        }
+        if host.hasPrefix("127.") || host.hasPrefix("10.") || host.hasPrefix("192.168.") || host.hasPrefix("169.254.") {
+            return false
+        }
+        if host.range(of: #"^172\.(1[6-9]|2[0-9]|3[0-1])\."#, options: .regularExpression) != nil {
+            return false
+        }
+        return true
+    }
+
     func proxyHttpRequest(
         url: String,
         method: String = "GET",
@@ -200,8 +219,8 @@ final class MusicUnblockEngine {
         form: [String: String]? = nil,
         timeoutMs: Double = 15000
     ) -> [String: Any] {
-        guard let nsUrl = URL(string: url) else {
-            return ["statusCode": 400, "headers": [:], "body": "Invalid URL", "finalUrl": url]
+        guard let nsUrl = URL(string: url), Self.isSafePublicHttpUrl(nsUrl) else {
+            return ["statusCode": 403, "headers": [:], "body": "Blocked non-public or invalid URL", "finalUrl": url]
         }
 
         var req = URLRequest(url: nsUrl, timeoutInterval: max(3.0, timeoutMs / 1000.0))

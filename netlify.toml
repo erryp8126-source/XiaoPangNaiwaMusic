@@ -1,7 +1,5 @@
-"$schema" = "https://open-api.netlify.com/netlify.schema.json"
-
 [build]
-  command = "npm install --no-audit --no-fund && cd upstream && ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm install --ignore-scripts --legacy-peer-deps && npx vite build --outDir ../dist-pwa --emptyOutDir"
+  command = "npm ci --no-audit --no-fund && cd upstream && ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci --ignore-scripts --legacy-peer-deps && npx vite build --outDir ../dist-pwa --emptyOutDir"
   publish = "dist-pwa"
 
 [build.environment]

@@ -219,6 +219,7 @@ import { isAndroid, isElectron, isIOS, isNative } from '@/utils';
 import {
   type AndroidServerConfig,
   getAndroidApiBaseUrl,
+  getAndroidLocalAuthToken,
   getAndroidServerConfig,
   saveAndroidServerConfig
 } from '@/utils/androidBridge';
@@ -312,7 +313,12 @@ const testCurrentApi = async () => {
   testingApi.value = true;
   try {
     const base = getAndroidApiBaseUrl();
-    const res = await axios.get(`${base}/search/default`, { timeout: 8000 });
+    const headers: Record<string, string> = {};
+    if (base.startsWith('http://127.0.0.1:')) {
+      const token = getAndroidLocalAuthToken();
+      if (token) headers['X-Alger-Token'] = token;
+    }
+    const res = await axios.get(`${base}/search/default`, { timeout: 8000, headers });
     if (res.status === 200) {
       message.success(`连接成功 (${base})`);
     } else {

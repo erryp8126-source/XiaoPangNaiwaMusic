@@ -3,6 +3,7 @@ import Foundation
 struct ServerConfig: Codable {
     var mode: String
     var localPort: Int
+    var localToken: String
     var customApiUrl: String
     var customMusicApiUrl: String
     var floatingLyricEnabled: Bool
@@ -29,20 +30,21 @@ final class AppPrefs {
         set { defaults.set(newValue, forKey: Keys.deviceId) }
     }
 
-    func getServerConfig(localPort: Int) -> ServerConfig {
+    func getServerConfig(localPort: Int, localToken: String = "") -> ServerConfig {
         let mode = defaults.string(forKey: Keys.mode) ?? "local"
         let customApi = defaults.string(forKey: Keys.customApiUrl) ?? ""
         let customMusicApi = defaults.string(forKey: Keys.customMusicApiUrl) ?? ""
         return ServerConfig(
             mode: mode == "custom" ? "custom" : "local",
             localPort: localPort,
+            localToken: localToken,
             customApiUrl: customApi,
             customMusicApiUrl: customMusicApi,
             floatingLyricEnabled: false
         )
     }
 
-    func saveServerConfigFromJson(_ json: String, localPort: Int) -> ServerConfig {
+    func saveServerConfigFromJson(_ json: String, localPort: Int, localToken: String = "") -> ServerConfig {
         if let data = json.data(using: .utf8),
            let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let mode = dict["mode"] as? String {
@@ -55,6 +57,6 @@ final class AppPrefs {
                 defaults.set(customMusic.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Keys.customMusicApiUrl)
             }
         }
-        return getServerConfig(localPort: localPort)
+        return getServerConfig(localPort: localPort, localToken: localToken)
     }
 }

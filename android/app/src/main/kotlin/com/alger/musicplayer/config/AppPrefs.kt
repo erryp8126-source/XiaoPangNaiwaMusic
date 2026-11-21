@@ -8,6 +8,7 @@ import com.google.gson.JsonObject
 data class ServerConfig(
     val mode: String = "local",
     val localPort: Int = 30488,
+    val localToken: String = "",
     val customApiUrl: String = "",
     val customMusicApiUrl: String = "",
     val floatingLyricEnabled: Boolean = false
@@ -18,17 +19,18 @@ class AppPrefs(context: Context) {
         context.getSharedPreferences("alger_music_prefs", Context.MODE_PRIVATE)
     private val gson = Gson()
 
-    fun getServerConfig(activeLocalPort: Int): ServerConfig {
+    fun getServerConfig(activeLocalPort: Int, localAuthToken: String = ""): ServerConfig {
         return ServerConfig(
             mode = prefs.getString("api_mode", "local") ?: "local",
             localPort = activeLocalPort,
+            localToken = localAuthToken,
             customApiUrl = prefs.getString("custom_api_url", "") ?: "",
             customMusicApiUrl = prefs.getString("custom_music_api_url", "") ?: "",
             floatingLyricEnabled = prefs.getBoolean("floating_lyric_enabled", false)
         )
     }
 
-    fun saveServerConfigFromJson(json: String, activeLocalPort: Int): ServerConfig {
+    fun saveServerConfigFromJson(json: String, activeLocalPort: Int, localAuthToken: String = ""): ServerConfig {
         val obj = runCatching { gson.fromJson(json, JsonObject::class.java) }.getOrNull()
         val editor = prefs.edit()
         if (obj != null) {
@@ -38,7 +40,7 @@ class AppPrefs(context: Context) {
             obj.get("floatingLyricEnabled")?.asBoolean?.let { editor.putBoolean("floating_lyric_enabled", it) }
         }
         editor.apply()
-        return getServerConfig(activeLocalPort)
+        return getServerConfig(activeLocalPort, localAuthToken)
     }
 
     var floatingLyricEnabled: Boolean

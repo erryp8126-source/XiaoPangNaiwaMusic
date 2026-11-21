@@ -1,19 +1,24 @@
 import Foundation
 import Network
 import AVFoundation
+import Security
 import UIKit
 
 /// iOS 内置回环 HTTP/1.1 服务器 (127.0.0.1:30488)
-/// 职责：
-/// 1. 托管打包在 App 内的 Vue 3 前端静态资源 (/__app/*)
-/// 2. 承载全部 80+ 网易云音乐直连接口
-/// 3. 承载多平台音源解析接口 (/music, /unblock)
-/// 4. 提供本地音频 Range 流式播放 (/local-file) 与内嵌封面提取 (/local-cover)
+/// 安全边界：
+/// 1. 强制校验每次启动随机生成的会话鉴权 Token（X-Alger-Token / ?token=），阻断外部越权访问
+/// 2. CORS 严格仅允许本机回环同源，不再反射任意 Origin
+/// 3. `/local-file` 与 `/local-cover` 严格校验音频扩展名与 Documents 规范化目录边界
 final class LocalHttpServer {
+    private static let allowedAudioExts: Set<String> = [
+        "mp3", "flac", "m4a", "aac", "wav", "ogg", "oga", "opus", "alac"
+    ]
+
     private let ncmClient: NeteaseApiClient
     private let unblockEngine: MusicUnblockEngine
     private let queue = DispatchQueue(label: "com.alger.musicplayer.httpserver", attributes: .concurrent)
 
+    let authToken: String
     private var listener: NWListener?
     private(set) var port: Int = 30488
     private(set) var isRunning: Bool = false
@@ -21,6 +26,17 @@ final class LocalHttpServer {
     init(ncmClient: NeteaseApiClient, unblockEngine: MusicUnblockEngine) {
         self.ncmClient = ncmClient
         self.unblockEngine = unblockEngine
+        self.authToken = Self.generateSessionToken()
+    }
+
+    private static func generateSessionToken() -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        if status == errSecSuccess {
+            return bytes.map { String(format: "%02x", $0) }.joined()
+        }
+        return UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+            + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
     }
 
     @discardableResult
@@ -32,7 +48,8 @@ final class LocalHttpServer {
                 return candidate
             }
         }
-        return self.port
+        self.isRunning = false
+        return -1
     }
 
     func ensureAlive() {
@@ -171,24 +188,68 @@ final class LocalHttpServer {
         }
     }
 
+    private func isTrustedOrigin(_ origin: String) -> Bool {
+        let normalized = origin.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .lowercased()
+        return normalized == "http://127.0.0.1:\(port)" || normalized == "http://localhost:\(port)"
+    }
+
+    private func isAuthorized(_ req: HttpRequest) -> Bool {
+        if authToken.isEmpty { return true }
+        let candidate = (req.headers["x-alger-token"] ?? req.query["token"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard candidate.count == authToken.count else { return false }
+        var diff: UInt8 = 0
+        for (a, b) in zip(candidate.utf8, authToken.utf8) {
+            diff |= (a ^ b)
+        }
+        return diff == 0
+    }
+
+    private func isAllowedAudioFile(_ fileUrl: URL) -> Bool {
+        let ext = fileUrl.pathExtension.lowercased()
+        guard Self.allowedAudioExts.contains(ext) else { return false }
+        guard let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return false
+        }
+        let docsRoot = docsDir.standardizedFileURL.resolvingSymlinksInPath().path
+        let targetPath = fileUrl.standardizedFileURL.resolvingSymlinksInPath().path
+        return targetPath.hasPrefix(docsRoot + "/")
+    }
+
     private func processHttpBuffer(_ raw: Data, conn: NWConnection) {
         guard let req = parseHttpRequest(raw) else {
             conn.cancel()
             return
         }
 
-        let origin = req.headers["origin"] ?? "*"
+        let origin = req.headers["origin"]
+        if let origin = origin, !isTrustedOrigin(origin) {
+            let forbidden = jsonResponse(status: 403, obj: ["code": 403, "msg": "Forbidden Origin"])
+            sendHttpResponse(forbidden, conn: conn)
+            return
+        }
+
         var resp: HttpResponse
         if req.method == "OPTIONS" {
             resp = HttpResponse(status: 200, statusText: "OK", contentType: "text/plain", body: Data())
         } else {
-            resp = routeRequest(req)
+            let isStaticAppAsset = req.path == "/__app" || req.path == "/__app/" || req.path.hasPrefix("/__app/")
+            if !isStaticAppAsset && !isAuthorized(req) {
+                resp = jsonResponse(status: 401, obj: ["code": 401, "msg": "Unauthorized"])
+            } else {
+                resp = routeRequest(req)
+            }
         }
 
-        resp.headers["Access-Control-Allow-Origin"] = origin
-        resp.headers["Access-Control-Allow-Credentials"] = "true"
+        if let origin = origin, isTrustedOrigin(origin), req.path != "/local-file" {
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Vary"] = "Origin"
+        }
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Cookie, Range"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Cookie, Range, X-Alger-Token"
         if resp.headers["Cache-Control"] == nil {
             resp.headers["Cache-Control"] = "no-store"
         }
@@ -275,12 +336,13 @@ final class LocalHttpServer {
     }
 
     private func handleHealth() -> HttpResponse {
+        let appVer = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "5.1.3"
         let obj: [String: Any] = [
             "status": "ok",
             "port": port,
             "hasAnonToken": ncmClient.hasAnonymousToken(),
             "platform": "ios",
-            "version": "5.1.0-ios"
+            "version": "\(appVer)-ios"
         ]
         return jsonResponse(status: 200, obj: obj)
     }
@@ -316,6 +378,7 @@ final class LocalHttpServer {
 
     private func handleNeteaseApi(_ req: HttpRequest) -> HttpResponse {
         var params = collectParams(req)
+        params.removeValue(forKey: "token")
         if (params["cookie"] ?? "").isEmpty,
            let headerCookie = req.headers["cookie"], !headerCookie.isEmpty,
            params["noCookie"] != "true" {
@@ -382,6 +445,9 @@ final class LocalHttpServer {
         }
         let decoded = rawPath.removingPercentEncoding ?? rawPath
         let fileUrl = URL(fileURLWithPath: decoded)
+        guard isAllowedAudioFile(fileUrl) else {
+            return HttpResponse(status: 403, statusText: "Forbidden", contentType: "text/plain", body: Data("Forbidden file".utf8))
+        }
         guard FileManager.default.fileExists(atPath: fileUrl.path),
               let attrs = try? FileManager.default.attributesOfItem(atPath: fileUrl.path),
               let totalLen = (attrs[.size] as? NSNumber)?.int64Value, totalLen > 0 else {
@@ -421,6 +487,9 @@ final class LocalHttpServer {
         }
         let decoded = rawPath.removingPercentEncoding ?? rawPath
         let fileUrl = URL(fileURLWithPath: decoded)
+        guard isAllowedAudioFile(fileUrl) else {
+            return HttpResponse(status: 403, statusText: "Forbidden", contentType: "text/plain", body: Data("Forbidden path".utf8))
+        }
         guard FileManager.default.fileExists(atPath: fileUrl.path) else {
             return HttpResponse(status: 404, statusText: "Not Found", contentType: "text/plain", body: Data("No cover".utf8))
         }
@@ -491,6 +560,8 @@ final class LocalHttpServer {
         case 200: return "OK"
         case 206: return "Partial Content"
         case 400: return "Bad Request"
+        case 401: return "Unauthorized"
+        case 403: return "Forbidden"
         case 404: return "Not Found"
         case 500: return "Internal Server Error"
         case 502: return "Bad Gateway"

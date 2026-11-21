@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * 手机内置多音源解锁与 CORS-Free HTTP 引擎
- * 支持酷我 / 酷狗 / 咪咕 / GD音乐台 / 哔哩哔哩以及 LX Music 脚本无跨域请求代理
+ * 支持酷我 / 酷狗 / 咪咕 / GD音乐台以及 LX Music 脚本与云同步无跨域请求代理
  */
 class MusicUnblockEngine {
     companion object {
@@ -243,8 +243,24 @@ class MusicUnblockEngine {
         }
     }
 
+    private fun isSafePublicHttpUrl(rawUrl: String): Boolean {
+        val parsed = runCatching { java.net.URI(rawUrl) }.getOrNull() ?: return false
+        val scheme = parsed.scheme?.lowercase() ?: return false
+        if (scheme != "http" && scheme != "https") return false
+        val host = parsed.host?.lowercase()?.trim() ?: return false
+        if (host.isEmpty() || host == "localhost" || host.endsWith(".local")) return false
+        if (host == "127.0.0.1" || host == "0.0.0.0" || host == "::1" || host.startsWith("127.")) return false
+        if (host.startsWith("10.") || host.startsWith("192.168.") || host.startsWith("169.254.")) return false
+        if (Regex("^172\\.(1[6-9]|2[0-9]|3[0-1])\\.").containsMatchIn(host)) return false
+        return runCatching {
+            val addr = java.net.InetAddress.getByName(host)
+            !(addr.isLoopbackAddress || addr.isAnyLocalAddress || addr.isLinkLocalAddress || addr.isSiteLocalAddress)
+        }.getOrDefault(false)
+    }
+
     /**
-     * 供 LX Music 脚本、GD 音乐台、自定义 API 插件调用的无跨域 HTTP 请求器
+     * 供 LX Music 脚本、GD 音乐台、自定义 API 插件与 WebDAV 云同步调用的无跨域 HTTP 请求器
+     * 严格禁止访问回环地址与内网私有网段（防 SSRF）
      */
     fun proxyHttpRequest(
         url: String,
@@ -254,6 +270,9 @@ class MusicUnblockEngine {
         form: Map<String, String>? = null,
         timeoutMs: Long = 15000
     ): JsonObject {
+        if (!isSafePublicHttpUrl(url)) {
+            throw SecurityException("Blocked non-public or invalid proxy URL")
+        }
         val customClient = client.newBuilder()
             .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
             .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)

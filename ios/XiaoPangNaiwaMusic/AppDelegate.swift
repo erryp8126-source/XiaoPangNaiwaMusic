@@ -21,6 +21,7 @@ final class AppServices {
         self.audioManager = AudioPlayerManager(ncmClient: ncmClient, unblockEngine: unblockEngine)
         self.storageManager = LocalMusicAndDownloadManager(
             portProvider: { [weak self] in self?.httpServer.port ?? 30488 },
+            tokenProvider: { [weak self] in self?.httpServer.authToken ?? "" },
             eventEmitter: { [weak self] ch, payload in
                 self?.onStorageEvent?(ch, payload)
             }

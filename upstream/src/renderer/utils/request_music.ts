@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-import { getAndroidMusicApiBaseUrl, isAndroid } from '@/utils/androidBridge';
+import { getAndroidLocalAuthToken, getAndroidMusicApiBaseUrl, isAndroid } from '@/utils/androidBridge';
 import { getDefaultWebApiBaseUrl } from '@/utils/request';
 
 const resolveMusicBaseUrl = () => {
@@ -30,6 +30,13 @@ const request = axios.create({
 request.interceptors.request.use(
   (config) => {
     config.baseURL = resolveMusicBaseUrl();
+    if (isAndroid() && typeof config.baseURL === 'string' && config.baseURL.startsWith('http://127.0.0.1:')) {
+      const localToken = getAndroidLocalAuthToken();
+      if (localToken) {
+        config.headers = config.headers || ({} as any);
+        (config.headers as any)['X-Alger-Token'] = localToken;
+      }
+    }
     return config;
   },
   (error) => {

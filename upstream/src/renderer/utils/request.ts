@@ -1,7 +1,7 @@
 import axios, { InternalAxiosRequestConfig } from 'axios';
 
 import { useUserStore } from '@/store/modules/user';
-import { getAndroidApiBaseUrl, isAndroid } from '@/utils/androidBridge';
+import { getAndroidApiBaseUrl, getAndroidLocalAuthToken, isAndroid } from '@/utils/androidBridge';
 
 import { getSetData, isElectron, isMobile } from '.';
 
@@ -61,6 +61,14 @@ request.interceptors.request.use(
   (config: CustomAxiosRequestConfig) => {
     setData = getSetData();
     config.baseURL = resolveBaseURL();
+    // 访问本机内置回环代理时自动携带每进程随机鉴权令牌，防止同机外部网页/应用越权访问
+    if (isAndroid() && typeof config.baseURL === 'string' && config.baseURL.startsWith('http://127.0.0.1:')) {
+      const localToken = getAndroidLocalAuthToken();
+      if (localToken) {
+        config.headers = config.headers || ({} as any);
+        (config.headers as any)['X-Alger-Token'] = localToken;
+      }
+    }
     // 只在retryCount未定义时初始化为0
     if (config.retryCount === undefined) {
       config.retryCount = 0;

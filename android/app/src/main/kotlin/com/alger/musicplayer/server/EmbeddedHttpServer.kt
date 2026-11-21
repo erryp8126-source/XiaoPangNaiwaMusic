@@ -6,10 +6,10 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
-import android.provider.MediaStore
+import android.os.Environment
 import android.util.Log
+import com.alger.musicplayer.BuildConfig
 import com.google.gson.Gson
-import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import fi.iki.elonen.NanoHTTPD
 import java.io.ByteArrayInputStream
@@ -18,34 +18,52 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
 import java.net.URLDecoder
+import java.security.MessageDigest
 
 /**
  * 手机内置回环 HTTP 服务器 (127.0.0.1:30488)
- * 职责：
- * 1. 承载全部网易云音乐直连 API (/personalized, /cloudsearch, /song/url/v1, /lyric/new 等 80+ 路由)
- * 2. 承载内置多音源解锁接口 (/music, /unblock)
- * 3. 提供本地音频文件 Range 流式播放 (/local-file) 与内嵌专辑封面提取 (/local-cover)
- * 4. 完整处理 CORS 跨域头与 OPTIONS 预检，完美配合 WebViewAssetLoader
+ * 安全边界：
+ * 1. 强制校验每次启动随机生成的会话鉴权 Token（Header `X-Alger-Token` 或 Query `token`），阻断同机其他网页/应用越权访问
+ * 2. CORS 严格白名单（仅允许本 App WebViewAssetLoader 与本机回环同源），不再反射任意 Origin
+ * 3. `/local-file` 与 `/local-cover` 严格校验音频扩展名与规范化目录边界，阻断任意文件读取
  */
 class EmbeddedHttpServer(
     private val context: Context,
     port: Int,
+    private val authToken: String,
     private val ncmClient: NeteaseApiClient,
     private val unblockEngine: MusicUnblockEngine
 ) : NanoHTTPD("127.0.0.1", port) {
 
     companion object {
         private const val TAG = "EmbeddedHttpServer"
+        private const val ALLOWED_WEBVIEW_ORIGIN = "https://appassets.androidplatform.net"
+        private val ALLOWED_AUDIO_EXTS = setOf(
+            ".mp3", ".flac", ".wav", ".ogg", ".oga", ".m4a", ".aac", ".opus", ".wma"
+        )
     }
 
     private val gson = Gson()
 
     override fun serve(session: IHTTPSession): Response {
-        val origin = session.headers["origin"] ?: "*"
+        val origin = session.headers["origin"]
+        if (origin != null && !isTrustedOrigin(origin)) {
+            val forbidden = gson.toJson(mapOf("code" to 403, "msg" to "Forbidden Origin"))
+            return newFixedLengthResponse(Response.Status.FORBIDDEN, "application/json; charset=utf-8", forbidden)
+        }
 
-        // 处理 CORS OPTIONS 预检请求
+        // 处理可信来源的 CORS OPTIONS 预检请求
         if (session.method == Method.OPTIONS) {
             return addCorsHeaders(newFixedLengthResponse(Response.Status.OK, "text/plain", ""), origin)
+        }
+
+        // 校验每进程随机鉴权令牌（支持 X-Alger-Token 请求头或图片/媒体流 ?token= 参数）
+        if (!isAuthorized(session)) {
+            val unauth = gson.toJson(mapOf("code" to 401, "msg" to "Unauthorized"))
+            return addCorsHeaders(
+                newFixedLengthResponse(Response.Status.UNAUTHORIZED, "application/json; charset=utf-8", unauth),
+                origin
+            )
         }
 
         val uri = session.uri ?: "/"
@@ -53,7 +71,7 @@ class EmbeddedHttpServer(
         return try {
             val response = when {
                 uri == "/__alger_health" -> handleHealth()
-                uri == "/local-file" -> handleLocalFile(session)
+                uri == "/local-file" -> return handleLocalFile(session) // 本地音频流不开放 CORS
                 uri == "/local-cover" -> handleLocalCover(session)
                 uri == "/music" || uri == "/unblock" -> handleMusicUnblock(session)
                 else -> handleNeteaseApi(session, uri)
@@ -69,13 +87,58 @@ class EmbeddedHttpServer(
         }
     }
 
+    private fun isTrustedOrigin(origin: String): Boolean {
+        val normalized = origin.trim().trimEnd('/').lowercase()
+        return normalized == ALLOWED_WEBVIEW_ORIGIN ||
+            normalized == "http://127.0.0.1:$listeningPort" ||
+            normalized == "http://localhost:$listeningPort"
+    }
+
+    private fun isAuthorized(session: IHTTPSession): Boolean {
+        if (authToken.isBlank()) return true
+        val headerToken = session.headers["x-alger-token"]?.trim()
+        val queryToken = session.parameters?.get("token")?.firstOrNull()?.trim()
+        val candidate = headerToken ?: queryToken ?: return false
+        return MessageDigest.isEqual(
+            candidate.toByteArray(Charsets.UTF_8),
+            authToken.toByteArray(Charsets.UTF_8)
+        )
+    }
+
+    private fun isAllowedContentAudioUri(uriStr: String): Boolean {
+        return uriStr.startsWith("content://media/external/audio/")
+    }
+
+    private fun isAllowedAudioFile(file: File): Boolean {
+        if (!file.exists() || !file.isFile) return false
+        val lowerName = file.name.lowercase()
+        if (ALLOWED_AUDIO_EXTS.none { lowerName.endsWith(it) }) return false
+
+        val canonical = runCatching { file.canonicalPath }.getOrNull() ?: return false
+        // 严禁读取 App 私有内部存储目录（shared_prefs / databases / files 等）
+        val forbiddenRoots = listOfNotNull(
+            runCatching { context.filesDir.canonicalPath }.getOrNull(),
+            runCatching { context.cacheDir.canonicalPath }.getOrNull(),
+            runCatching { context.dataDir.canonicalPath }.getOrNull()
+        )
+        if (forbiddenRoots.any { root -> canonical == root || canonical.startsWith("$root${File.separator}") }) {
+            return false
+        }
+
+        val allowedRoots = listOfNotNull(
+            runCatching { context.getExternalFilesDir(Environment.DIRECTORY_MUSIC)?.canonicalPath }.getOrNull(),
+            runCatching { Environment.getExternalStorageDirectory()?.canonicalPath }.getOrNull()
+        )
+        return allowedRoots.any { root -> canonical.startsWith("$root${File.separator}") }
+    }
+
     private fun handleHealth(): Response {
         val json = gson.toJson(
             mapOf(
                 "status" to "ok",
                 "port" to listeningPort,
                 "hasAnonToken" to ncmClient.hasAnonymousToken(),
-                "version" to "5.1.0-android"
+                "version" to "${BuildConfig.VERSION_NAME}-android"
             )
         )
         return newFixedLengthResponse(Response.Status.OK, "application/json; charset=utf-8", json)
@@ -83,7 +146,7 @@ class EmbeddedHttpServer(
 
     private fun handleNeteaseApi(session: IHTTPSession, uri: String): Response {
         val params = collectParams(session)
-        // 如果 header 中带有 Cookie 且 params 未传 cookie，则补充
+        params.remove("token")
         val headerCookie = session.headers["cookie"]
         if (params["cookie"].isNullOrBlank() && !headerCookie.isNullOrBlank() && params["noCookie"] != "true") {
             params["cookie"] = headerCookie
@@ -93,7 +156,6 @@ class EmbeddedHttpServer(
         val status = Response.Status.lookup(apiRes.status) ?: Response.Status.OK
         val resp = newFixedLengthResponse(status, "application/json; charset=utf-8", apiRes.body)
         if (apiRes.cookies.isNotEmpty()) {
-            // 仅透传必要 Cookie
             apiRes.cookies.forEach { c -> resp.addHeader("Set-Cookie", c) }
         }
         return resp
@@ -105,7 +167,6 @@ class EmbeddedHttpServer(
         var songName = params["name"] ?: ""
         var artists = params["artist"] ?: ""
 
-        // 如果只传了网易云歌曲 ID，先通过内置网易云 API 查歌曲名与歌手名
         if (songName.isBlank() && songId.isNotBlank()) {
             val detailRes = ncmClient.dispatch("/song/detail", mapOf("ids" to songId))
             runCatching {
@@ -176,20 +237,25 @@ class EmbeddedHttpServer(
             }
         }
 
-        // 2. 尝试通过 MediaMetadataRetriever 提取音频内嵌封面
+        // 2. 仅允许从合法音频文件或 MediaStore 音频 URI 提取内嵌封面
         if (!pathStr.isNullOrBlank()) {
             val decoded = runCatching { URLDecoder.decode(pathStr, "UTF-8") }.getOrDefault(pathStr)
             val retriever = MediaMetadataRetriever()
             try {
                 if (decoded.startsWith("content://")) {
+                    if (!isAllowedContentAudioUri(decoded)) {
+                        return newFixedLengthResponse(Response.Status.FORBIDDEN, "text/plain", "Forbidden path")
+                    }
                     retriever.setDataSource(context, Uri.parse(decoded))
                 } else {
                     val file = File(decoded)
-                    if (file.exists()) retriever.setDataSource(file.absolutePath)
+                    if (!isAllowedAudioFile(file)) {
+                        return newFixedLengthResponse(Response.Status.FORBIDDEN, "text/plain", "Forbidden path")
+                    }
+                    retriever.setDataSource(file.canonicalPath)
                 }
                 val pic = retriever.embeddedPicture
                 if (pic != null && pic.isNotEmpty()) {
-                    // 压缩一下超大封面防止 OOM
                     val bmp = BitmapFactory.decodeByteArray(pic, 0, pic.size)
                     val out = ByteArrayOutputStream()
                     if (bmp != null) {
@@ -223,6 +289,9 @@ class EmbeddedHttpServer(
         val rangeHeader = session.headers["range"]
 
         if (decoded.startsWith("content://")) {
+            if (!isAllowedContentAudioUri(decoded)) {
+                return newFixedLengthResponse(Response.Status.FORBIDDEN, "text/plain", "Forbidden URI")
+            }
             val uri = Uri.parse(decoded)
             val pfd = context.contentResolver.openAssetFileDescriptor(uri, "r")
                 ?: return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Not found")
@@ -236,10 +305,11 @@ class EmbeddedHttpServer(
         }
 
         val file = File(decoded)
-        if (!file.exists() || !file.isFile) {
-            return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "File not found")
+        if (!isAllowedAudioFile(file)) {
+            return newFixedLengthResponse(Response.Status.FORBIDDEN, "text/plain", "Forbidden file")
         }
-        return serveStreamWithRange(FileInputStream(file), file.length(), mime, rangeHeader)
+        val canonicalFile = file.canonicalFile
+        return serveStreamWithRange(FileInputStream(canonicalFile), canonicalFile.length(), mime, rangeHeader)
     }
 
     private fun serveStreamWithRange(
@@ -304,7 +374,6 @@ class EmbeddedHttpServer(
                     }
                 }
             }
-            // NanoHTTPD 解析 form 参数后也会放进 session.parameters
             session.parameters?.forEach { (k, list) ->
                 if (!list.isNullOrEmpty() && !result.containsKey(k)) {
                     result[k] = list[0]
@@ -314,11 +383,14 @@ class EmbeddedHttpServer(
         return result
     }
 
-    private fun addCorsHeaders(resp: Response, origin: String): Response {
-        resp.addHeader("Access-Control-Allow-Origin", origin)
-        resp.addHeader("Access-Control-Allow-Credentials", "true")
+    private fun addCorsHeaders(resp: Response, origin: String?): Response {
+        if (origin != null && isTrustedOrigin(origin)) {
+            resp.addHeader("Access-Control-Allow-Origin", origin)
+            resp.addHeader("Access-Control-Allow-Credentials", "true")
+            resp.addHeader("Vary", "Origin")
+        }
         resp.addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-        resp.addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Cookie")
+        resp.addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Cookie, X-Alger-Token")
         resp.addHeader("Cache-Control", "no-store")
         return resp
     }

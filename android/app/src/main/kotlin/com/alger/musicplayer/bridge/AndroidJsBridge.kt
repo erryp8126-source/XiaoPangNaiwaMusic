@@ -51,13 +51,13 @@ class AndroidJsBridge(
 
     @JavascriptInterface
     fun getServerConfig(): String {
-        val cfg = app.prefs.getServerConfig(app.localServerPort)
+        val cfg = app.prefs.getServerConfig(app.localServerPort, app.localAuthToken)
         return gson.toJson(cfg)
     }
 
     @JavascriptInterface
     fun setServerConfig(json: String): String {
-        val saved = app.prefs.saveServerConfigFromJson(json, app.localServerPort)
+        val saved = app.prefs.saveServerConfigFromJson(json, app.localServerPort, app.localAuthToken)
         return gson.toJson(saved)
     }
 

@@ -31,6 +31,7 @@ class NativeDownloadManager(
 ) {
     companion object {
         private const val TAG = "NativeDownloadManager"
+        private const val MAX_DOWNLOAD_BYTES = 200L * 1024L * 1024L // 单曲上限 200MB
     }
 
     private val gson = Gson()
@@ -50,16 +51,34 @@ class NativeDownloadManager(
         return dir
     }
 
+    private fun isInsideDownloadDir(file: File): Boolean {
+        val rootPath = runCatching { getDownloadDir().canonicalPath }.getOrNull() ?: return false
+        val targetPath = runCatching { file.canonicalPath }.getOrNull() ?: return false
+        return targetPath.startsWith("$rootPath${File.separator}")
+    }
+
+    private fun isSafePublicHttpUrl(rawUrl: String): Boolean {
+        val parsed = runCatching { java.net.URI(rawUrl) }.getOrNull() ?: return false
+        val scheme = parsed.scheme?.lowercase() ?: return false
+        if (scheme != "http" && scheme != "https") return false
+        val host = parsed.host?.lowercase()?.trim() ?: return false
+        if (host.isEmpty() || host == "localhost" || host.endsWith(".local")) return false
+        if (host == "127.0.0.1" || host == "0.0.0.0" || host == "::1" || host.startsWith("127.")) return false
+        if (host.startsWith("10.") || host.startsWith("192.168.") || host.startsWith("169.254.")) return false
+        if (Regex("^172\\.(1[6-9]|2[0-9]|3[0-1])\\.").containsMatchIn(host)) return false
+        return true
+    }
+
     private fun getIndexFile(): File = File(getDownloadDir(), ".alger_downloads_index.json")
 
     fun enqueueDownload(payload: JsonObject) {
-        val url = payload.get("url")?.asString ?: ""
+        val url = payload.get("url")?.asString?.trim() ?: ""
         val rawFilename = payload.get("filename")?.asString ?: "unknown_${System.currentTimeMillis()}"
         val songInfo = payload.getAsJsonObject("songInfo")
         val typeHint = payload.get("type")?.asString
 
-        if (url.isBlank()) {
-            emitError(rawFilename, "下载地址为空")
+        if (url.isBlank() || !isSafePublicHttpUrl(url)) {
+            emitError(rawFilename, "无效或不安全的下载地址")
             return
         }
 
@@ -100,8 +119,11 @@ class NativeDownloadManager(
                             while (true) {
                                 val read = input.read(buf)
                                 if (read == -1) break
-                                output.write(buf, 0, read)
                                 downloaded += read
+                                if (downloaded > MAX_DOWNLOAD_BYTES) {
+                                    throw IllegalStateException("文件体积超过 200MB 安全上限")
+                                }
+                                output.write(buf, 0, read)
 
                                 val now = System.currentTimeMillis()
                                 if (now - lastReportTime >= 250) {
@@ -255,6 +277,10 @@ class NativeDownloadManager(
     fun deleteDownloaded(path: String): Boolean {
         synchronized(indexLock) {
             val file = File(path)
+            if (!isInsideDownloadDir(file)) {
+                Log.w(TAG, "Blocked out-of-bounds delete attempt: $path")
+                return false
+            }
             val deleted = if (file.exists()) file.delete() else true
             val arr = loadIndexArray()
             val next = JsonArray()
@@ -273,7 +299,10 @@ class NativeDownloadManager(
             val arr = loadIndexArray()
             for (el in arr) {
                 val p = el.asJsonObject.get("path")?.asString ?: continue
-                runCatching { File(p).delete() }
+                val f = File(p)
+                if (isInsideDownloadDir(f)) {
+                    runCatching { f.delete() }
+                }
             }
             writeIndexArray(JsonArray())
             return true

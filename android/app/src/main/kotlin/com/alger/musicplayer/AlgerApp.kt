@@ -10,6 +10,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.security.SecureRandom
 
 class AlgerApp : Application() {
     companion object {
@@ -17,9 +18,17 @@ class AlgerApp : Application() {
         @Volatile
         lateinit var instance: AlgerApp
             private set
+
+        private fun generateSessionToken(): String {
+            val bytes = ByteArray(32)
+            SecureRandom().nextBytes(bytes)
+            return bytes.joinToString("") { "%02x".format(it) }
+        }
     }
 
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    val localAuthToken: String = generateSessionToken()
 
     lateinit var prefs: AppPrefs
         private set
@@ -54,7 +63,7 @@ class AlgerApp : Application() {
     private fun startEmbeddedServer() {
         for (port in 30488..30498) {
             try {
-                val server = EmbeddedHttpServer(this, port, ncmClient, unblockEngine)
+                val server = EmbeddedHttpServer(this, port, localAuthToken, ncmClient, unblockEngine)
                 server.start(10_000, false)
                 httpServer = server
                 localServerPort = port

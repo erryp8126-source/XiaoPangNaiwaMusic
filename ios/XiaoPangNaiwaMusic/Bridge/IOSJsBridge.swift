@@ -47,7 +47,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
     }
 
     func makeInjectionScript() -> WKUserScript {
-        let cfg = prefs.getServerConfig(localPort: httpServer.port)
+        let cfg = prefs.getServerConfig(localPort: httpServer.port, localToken: httpServer.authToken)
         let cfgData = (try? JSONEncoder().encode(cfg)) ?? Data("{}".utf8)
         let cfgJson = String(data: cfgData, encoding: .utf8) ?? "{}"
 
@@ -84,7 +84,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             setServerConfig: function(jsonStr) {
               try {
                 var parsed = JSON.parse(jsonStr);
-                _serverCfg = Object.assign({}, _serverCfg, parsed, { localPort: _localStatus.port, floatingLyricEnabled: false });
+                _serverCfg = Object.assign({}, _serverCfg, parsed, { localPort: _localStatus.port, localToken: _serverCfg.localToken, floatingLyricEnabled: false });
               } catch (e) {}
               post('setServerConfig', { json: jsonStr });
               return JSON.stringify(_serverCfg);
@@ -169,7 +169,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         switch method {
         case "setServerConfig":
             if let json = payload["json"] as? String {
-                _ = prefs.saveServerConfigFromJson(json, localPort: httpServer.port)
+                _ = prefs.saveServerConfigFromJson(json, localPort: httpServer.port, localToken: httpServer.authToken)
             }
         case "invokeAsync":
             let callbackId = (payload["callbackId"] as? String) ?? ""

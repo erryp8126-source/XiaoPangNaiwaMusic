@@ -6,11 +6,17 @@ final class LocalMusicAndDownloadManager {
     private static let audioExtensions: Set<String> = ["mp3", "flac", "m4a", "aac", "wav", "ogg", "opus", "alac"]
 
     private let portProvider: () -> Int
+    private let tokenProvider: () -> String
     private let eventEmitter: (String, String) -> Void
     private let downloadQueue = DispatchQueue(label: "com.alger.musicplayer.download", qos: .utility)
 
-    init(portProvider: @escaping () -> Int, eventEmitter: @escaping (String, String) -> Void) {
+    init(
+        portProvider: @escaping () -> Int,
+        tokenProvider: @escaping () -> String = { "" },
+        eventEmitter: @escaping (String, String) -> Void
+    ) {
         self.portProvider = portProvider
+        self.tokenProvider = tokenProvider
         self.eventEmitter = eventEmitter
         _ = getDownloadDir()
     }
@@ -45,12 +51,12 @@ final class LocalMusicAndDownloadManager {
         let songInfo = (payload["songInfo"] as? [String: Any]) ?? [:]
         let songId = "\(songInfo["id"] ?? payload["id"] ?? finalFilename)"
 
-        guard let url = URL(string: urlStr), urlStr.hasPrefix("http") else {
+        guard let url = URL(string: urlStr), MusicUnblockEngine.isSafePublicHttpUrl(url) else {
             emitEvent("music-download-complete", [
                 "success": false,
                 "filename": finalFilename,
                 "songInfo": songInfo,
-                "error": "无效的音频下载链接"
+                "error": "无效或不安全的音频下载链接"
             ])
             return
         }
@@ -153,8 +159,11 @@ final class LocalMusicAndDownloadManager {
         let cleaned = path.hasPrefix("local:///")
             ? (String(path.dropFirst(9)).removingPercentEncoding ?? String(path.dropFirst(9)))
             : path
-        guard FileManager.default.fileExists(atPath: cleaned) else { return false }
-        return (try? FileManager.default.removeItem(atPath: cleaned)) != nil
+        let targetPath = URL(fileURLWithPath: cleaned).standardizedFileURL.resolvingSymlinksInPath().path
+        let downloadRoot = getDownloadDir().standardizedFileURL.resolvingSymlinksInPath().path
+        guard targetPath.hasPrefix(downloadRoot + "/") else { return false }
+        guard FileManager.default.fileExists(atPath: targetPath) else { return false }
+        return (try? FileManager.default.removeItem(atPath: targetPath)) != nil
     }
 
     func clearDownloaded() -> Bool {
@@ -222,6 +231,8 @@ final class LocalMusicAndDownloadManager {
 
     func parseMetadata(paths: [String]) -> [[String: Any]] {
         let port = portProvider()
+        let rawToken = tokenProvider()
+        let tokenParam = rawToken.isEmpty ? "" : "&token=\(rawToken)"
         return paths.compactMap { path -> [String: Any]? in
             let url = URL(fileURLWithPath: path)
             guard FileManager.default.fileExists(atPath: path) else { return nil }
@@ -247,7 +258,7 @@ final class LocalMusicAndDownloadManager {
             }
 
             let encPath = path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? path
-            let picUrl = hasCover ? "http://127.0.0.1:\(port)/local-cover?path=\(encPath)" : ""
+            let picUrl = hasCover ? "http://127.0.0.1:\(port)/local-cover?path=\(encPath)\(tokenParam)" : ""
             let size = ((try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? NSNumber)?.int64Value ?? 0
 
             // 读取同名 .lrc 歌词

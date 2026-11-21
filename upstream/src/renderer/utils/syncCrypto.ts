@@ -15,22 +15,72 @@ export function normalizeSyncCode(raw: string): string {
   return raw.trim().replace(/\s+/g, '').toUpperCase();
 }
 
+const COMMON_WEAK_CODES = new Set([
+  '12345678',
+  '123456789',
+  '1234567890',
+  '87654321',
+  '00000000',
+  '11111111',
+  '88888888',
+  'PASSWORD',
+  'PASSWORD123',
+  'QWERTYUI',
+  'QWERTY123',
+  'ABCDEFGH',
+  'XIAOPANG',
+  'NAIWAMUSIC',
+  'ALGERMUSIC'
+]);
+
+function isSequentialString(s: string): boolean {
+  if (s.length < 4) return false;
+  let asc = true;
+  let desc = true;
+  for (let i = 1; i < s.length; i++) {
+    const diff = s.charCodeAt(i) - s.charCodeAt(i - 1);
+    if (diff !== 1) asc = false;
+    if (diff !== -1) desc = false;
+  }
+  return asc || desc;
+}
+
 /**
- * 校验口令是否满足最低强度（至少 6 个有效字符，避免简单数字被猜中）
+ * 校验同步口令强度：
+ * - 至少 8 位（兼容已生成的 NAIWA-xxxx-xxxx 等口令）
+ * - 拦截纯短数字、全重复字符、顺子/倒顺子与常见弱口令，避免无鉴权猜解风险
  */
 export function validateSyncCode(raw: string): { valid: boolean; reason?: string } {
   const normalized = normalizeSyncCode(raw);
-  if (normalized.length < 6) {
-    return { valid: false, reason: '同步口令至少需要 6 位字符（例如 NAIWA-7392-K8M4 或自定义暗号）' };
+  if (normalized.length < 8) {
+    return { valid: false, reason: '同步口令至少需要 8 位字符（建议使用一键生成的随机口令）' };
   }
   if (normalized.length > 64) {
     return { valid: false, reason: '同步口令长度不能超过 64 位' };
+  }
+  const stripped = normalized.replace(/[-_]/g, '');
+  if (new Set(stripped).size <= 2) {
+    return { valid: false, reason: '口令过于简单（重复字符过多），请换一个更复杂的口令' };
+  }
+  if (COMMON_WEAK_CODES.has(stripped) || isSequentialString(stripped)) {
+    return { valid: false, reason: '口令过于常见或为连续字符，容易被猜中，请使用更强的口令' };
+  }
+  if (/^\d+$/.test(stripped) && stripped.length < 12) {
+    return { valid: false, reason: '纯数字口令至少需要 12 位，建议混入字母或直接一键生成' };
+  }
+  const hasLetter = /[A-Z]/.test(stripped);
+  const hasDigit = /\d/.test(stripped);
+  if (!hasLetter && !hasDigit) {
+    return { valid: false, reason: '口令需包含字母或数字' };
+  }
+  if (stripped.length < 12 && !(hasLetter && hasDigit)) {
+    return { valid: false, reason: '不足 12 位的自定义口令需同时包含字母和数字，以防被猜中' };
   }
   return { valid: true };
 }
 
 /**
- * 生成好记又安全的默认专属同步口令，例如 NAIWA-7392-K8M4
+ * 生成好记又高熵的默认专属同步口令，例如 NAIWA-7392-K8M4P2（熵值 > 10^13）
  */
 export function generateFriendlySyncCode(): string {
   const randomBytes = new Uint8Array(12);
@@ -47,7 +97,7 @@ export function generateFriendlySyncCode(): string {
     digits += String(randomBytes[i] % 10);
   }
   let suffix = '';
-  for (let i = 4; i < 8; i++) {
+  for (let i = 4; i < 10; i++) {
     suffix += FRIENDLY_ALPHABET[randomBytes[i] % FRIENDLY_ALPHABET.length];
   }
   return `NAIWA-${digits}-${suffix}`;
@@ -190,7 +240,10 @@ export async function deriveSyncId(rawCode: string): Promise<string> {
   return bytesToHex(hash);
 }
 
-async function deriveAesKey(rawCode: string): Promise<CryptoKey> {
+const LEGACY_PBKDF2_ITERATIONS = 15000;
+const CURRENT_PBKDF2_ITERATIONS = 100000;
+
+async function deriveAesKey(rawCode: string, iterations = CURRENT_PBKDF2_ITERATIONS): Promise<CryptoKey> {
   const normalized = normalizeSyncCode(rawCode);
   const enc = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey(
@@ -204,7 +257,7 @@ async function deriveAesKey(rawCode: string): Promise<CryptoKey> {
     {
       name: 'PBKDF2',
       salt: enc.encode(AES_SALT_TEXT),
-      iterations: 15000,
+      iterations,
       hash: 'SHA-256'
     },
     keyMaterial,
@@ -215,41 +268,27 @@ async function deriveAesKey(rawCode: string): Promise<CryptoKey> {
 }
 
 /**
- * 使用同步口令在端侧 AES-256-GCM 加密 JSON 字符串
+ * 使用同步口令在端侧 AES-256-GCM 加密 JSON 字符串（PBKDF2 100,000 轮，严禁降级为弱异或混淆上传）
  */
 export async function encryptSyncPayload(plainJson: string, rawCode: string): Promise<string> {
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    throw new Error('当前环境不支持 WebCrypto AES-256-GCM 加密，请通过 HTTPS 网页或手机客户端进行云同步');
+  }
   const bytes = new TextEncoder().encode(plainJson);
-  if (typeof crypto !== 'undefined' && crypto.subtle) {
-    try {
-      const key = await deriveAesKey(rawCode);
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const cipherBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, bytes);
-      return JSON.stringify({
-        v: 1,
-        enc: 'aes-gcm',
-        iv: bytesToBase64(iv),
-        ct: bytesToBase64(new Uint8Array(cipherBuf))
-      });
-    } catch {
-      // fallback below
-    }
-  }
-
-  // 非安全上下文兜底：基于 SHA-256 密钥流异或混淆
-  const keyHash = await sha256Bytes(`xor-key:${normalizeSyncCode(rawCode)}`);
-  const masked = new Uint8Array(bytes.length);
-  for (let i = 0; i < bytes.length; i++) {
-    masked[i] = bytes[i] ^ keyHash[i % keyHash.length];
-  }
+  const key = await deriveAesKey(rawCode, CURRENT_PBKDF2_ITERATIONS);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const cipherBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, bytes);
   return JSON.stringify({
-    v: 1,
-    enc: 'xor-sha256',
-    ct: bytesToBase64(masked)
+    v: 2,
+    enc: 'aes-gcm',
+    iter: CURRENT_PBKDF2_ITERATIONS,
+    iv: bytesToBase64(iv),
+    ct: bytesToBase64(new Uint8Array(cipherBuf))
   });
 }
 
 /**
- * 解密服务端返回的密文包
+ * 解密服务端返回的密文包（自动兼容 v1 15,000 轮与 v2 100,000 轮密文）
  */
 export async function decryptSyncPayload(envelopeStr: string, rawCode: string): Promise<string> {
   const envelope = JSON.parse(envelopeStr);
@@ -261,7 +300,11 @@ export async function decryptSyncPayload(envelopeStr: string, rawCode: string): 
     if (typeof crypto === 'undefined' || !crypto.subtle) {
       throw new Error('当前环境不支持 AES-GCM 解密，请使用 HTTPS 或手机客户端打开');
     }
-    const key = await deriveAesKey(rawCode);
+    const iter =
+      typeof envelope.iter === 'number' && envelope.iter >= 10000 && envelope.iter <= 1000000
+        ? envelope.iter
+        : LEGACY_PBKDF2_ITERATIONS;
+    const key = await deriveAesKey(rawCode, iter);
     const iv = base64ToBytes(envelope.iv);
     const ct = base64ToBytes(envelope.ct);
     const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);

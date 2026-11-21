@@ -6,6 +6,7 @@
 export interface AndroidServerConfig {
   mode: 'local' | 'custom';
   localPort: number;
+  localToken?: string;
   customApiUrl: string;
   customMusicApiUrl: string;
   floatingLyricEnabled: boolean;
@@ -227,6 +228,12 @@ export function getAndroidMusicApiBaseUrl(): string {
 export function getAndroidLocalServerUrl(): string {
   const cfg = getAndroidServerConfig();
   return `http://127.0.0.1:${cfg.localPort || 30488}`;
+}
+
+export function getAndroidLocalAuthToken(): string {
+  if (!isAndroid()) return '';
+  const cfg = getAndroidServerConfig();
+  return cfg.localToken || '';
 }
 
 // ==================== Android IPC-Compatible Adapter ====================

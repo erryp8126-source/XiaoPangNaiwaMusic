@@ -82,8 +82,9 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.scrollView.bounces = false
         webView.allowsBackForwardNavigationGestures = false
+        let appVer = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "5.1.3"
         webView.customUserAgent =
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) AlgerAndroid/5.1.0 AlgerIOS/5.1.0 Mobile Safari/604.1"
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) AlgerAndroid/\(appVer) AlgerIOS/\(appVer) Mobile Safari/604.1"
 
         view.addSubview(webView)
     }
@@ -98,6 +99,13 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     }
 
     private func loadLocalApp() {
+        if !services.httpServer.isRunning {
+            services.httpServer.ensureAlive()
+        }
+        guard services.httpServer.isRunning else {
+            showToast("本地播放服务启动失败，请重启应用重试")
+            return
+        }
         let port = services.httpServer.port
         let ver = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "1"
         if let url = URL(string: "http://127.0.0.1:\(port)/__app/index.html?v=\(ver)") {
