@@ -742,28 +742,44 @@ export const usePlayerCoreStore = defineStore(
       const { useSettingsStore } = await import('./settings');
       const settingStore = useSettingsStore();
 
-      if (playMusic.value && Object.keys(playMusic.value).length > 0) {
-        try {
-          console.log('恢复上次播放的音乐:', playMusic.value.name);
-          const isPlaying = settingStore.setData.autoPlay;
+      if (playMusic.value && Object.keys(playMusic.value).length > 0 && playMusic.value.id) {
+        const isLocalMusic = Boolean(playMusic.value.playMusicUrl?.startsWith('local://'));
+        const shouldAutoPlay = Boolean(settingStore.setData.autoPlay);
 
-          // 本地音乐（local:// 协议）不需要重新获取 URL，保留原始路径
-          const isLocalMusic = playMusic.value.playMusicUrl?.startsWith('local://');
-
-          await handlePlayMusic(
-            {
-              ...playMusic.value,
-              isFirstPlay: true,
-              playMusicUrl: isLocalMusic ? playMusic.value.playMusicUrl : undefined
-            },
-            isPlaying
-          );
-        } catch (error) {
-          console.error('重新获取音乐链接失败:', error);
+        if (shouldAutoPlay) {
+          try {
+            console.log('恢复上次播放的音乐并自动播放:', playMusic.value.name);
+            await handlePlayMusic(
+              {
+                ...playMusic.value,
+                isFirstPlay: true,
+                playMusicUrl: isLocalMusic ? playMusic.value.playMusicUrl : undefined
+              },
+              true
+            );
+          } catch (error) {
+            console.error('重新获取音乐链接失败:', error);
+            play.value = false;
+            isPlay.value = false;
+          }
+        } else {
+          // 冷启动非自动播放模式：仅保留上次曲目展示信息并标记 isFirstPlay = true，
+          // 避免启动异步 audioLoad(false) 与用户首次点击播放按钮发生竞态冲突或拉起无效过期链接；
+          // 用户点击底部播放键时由 setPlay 立即重新解析最新链接并直接开播！
+          console.log('[initializePlayState] 冷启动待命恢复上次曲目:', playMusic.value.name);
           play.value = false;
           isPlay.value = false;
-          playMusic.value = {} as SongResult;
-          playMusicUrl.value = '';
+          userPlayIntent.value = false;
+          playMusic.value = {
+            ...playMusic.value,
+            isFirstPlay: true,
+            playLoading: false,
+            playMusicUrl: isLocalMusic ? playMusic.value.playMusicUrl : undefined,
+            expiredAt: isLocalMusic ? playMusic.value.expiredAt : undefined
+          };
+          if (!isLocalMusic) {
+            playMusicUrl.value = '';
+          }
         }
       }
 

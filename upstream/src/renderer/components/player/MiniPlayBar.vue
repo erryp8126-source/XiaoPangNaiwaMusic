@@ -313,8 +313,9 @@ const handlePrev = () => playerStore.prevPlay();
 const handleNext = () => playerStore.nextPlay();
 
 const playMusicEvent = async () => {
+  if (!playerStore.playMusic?.id) return;
   try {
-    playerStore.setPlay(playerStore.playMusic);
+    await playerStore.setPlay({ ...playerStore.playMusic });
   } catch (error) {
     console.error('播放出错:', error);
     playerStore.nextPlay();

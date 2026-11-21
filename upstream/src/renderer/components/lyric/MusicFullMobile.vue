@@ -1075,9 +1075,10 @@ const handleArtistClick = (id: number) => {
 };
 
 // 播放控制功能
-const togglePlay = () => {
+const togglePlay = async () => {
+  if (!playMusic.value?.id) return;
   try {
-    playerStore.setPlay(playMusic.value);
+    await playerStore.setPlay({ ...playMusic.value });
   } catch (error) {
     console.error('播放出错:', error);
   }

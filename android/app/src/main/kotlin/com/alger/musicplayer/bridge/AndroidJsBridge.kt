@@ -446,6 +446,11 @@ class AndroidJsBridge(
     }
 
     @JavascriptInterface
+    fun consumePendingWidgetAction(): String {
+        return activity.consumePendingWidgetActionJson()
+    }
+
+    @JavascriptInterface
     fun exitApp() {
         mainHandler.post {
             runCatching {

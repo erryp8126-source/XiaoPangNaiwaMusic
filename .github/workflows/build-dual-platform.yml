@@ -6,7 +6,7 @@ on:
       release_tag:
         description: '自动上传到指定 GitHub Release 标签（留空则仅生成 Actions 构件）'
         required: false
-        default: 'v5.1.2'
+        default: 'v5.1.3'
         type: string
   push:
     tags:

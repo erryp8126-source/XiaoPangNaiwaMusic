@@ -63,13 +63,49 @@
         <receiver
             android:name=".widget.MusicAppWidgetProvider"
             android:exported="true"
-            android:label="小庞奶娃音乐">
+            android:label="小庞奶娃 · 流光播控 (4×1)">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/music_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.CoverCardWidgetProvider"
+            android:exported="true"
+            android:label="小庞奶娃 · 唱片封面 (2×2)">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/cover_card_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.AuraConsoleWidgetProvider"
+            android:exported="true"
+            android:label="小庞奶娃 · 极光全能卡 (4×2)">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/aura_console_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.CreamCardWidgetProvider"
+            android:exported="true"
+            android:label="小庞奶娃 · 柔光珍珠卡 (4×2)">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/cream_card_widget_info" />
         </receiver>
 
     </application>

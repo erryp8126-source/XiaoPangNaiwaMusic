@@ -44,6 +44,10 @@ class MainActivity : AppCompatActivity() {
     private var bottomInsetDp: Int = 0
     @Volatile
     private var isWebViewReady: Boolean = false
+    @Volatile
+    private var pendingWidgetRoute: String? = null
+    @Volatile
+    private var pendingWidgetAutoplay: Boolean = false
 
     private var pendingAudioPermissionCallback: ((Boolean) -> Unit)? = null
     private var pendingFilePickCallback: ((JsonObject?) -> Unit)? = null
@@ -139,6 +143,7 @@ class MainActivity : AppCompatActivity() {
         webView = WebView(this)
         setContentView(webView)
 
+        handleWidgetIntent(intent)
         setupInsetsInjection()
         setupWebView(app)
         setupBackNavigation()
@@ -153,10 +158,44 @@ class MainActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        // 从通知栏 / 悬浮窗拉回已存在的 Activity 时，同步原生播放状态但不打断播放
+        // 从通知栏 / 悬浮窗 / 桌面小组件拉回已存在的 Activity 时，同步原生播放状态并处理小组件直达动作
         if (isWebViewReady) {
             MusicPlaybackService.onAppForegroundChanged(true)
         }
+        handleWidgetIntent(intent)
+    }
+
+    private fun handleWidgetIntent(intent: Intent?) {
+        if (intent == null) return
+        val route = intent.getStringExtra("widget_route")
+        val autoplay = intent.getBooleanExtra("widget_autoplay", false)
+        if (!route.isNullOrBlank()) {
+            intent.removeExtra("widget_route")
+            if (isWebViewReady) {
+                pushEventToJs("widget-navigate", JSONObject.quote(route))
+            } else {
+                pendingWidgetRoute = route
+            }
+        }
+        if (autoplay) {
+            intent.removeExtra("widget_autoplay")
+            if (isWebViewReady) {
+                pushEventToJs("widget-autoplay", "{}")
+            } else {
+                pendingWidgetAutoplay = true
+            }
+        }
+    }
+
+    fun consumePendingWidgetActionJson(): String {
+        val route = pendingWidgetRoute
+        val autoplay = pendingWidgetAutoplay
+        pendingWidgetRoute = null
+        pendingWidgetAutoplay = false
+        val obj = JSONObject()
+        if (!route.isNullOrBlank()) obj.put("route", route)
+        obj.put("autoplay", autoplay)
+        return obj.toString()
     }
 
     override fun onResume() {

@@ -107,8 +107,9 @@ const openPlayListDrawer = () => {
 };
 
 const playMusicEvent = async () => {
+  if (!playMusic.value?.id) return;
   try {
-    playerStore.setPlay(playMusic.value);
+    await playerStore.setPlay({ ...playMusic.value });
   } catch (error) {
     console.error('播放出错:', error);
     playerStore.nextPlay();

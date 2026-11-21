@@ -50,6 +50,7 @@ export interface AndroidBridgeInterface {
   getListeningStats?(): string;
   resetListeningStats?(): boolean;
   mergeListeningStats?(statsJson: string): string;
+  consumePendingWidgetAction?(): string;
 }
 
 declare global {

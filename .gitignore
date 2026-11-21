@@ -30,6 +30,7 @@ android/captures/
 releases/*.apk
 releases/*.ipa
 releases/*.zip
+releases/*.mp4
 releases/pwa/
 
 # IDE & OS metadata

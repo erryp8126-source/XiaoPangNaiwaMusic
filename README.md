@@ -28,7 +28,7 @@
 
 <p align="center">
   <b>⚡ 快速开始：</b>
-  <a href="https://github.com/erryp8126-source/XiaoPangNaiwaMusic/releases/latest"><b>下载最新 Android APK / iOS IPA (v5.1.2)</b></a>
+  <a href="https://github.com/erryp8126-source/XiaoPangNaiwaMusic/releases/latest"><b>下载最新 Android APK / iOS IPA (v5.1.3)</b></a>
   &nbsp;·&nbsp;
   <a href="https://erryp8126-source.github.io/XiaoPangNaiwaMusic/"><b>iPhone / 浏览器免签在线体验</b></a>
 </p>
@@ -69,7 +69,7 @@
 | **息屏后台播放 & 锁屏/蓝牙/耳机播控** | 支持 (`Media3 ExoPlayer`) | 支持 (`AVPlayer` + `MediaPlayer`) | 依赖浏览器前台 |
 | **熄屏原生队列自动无缝切歌** | 支持（多曲预排无断流） | 支持（后台预解析连播） | 基础支持 |
 | **网易云风格双行逐字桌面歌词（含翻译/配色/字号/锁定）** | 支持 | 系统限制暂不支持 | 不支持 |
-| **桌面 4×1 音乐播控小组件（专辑封面 + 切歌控制）** | 支持 (`AppWidget`) | 暂不支持 | 不支持 |
+| **4 款高颜值桌面音乐小组件（流光 4×1 / 唱片 2×2 / 极光 4×2 / 柔光珍珠 4×2）** | 支持 (`AppWidget`) | 暂不支持 | 不支持 |
 | **原生 200MB 边听边缓存（常听秒开省流量）** | 支持 (`SimpleCache`) | 系统缓冲 | 浏览器缓存 |
 | **10 段原生硬件均衡器 (EQ)** | 支持 (`audiofx.Equalizer`) | 暂不支持（安全直出） | 网页直出 |
 | **本地音频扫描 & 离线下载管理** | 支持 (`MediaStore`) | 支持（iPhone「文件」导入） | 不支持 |
@@ -91,7 +91,7 @@
 - 基于 **AndroidX Media3 ExoPlayer + MediaSession** 前台服务，支持熄屏后台播放、过渡期 WakeLock 保活、**原生多曲无缝预排队列自动切歌**、锁屏/蓝牙播控、点击通知栏切回前台状态无缝回同步（不暂停不回跳）。
 - **网易云风格双行逐字桌面歌词**：纯净无底框透明悬浮、YRC/LRC 卡拉OK逐字扫色、点击展开半透明播控与 5 色配色球、`T+`/`T-` 字号调节、`译` 双语翻译开关、触摸穿透锁定与通知栏/设置页一键解锁。
 - **10 段原生硬件均衡器 (EQ) + 200MB 边听边缓存**：播放页抽屉一键呼出 10 段均衡器与风格预设；内置 Media3 `SimpleCache` 200MB LRU 磁盘缓存（常听歌曲秒开、支持在设置页查看占用与一键清理）。
-- **Android 4×1 桌面音乐小组件**：桌面卡片实时展示专辑封面、歌名、歌手与上一首/播放暂停/下一首控键，配合逐层返回键栈体验媲美原生大厂音乐应用。
+- **4 款高颜值 Android 桌面音乐小组件（`v5.1.3` 全新升级）**：支持 **4×1 流光播控**、**2×2 唱片封面**、**4×2 极光全能卡**、**4×2 柔光珍珠卡** 4 种风格自由混搭；自动提取专辑封面主色动态渲染流光/珍珠水彩玻璃背景、实时进度条与时间，大卡片支持 **每日推荐 / 私人FM / 我喜欢 / 搜索** 一键直达，配合逐层返回键栈体验媲美原生大厂音乐应用。
 - 内置 Kotlin 本地回环适配层（`127.0.0.1:30488`）、MediaStore 本地音频扫描与离线下载，且已配置固定正式签名证书（本地与云端 APK 签名一致，支持覆盖升级）。
 
 ### 3. iOS 原生壳（纯 Swift + AVPlayer + Network.NWListener）
@@ -139,7 +139,7 @@ XiaoPangNaiwaMusic/
   ```
 
 ### iOS 端（`.ipa`）
-1. **直接下载 `.ipa`**：前往 [Releases 页面](https://github.com/erryp8126-source/XiaoPangNaiwaMusic/releases/latest) 直接下载云端编好的 **`XiaoPangNaiwaMusic-v5.1.1-unsigned.ipa`**（支持 iOS 15.0+）。
+1. **直接下载 `.ipa`**：前往 [Releases 页面](https://github.com/erryp8126-source/XiaoPangNaiwaMusic/releases/latest) 直接下载云端编好的 **`XiaoPangNaiwaMusic-v5.1.3-unsigned.ipa`**（支持 iOS 15.0+）。
 2. **GitHub Actions 云端重新编译**（无需 Mac）：
    - 进入仓库 **Actions → Build & Release Android + iOS + PWA → Run workflow**，约 4 分钟即可自动编出最新的 Android APK、iOS IPA 与 PWA 并同步发布。
 3. **Mac 本地编译**（需 Xcode 15+ 与 `brew install xcodegen`）：

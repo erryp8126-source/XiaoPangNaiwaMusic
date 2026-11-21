@@ -31,7 +31,7 @@ import { usePlayerCoreStore } from '@/store/modules/playerCore';
 import { useSettingsStore } from '@/store/modules/settings';
 import { useUserStore } from '@/store/modules/user';
 import { isAndroid, isElectron, isLyricWindow, isNative } from '@/utils';
-import { dispatchAndroidBackHandlers } from '@/utils/androidBridge';
+import { dispatchAndroidBackHandlers, onAndroidEvent } from '@/utils/androidBridge';
 import { checkLoginStatus } from '@/utils/auth';
 
 import { initAudioListeners, initMusicHook } from './hooks/MusicHook';
@@ -388,6 +388,145 @@ onMounted(async () => {
   }
 
   audioService.releaseOperationLock();
+
+  // 桌面小组件一键直达（每日推荐 / 私人FM / 我喜欢 / 搜索）与冷启动自动续播
+  if (isAndroid) {
+    const openDailyRecommendFromWidget = async () => {
+      try {
+        const [{ useRecommendStore }, { navigateToMusicList }] = await Promise.all([
+          import('@/store/modules/recommend'),
+          import('@/components/common/MusicListNavigator')
+        ]);
+        const recommendStore = useRecommendStore();
+        await recommendStore.refreshIfStale();
+        if (recommendStore.dailyRecommendSongs.length > 0) {
+          navigateToMusicList(router, {
+            type: 'dailyRecommend',
+            name: '每日推荐',
+            songList: recommendStore.dailyRecommendSongs,
+            canRemove: false
+          });
+        } else {
+          await router.push('/').catch(() => {});
+        }
+      } catch (err) {
+        console.warn('[App] widget daily recommend failed:', err);
+        await router.push('/').catch(() => {});
+      }
+    };
+
+    const startPersonalFmFromWidget = async () => {
+      try {
+        const [{ getPersonalFM, getRecommendMusic }, { usePlaylistStore }] = await Promise.all([
+          import('@/api/home'),
+          import('@/store/modules/playlist')
+        ]);
+        const playlistStore = usePlaylistStore();
+        let fmSongs: any[] = [];
+        try {
+          const res = await getPersonalFM();
+          if (Array.isArray(res.data?.data) && res.data.data.length > 0) {
+            fmSongs = res.data.data;
+          }
+        } catch {
+          // fallback below
+        }
+
+        if (fmSongs.length === 0) {
+          const recRes: any = await getRecommendMusic({ limit: 15 }).catch(() => null);
+          const recList = recRes?.data?.result || recRes?.result || [];
+          fmSongs = recList.map((item: any) => ({
+            id: item.id,
+            name: item.name,
+            picUrl: item.picUrl || item.song?.album?.picUrl,
+            ar: item.song?.artists || [],
+            al: item.song?.album || {},
+            dt: item.song?.duration || 0,
+            song: item.song
+          }));
+        }
+
+        if (fmSongs.length > 0) {
+          const first = fmSongs[0];
+          const normalized = {
+            id: first.id,
+            name: first.name,
+            picUrl: first.al?.picUrl || first.album?.picUrl || first.picUrl || '',
+            ar: first.artists || first.ar || [],
+            al: first.al || first.album || {},
+            source: 'netease' as const,
+            song: first,
+            ...first,
+            playLoading: false
+          };
+          playlistStore.setPlayList([normalized], false, false);
+          playerCoreStore.isFmPlaying = true;
+          await playerCoreStore.handlePlayMusic(normalized, true);
+          playerStore.setMusicFull(true);
+        } else {
+          await router.push('/').catch(() => {});
+        }
+      } catch (err) {
+        console.warn('[App] widget personal FM failed:', err);
+        await router.push('/').catch(() => {});
+      }
+    };
+
+    const navigateFromWidget = (route: string) => {
+      if (!route || typeof route !== 'string') return;
+      if (playerStore.playListDrawerVisible) {
+        playerStore.setPlayListDrawerVisible(false);
+      }
+      if (playerStore.musicFull) {
+        playerStore.setMusicFull(false);
+      }
+      if (route === 'action:daily-recommend') {
+        void openDailyRecommendFromWidget();
+        return;
+      }
+      if (route === 'action:personal-fm') {
+        void startPersonalFmFromWidget();
+        return;
+      }
+      if (router.currentRoute.value.path !== route) {
+        router.push(route).catch(() => {});
+      }
+    };
+
+    const autoplayFromWidget = async () => {
+      try {
+        if (!playerStore.isPlay && playerStore.playMusic?.id) {
+          await playerStore.setPlay({ ...playerStore.playMusic });
+        }
+      } catch (err) {
+        console.warn('[App] widget autoplay failed:', err);
+      }
+    };
+
+    onAndroidEvent('widget-navigate', (_evt: any, route: any) => {
+      if (typeof route === 'string') {
+        navigateFromWidget(route);
+      }
+    });
+    onAndroidEvent('widget-autoplay', () => {
+      void autoplayFromWidget();
+    });
+
+    try {
+      const rawPending = (window as any).AlgerAndroid?.consumePendingWidgetAction?.();
+      if (rawPending) {
+        const pending = JSON.parse(rawPending);
+        if (pending?.route) {
+          navigateFromWidget(pending.route);
+        }
+        if (pending?.autoplay) {
+          void autoplayFromWidget();
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
 });
 </script>
 

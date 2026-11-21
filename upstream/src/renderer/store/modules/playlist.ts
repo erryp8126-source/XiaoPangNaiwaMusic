@@ -9,6 +9,7 @@ import { useSongDetail } from '@/hooks/usePlayerHooks';
 import { preloadService } from '@/services/preloadService';
 import type { SongResult } from '@/types/music';
 import { getImgUrl } from '@/utils';
+import { isAndroid } from '@/utils/androidBridge';
 import { performShuffle, preloadCoverImage } from '@/utils/playerUtils';
 
 import { useIntelligenceModeStore } from './intelligenceMode';
@@ -673,25 +674,28 @@ export const usePlaylistStore = defineStore(
     /**
      * 设置播放（兼容旧API）
      */
-    const setPlay = async (song: SongResult) => {
+    const setPlay = async (rawSong: SongResult) => {
+      const song: SongResult = { ...rawSong };
       try {
         const playerCore = usePlayerCoreStore();
 
-        // 检查URL是否已过期
-        if (song.expiredAt && song.expiredAt < Date.now()) {
-          // 本地音乐（local:// 协议）不会过期
-          if (!song.playMusicUrl?.startsWith('local://')) {
-            console.info(`歌曲URL已过期，重新获取: ${song.name}`);
-            song.playMusicUrl = undefined;
-            song.expiredAt = undefined;
-          }
+        const isLocalTrack = Boolean(song.playMusicUrl?.startsWith('local://'));
+        const urlExpired =
+          !isLocalTrack &&
+          Boolean(!song.playMusicUrl || (song.expiredAt && song.expiredAt < Date.now()));
+
+        // 检查URL是否已过期（只修改浅拷贝 song，绝不误改 playerCore.playMusic 原对象）
+        if (urlExpired) {
+          console.info(`歌曲URL缺失或已过期，需要重新获取: ${song.name}`);
+          song.playMusicUrl = undefined;
+          song.expiredAt = undefined;
         }
 
-        // 如果是当前正在播放的音乐，则切换播放/暂停状态
+        // 如果是当前正在播放/暂停的同一首音乐，且非首次冷启动未加载状态，则尝试切换播放/暂停
         if (
-          playerCore.playMusic.id === song.id &&
-          playerCore.playMusic.playMusicUrl === song.playMusicUrl &&
-          !song.isFirstPlay
+          String(playerCore.playMusic.id) === String(song.id) &&
+          !song.isFirstPlay &&
+          !playerCore.playMusic.isFirstPlay
         ) {
           if (playerCore.play) {
             playerCore.setPlayMusic(false);
@@ -699,22 +703,38 @@ export const usePlaylistStore = defineStore(
             audioService.getCurrentSound()?.pause();
             playerCore.userPlayIntent = false;
           } else {
-            playerCore.setPlayMusic(true);
-            playerCore.userPlayIntent = true;
             const { audioService } = await import('@/services/audioService');
             const sound = audioService.getCurrentSound();
-            if (sound) {
+            let canResumeDirectly = Boolean(sound && !urlExpired && sound.state() === 'loaded');
+
+            // 原生移动端（Android/iOS）额外核验底层 ExoPlayer/AVPlayer 是否真已装入该曲目
+            if (canResumeDirectly && isAndroid()) {
+              try {
+                const rawActive = window.AlgerAndroid?.audioGetActiveTrack?.();
+                if (rawActive) {
+                  const active = JSON.parse(rawActive);
+                  if (!active?.hasActiveTrack || String(active.songId) !== String(song.id)) {
+                    canResumeDirectly = false;
+                  }
+                }
+              } catch {
+                // ignore
+              }
+            }
+
+            if (canResumeDirectly && sound) {
+              playerCore.setPlayMusic(true);
+              playerCore.userPlayIntent = true;
               sound.play();
               // 在恢复播放时也进行状态检测，防止URL已过期导致无声
               playerCore.checkPlaybackState(playerCore.playMusic);
             } else {
-              console.warn('[PlaylistStore.setPlay] 无可用音频实例，尝试重建播放链路');
-              const recoverSong = {
+              console.warn('[PlaylistStore.setPlay] 冷启动或链接已失效，自动重新拉取播放链路:', song.name);
+              const recoverSong: SongResult = {
                 ...playerCore.playMusic,
                 isFirstPlay: true,
-                playMusicUrl: playerCore.playMusic.playMusicUrl?.startsWith('local://')
-                  ? playerCore.playMusic.playMusicUrl
-                  : undefined
+                playMusicUrl: isLocalTrack ? playerCore.playMusic.playMusicUrl : undefined,
+                expiredAt: isLocalTrack ? playerCore.playMusic.expiredAt : undefined
               };
               const recovered = await playerCore.handlePlayMusic(recoverSong, true);
               if (!recovered) {

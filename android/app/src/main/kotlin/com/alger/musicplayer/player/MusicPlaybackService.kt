@@ -237,12 +237,19 @@ class MusicPlaybackService : Service() {
             .build()
     }
 
+    private var widgetTickCounter: Int = 0
+
     private val progressTicker = object : Runnable {
         override fun run() {
             if (::exoPlayer.isInitialized && exoPlayer.isPlaying) {
                 snapshotPlayerState()
                 ListeningStatsTracker.flushPeriodic(this@MusicPlaybackService)
                 emitAudioEvent("timeupdate")
+                widgetTickCounter++
+                if (widgetTickCounter >= 12) { // 约每 2.4 秒同步一次桌面小组件进度条与播放态，兼具流畅与省电
+                    widgetTickCounter = 0
+                    pushWidgetState()
+                }
                 uiHandler.postDelayed(this, 200)
             }
         }
@@ -265,20 +272,30 @@ class MusicPlaybackService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 先确保前台通知已启动（避免 Android 8+ ForegroundServiceDidNotStartInTimeException）
+        ensureForegroundNotification()
         when (intent?.action) {
             ACTION_PREV -> handleExternalTrackCommand("previoustrack", -1)
             ACTION_NEXT -> handleExternalTrackCommand("nexttrack", 1)
             ACTION_PLAY_PAUSE -> {
-                if (::exoPlayer.isInitialized) {
-                    if (exoPlayer.isPlaying) pause() else play()
+                if (::exoPlayer.isInitialized && exoPlayer.mediaItemCount > 0) {
+                    if (isEffectivelyPlaying()) pause() else play()
+                } else {
+                    // 服务冷启动尚无音轨时，拉起主界面并自动续播上次歌曲
+                    runCatching {
+                        val launchIntent = Intent(this, MainActivity::class.java).apply {
+                            action = "com.alger.musicplayer.WIDGET_AUTOPLAY"
+                            putExtra("widget_autoplay", true)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                        }
+                        startActivity(launchIntent)
+                    }
                 }
             }
             ACTION_UNLOCK_LYRIC -> {
                 FloatingLyricManager.activeInstance?.setLocked(false)
             }
         }
-        // 确保前台通知已启动（避免 Android 8+ ForegroundServiceDidNotStartInTimeException）
-        ensureForegroundNotification()
         return START_STICKY
     }
 
@@ -287,9 +304,31 @@ class MusicPlaybackService : Service() {
         else (cachedPositionSec * 1000.0).toLong().coerceAtLeast(0L)
     }
 
-    fun isCurrentlyPlaying(): Boolean {
-        return if (::exoPlayer.isInitialized) exoPlayer.isPlaying else cachedIsPlaying
+    fun getCurrentDurationMs(): Long {
+        if (::exoPlayer.isInitialized) {
+            val dur = exoPlayer.duration
+            if (dur > 0 && dur != C.TIME_UNSET) return dur
+        }
+        return (cachedDurationSec * 1000.0).toLong().coerceAtLeast(0L)
     }
+
+    fun isEffectivelyPlaying(): Boolean {
+        if (!::exoPlayer.isInitialized) return cachedIsPlaying
+        val state = exoPlayer.playbackState
+        return exoPlayer.isPlaying || (
+            exoPlayer.playWhenReady &&
+                !userPaused &&
+                state != Player.STATE_ENDED &&
+                state != Player.STATE_IDLE
+            )
+    }
+
+    fun hasActiveTrack(): Boolean {
+        return ::exoPlayer.isInitialized &&
+            (exoPlayer.mediaItemCount > 0 || (currentSongId.isNotBlank() && currentPlayUrl.isNotBlank()))
+    }
+
+    fun isCurrentlyPlaying(): Boolean = isEffectivelyPlaying()
 
     fun getCurrentSongId(): String = currentSongId
     fun getCurrentSongTitle(): String = currentTitle
@@ -299,6 +338,7 @@ class MusicPlaybackService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        pushWidgetState(forcePaused = true)
         ListeningStatsTracker.onPlayStateChanged(
             this,
             false,
@@ -440,6 +480,7 @@ class MusicPlaybackService : Service() {
                 if (reason == Player.DISCONTINUITY_REASON_SEEK) {
                     snapshotPlayerState()
                     emitAudioEvent("seek")
+                    pushWidgetState()
                 }
             }
 
@@ -527,6 +568,8 @@ class MusicPlaybackService : Service() {
                 userPaused = false
                 if (exoPlayer.playbackState == Player.STATE_ENDED) {
                     exoPlayer.seekTo(0L)
+                } else if (exoPlayer.playbackState == Player.STATE_IDLE && exoPlayer.mediaItemCount > 0) {
+                    exoPlayer.prepare()
                 }
                 super.play()
             }
@@ -905,7 +948,7 @@ class MusicPlaybackService : Service() {
     fun togglePlayPauseFromOverlay() {
         uiHandler.post {
             if (!::exoPlayer.isInitialized) return@post
-            if (exoPlayer.isPlaying) pause() else play()
+            if (isEffectivelyPlaying()) pause() else play()
         }
     }
 
@@ -1419,6 +1462,8 @@ class MusicPlaybackService : Service() {
             if (::exoPlayer.isInitialized) {
                 if (exoPlayer.playbackState == Player.STATE_ENDED) {
                     exoPlayer.seekTo(0L)
+                } else if (exoPlayer.playbackState == Player.STATE_IDLE && exoPlayer.mediaItemCount > 0) {
+                    exoPlayer.prepare()
                 }
                 exoPlayer.play()
                 scheduleGaplessNextTrack(forceRefresh = false)
@@ -1734,7 +1779,7 @@ class MusicPlaybackService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val isPlaying = ::exoPlayer.isInitialized && exoPlayer.isPlaying
+        val isPlaying = isEffectivelyPlaying()
         val playPauseIcon = if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
         val playPauseLabel = if (isPlaying) "暂停" else "播放"
 
@@ -1785,13 +1830,22 @@ class MusicPlaybackService : Service() {
     private fun updateNotification() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.notify(NOTIFICATION_ID, buildNotification())
-        val isPlaying = ::exoPlayer.isInitialized && exoPlayer.isPlaying
+        widgetTickCounter = 0
+        pushWidgetState()
+    }
+
+    private fun pushWidgetState(forcePaused: Boolean = false) {
+        val playing = if (forcePaused) false else isEffectivelyPlaying()
+        val active = if (forcePaused) false else hasActiveTrack()
         MusicAppWidgetProvider.updateAllWidgets(
-            this,
-            currentTitle,
-            currentArtist,
-            isPlaying,
-            currentArtworkBitmap
+            context = this,
+            title = currentTitle,
+            artist = currentArtist,
+            isPlaying = playing,
+            artwork = currentArtworkBitmap,
+            positionMs = getCurrentPositionMs(),
+            durationMs = getCurrentDurationMs(),
+            hasActiveTrack = active
         )
     }
 
