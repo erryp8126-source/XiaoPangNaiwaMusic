@@ -189,8 +189,8 @@ final class LocalMusicAndDownloadManager: NSObject, URLSessionDownloadDelegate {
         let safeName = sanitizeFilename(filename)
         let finalFilename = safeName.isEmpty ? "test_song.mp3" : safeName
         let destUrl = getDownloadDir().appendingPathComponent(finalFilename)
-        let req = URLRequest(url: URL(string: "https://music.163.com/song/media/outer/url?id=\(songId).mp3")!)
-        let task = downloadSession.downloadTask(with: req)
+        let req = URLRequest(url: URL(string: "about:blank")!)
+        let task = URLSession.shared.downloadTask(with: req)
         let ctx = DownloadTaskContext(
             songId: songId,
             finalFilename: finalFilename,
@@ -597,31 +597,35 @@ final class LocalMusicAndDownloadManager: NSObject, URLSessionDownloadDelegate {
         ]
     }
 
-    func parseMetadata(paths: [String]) -> [[String: Any]] {
+    func parseMetadata(paths: [String], skipAssetProbe: Bool = false) -> [[String: Any]] {
         let port = portProvider()
         let rawToken = tokenProvider()
         let tokenParam = rawToken.isEmpty ? "" : "&token=\(rawToken)"
         return paths.compactMap { path -> [String: Any]? in
             let url = URL(fileURLWithPath: path)
             guard FileManager.default.fileExists(atPath: path) else { return nil }
-            let asset = AVURLAsset(url: url)
-            let durSec = CMTimeGetSeconds(asset.duration)
-            let durationMs = (durSec.isFinite && durSec > 0) ? Int64(durSec * 1000.0) : 0
 
+            var durationMs: Int64 = 0
             var title = url.deletingPathExtension().lastPathComponent
             var artist = "未知歌手"
             var album = "本地音乐"
             var hasCover = false
 
-            for item in asset.commonMetadata {
-                if item.commonKey == .commonKeyTitle, let s = item.stringValue, !s.isEmpty {
-                    title = s
-                } else if item.commonKey == .commonKeyArtist, let s = item.stringValue, !s.isEmpty {
-                    artist = s
-                } else if item.commonKey == .commonKeyAlbumName, let s = item.stringValue, !s.isEmpty {
-                    album = s
-                } else if item.commonKey == .commonKeyArtwork, let d = item.dataValue, !d.isEmpty {
-                    hasCover = true
+            if !skipAssetProbe {
+                let asset = AVURLAsset(url: url)
+                let durSec = CMTimeGetSeconds(asset.duration)
+                durationMs = (durSec.isFinite && durSec > 0) ? Int64(durSec * 1000.0) : 0
+
+                for item in asset.commonMetadata {
+                    if item.commonKey == .commonKeyTitle, let s = item.stringValue, !s.isEmpty {
+                        title = s
+                    } else if item.commonKey == .commonKeyArtist, let s = item.stringValue, !s.isEmpty {
+                        artist = s
+                    } else if item.commonKey == .commonKeyAlbumName, let s = item.stringValue, !s.isEmpty {
+                        album = s
+                    } else if item.commonKey == .commonKeyArtwork, let d = item.dataValue, !d.isEmpty {
+                        hasCover = true
+                    }
                 }
             }
 

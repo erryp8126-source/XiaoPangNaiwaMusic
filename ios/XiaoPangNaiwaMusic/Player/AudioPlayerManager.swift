@@ -78,13 +78,15 @@ final class AudioPlayerManager: NSObject {
     private var cachedDurationSec: Double = 0
     private var cachedIsPlaying: Bool = false
 
-    init(ncmClient: NeteaseApiClient, unblockEngine: MusicUnblockEngine) {
+    init(ncmClient: NeteaseApiClient, unblockEngine: MusicUnblockEngine, skipSystemAudioSetup: Bool = false) {
         self.ncmClient = ncmClient
         self.unblockEngine = unblockEngine
         super.init()
-        configureAudioSession()
-        configureRemoteCommands()
-        observeSystemAudioNotifications()
+        if !skipSystemAudioSetup {
+            configureAudioSession()
+            configureRemoteCommands()
+            observeSystemAudioNotifications()
+        }
     }
 
     deinit {

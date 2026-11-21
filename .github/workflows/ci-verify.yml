@@ -150,10 +150,13 @@ jobs:
           XCTEST_BIN=$(xcrun --sdk iphonesimulator --find xctest)
           TEST_BUNDLE="$PWD/build/SimProducts/Debug-iphonesimulator/XiaoPangNaiwaMusicTests.xctest"
           test -d "$TEST_BUNDLE"
-          xcrun simctl boot "$SIM_UDID" </dev/null >/dev/null 2>&1 || true
+          echo "[1/3] Booting simulator $SIM_UDID..."
+          perl -e 'alarm shift; exec @ARGV' 30 xcrun simctl boot "$SIM_UDID" </dev/null >/dev/null 2>&1 || true
+          echo "[2/3] Spawning xctest in simulator..."
           set +e
-          xcrun simctl spawn "$SIM_UDID" "$XCTEST_BIN" "$TEST_BUNDLE"
+          perl -e 'alarm shift; exec @ARGV' 45 xcrun simctl spawn "$SIM_UDID" "$XCTEST_BIN" "$TEST_BUNDLE" </dev/null
           TEST_EXIT=$?
           set -e
-          xcrun simctl shutdown "$SIM_UDID" </dev/null >/dev/null 2>&1 || true
+          echo "[3/3] xctest exited with code $TEST_EXIT; shutting down simulator..."
+          perl -e 'alarm shift; exec @ARGV' 15 xcrun simctl shutdown "$SIM_UDID" </dev/null >/dev/null 2>&1 || true
           exit $TEST_EXIT

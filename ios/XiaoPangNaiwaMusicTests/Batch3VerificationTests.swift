@@ -167,7 +167,7 @@ final class Batch3VerificationTests: XCTestCase {
             "totalFiles (\(totalFiles)) must strictly exceed supportedFiles (\(supportedFiles)) when non-audio files exist"
         )
 
-        let metaBefore = managerBeforeRestart.parseMetadata(paths: [importedUrl.path])
+        let metaBefore = managerBeforeRestart.parseMetadata(paths: [importedUrl.path], skipAssetProbe: true)
         let idBefore = metaBefore.first?["id"] as? String ?? ""
         XCTAssertTrue(idBefore.hasPrefix("local_"), "ID must have 'local_' prefix, got: \(idBefore)")
         XCTAssertEqual(idBefore.count, 22, "SHA-256 8-byte hex ID must be 6 + 16 = 22 chars, got: \(idBefore)")
@@ -178,7 +178,7 @@ final class Batch3VerificationTests: XCTestCase {
             tokenProvider: { "tok2" }
         ) { _, _ in }
 
-        let metaAfter = managerAfterRestart.parseMetadata(paths: [importedUrl.path])
+        let metaAfter = managerAfterRestart.parseMetadata(paths: [importedUrl.path], skipAssetProbe: true)
         let idAfter = metaAfter.first?["id"] as? String ?? ""
         XCTAssertEqual(idBefore, idAfter, "Deterministic SHA-256 track ID must remain identical across App restarts")
     }
@@ -189,7 +189,7 @@ final class Batch3VerificationTests: XCTestCase {
         let ncm = NeteaseApiClient(prefs: prefs)
         let unblock = MusicUnblockEngine()
         let httpServer = LocalHttpServer(ncmClient: ncm, unblockEngine: unblock)
-        let audio = AudioPlayerManager(ncmClient: ncm, unblockEngine: unblock)
+        let audio = AudioPlayerManager(ncmClient: ncm, unblockEngine: unblock, skipSystemAudioSetup: true)
         let storage = LocalMusicAndDownloadManager(portProvider: { 30488 }, tokenProvider: { "tok" }) { _, _ in }
 
         let bridge = IOSJsBridge(
