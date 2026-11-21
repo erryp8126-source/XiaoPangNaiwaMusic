@@ -15,6 +15,9 @@
   <a href="https://github.com/erryp8126-source/XiaoPangNaiwaMusic/releases/latest">
     <img src="https://img.shields.io/badge/iOS-Swift%20IPA-0EA5E9?style=for-the-badge&logo=apple&logoColor=white" alt="iOS Swift IPA" />
   </a>
+  <a href="docs/DEVELOPMENT.md">
+    <img src="https://img.shields.io/badge/Docs-%E5%BC%80%E5%8F%91%E6%96%87%E6%A1%A3-10B981?style=for-the-badge&logo=readthedocs&logoColor=white" alt="开发文档" />
+  </a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/License-MIT-38BDF8?style=for-the-badge" alt="MIT License" />
   </a>
@@ -75,11 +78,13 @@ XiaoPangNaiwaMusic/
 ├── upstream/        # Vue 3 + TypeScript + Tailwind CSS 双端共享前端源码
 ├── android/         # Kotlin + Media3 ExoPlayer + NanoHTTPD Android 原生工程
 ├── ios/             # 纯 Swift + AVPlayer + NWListener iOS 原生工程 (XcodeGen)
-├── docs/screenshots/# 实机运行截图
+├── docs/            # 开发者技术文档 (DEVELOPMENT.md) 与实机运行截图
 ├── .github/workflows/# GitHub Actions 云端自动编译并发布 Android APK + iOS IPA + PWA
 ├── build_apk.ps1    # Windows 一键本地编译 Android APK 脚本
 └── build_pwa.ps1    # Windows 一键本地导出 Safari PWA 静态包脚本
 ```
+
+> 架构设计、JS ↔ 原生桥接协议、内置本地回环服务、后台无缝连播机制与 CI/CD 踩坑指南，详见完整 **[开发者技术文档（docs/DEVELOPMENT.md）](docs/DEVELOPMENT.md)**。
 
 ---
 
