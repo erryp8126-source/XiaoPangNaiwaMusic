@@ -1,5 +1,9 @@
 import type { Config, Context } from "@netlify/functions";
+import { getDeployStore } from "@netlify/blobs";
+import crypto from "node:crypto";
+import dns from "node:dns/promises";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -20,8 +24,174 @@ const ncmApi: Record<string, any> = require("netease-cloud-music-api-alger");
 
 const DEFAULT_CN_IP = "116.25.146.177";
 const MAX_BODY_BYTES = 64 * 1024; // 限制单次请求体最大 64 KB，防资源滥用
+const MAX_OUTBOUND_REDIRECTS = 3;
+const REDIRECT_STATUS_CODES = new Set([301, 302, 307, 308]);
 
-/** 严格 CORS 来源白名单：仅允许自有部署域名与本地开发调试 */
+/** 服务端外发音频解灰请求域名后缀白名单 */
+export const OUTBOUND_AUDIO_ALLOWED_DOMAINS = new Set([
+  "gdstudio.xyz",
+  "163.com",
+  "126.net",
+  "kuwo.cn",
+  "kugou.com",
+  "migu.cn",
+  "qq.com",
+  "gtimg.cn",
+  "joox.com",
+]);
+
+function isAllowedOutboundDomain(host: string, allowedSuffixes: Set<string>): boolean {
+  const clean = host.trim().toLowerCase().replace(/\.+$/, "");
+  if (!clean) return false;
+  for (const suffix of allowedSuffixes) {
+    if (clean === suffix || clean.endsWith(`.${suffix}`)) return true;
+  }
+  return false;
+}
+
+export function isPublicIPv4(ip: string): boolean {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return false;
+  const nums = parts.map((p) => Number(p));
+  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  const [b0, b1, b2] = nums;
+  if (b0 === 0 || b0 === 10 || b0 === 127) return false;
+  if (b0 === 100 && b1 >= 64 && b1 <= 127) return false;
+  if (b0 === 169 && b1 === 254) return false;
+  if (b0 === 172 && b1 >= 16 && b1 <= 31) return false;
+  if (b0 === 192 && b1 === 0 && b2 === 0) return false;
+  if (b0 === 192 && b1 === 168) return false;
+  if (b0 === 198 && (b1 === 18 || b1 === 19)) return false;
+  if (b0 >= 224) return false;
+  return true;
+}
+
+export function isPublicIPv6(ip: string): boolean {
+  const normalized = ip.trim().toLowerCase().replace(/^\[|\]$/g, "").split("%")[0];
+  if (!normalized || net.isIPv6(normalized) === false) return false;
+  if (normalized === "::" || normalized === "::1") return false;
+  if (normalized.startsWith("::ffff:")) {
+    const mapped = normalized.slice(7);
+    if (net.isIPv4(mapped)) return isPublicIPv4(mapped);
+  }
+  const firstHextet = parseInt(normalized.split(":")[0] || "0", 16);
+  if ((firstHextet & 0xfe00) === 0xfc00) return false; // fc00::/7 ULA
+  if ((firstHextet & 0xffc0) === 0xfe80) return false; // fe80::/10 link-local
+  if ((firstHextet & 0xff00) === 0xff00) return false; // ff00::/8 multicast
+  return true;
+}
+
+function isPublicIpAddress(ip: string): boolean {
+  const family = net.isIP(ip);
+  if (family === 4) return isPublicIPv4(ip);
+  if (family === 6) return isPublicIPv6(ip);
+  return false;
+}
+
+export interface SafeFetchOptions {
+  allowedSuffixes?: Set<string>;
+  maxRedirects?: number;
+  dnsLookup?: (hostname: string) => Promise<Array<{ address: string; family: number }>>;
+  fetchImpl?: typeof fetch;
+}
+
+export async function validateOutboundUrl(
+  rawUrl: string,
+  options: Pick<SafeFetchOptions, "allowedSuffixes" | "dnsLookup"> = {}
+): Promise<URL> {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(`SSRF blocked: invalid URL "${rawUrl}"`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`SSRF blocked: disallowed scheme "${parsed.protocol}"`);
+  }
+
+  const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  const allowedSuffixes = options.allowedSuffixes ?? OUTBOUND_AUDIO_ALLOWED_DOMAINS;
+
+  if (net.isIP(host)) {
+    if (!isPublicIpAddress(host)) {
+      throw new Error(`SSRF blocked: non-public IP literal "${host}"`);
+    }
+    if (!isAllowedOutboundDomain(host, allowedSuffixes)) {
+      throw new Error(`SSRF blocked: IP literal not in domain allowlist "${host}"`);
+    }
+    return parsed;
+  }
+
+  if (!isAllowedOutboundDomain(host, allowedSuffixes)) {
+    throw new Error(`SSRF blocked: host "${host}" is not in allowlist`);
+  }
+
+  const lookupFn =
+    options.dnsLookup ??
+    ((h: string) => dns.lookup(h, { all: true, verbatim: true }) as Promise<Array<{ address: string; family: number }>>);
+
+  const records = await lookupFn(host);
+  if (!Array.isArray(records) || records.length === 0) {
+    throw new Error(`SSRF blocked: DNS resolution returned no addresses for "${host}"`);
+  }
+  for (const rec of records) {
+    if (!isPublicIpAddress(rec.address)) {
+      throw new Error(`SSRF blocked: host "${host}" resolved to non-public IP "${rec.address}"`);
+    }
+  }
+  return parsed;
+}
+
+/**
+ * 服务端安全外发 fetch：关闭自动跳转，逐跳校验域名白名单与全部 DNS 解析 IP（最多 3 跳），跨域名剥离敏感头
+ */
+export async function safeFetchWithRedirects(
+  rawUrl: string,
+  init: RequestInit = {},
+  options: SafeFetchOptions = {}
+): Promise<Response> {
+  const maxRedirects = options.maxRedirects ?? MAX_OUTBOUND_REDIRECTS;
+  const fetchFn = options.fetchImpl ?? fetch;
+
+  let currentUrl = (await validateOutboundUrl(rawUrl, options)).toString();
+  let currentHeaders = new Headers(init.headers);
+
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const resp = await fetchFn(currentUrl, {
+      ...init,
+      headers: currentHeaders,
+      redirect: "manual",
+    });
+
+    if (!REDIRECT_STATUS_CODES.has(resp.status)) {
+      return resp;
+    }
+
+    if (hop >= maxRedirects) {
+      throw new Error(`SSRF blocked: exceeded maximum redirect hops (${maxRedirects})`);
+    }
+
+    const location = resp.headers.get("location")?.trim();
+    if (!location) {
+      return resp;
+    }
+
+    const prevHost = new URL(currentUrl).hostname.toLowerCase();
+    const resolvedNext = new URL(location, currentUrl).toString();
+    const validatedNext = await validateOutboundUrl(resolvedNext, options);
+
+    if (validatedNext.hostname.toLowerCase() !== prevHost) {
+      currentHeaders = new Headers(currentHeaders);
+      currentHeaders.delete("authorization");
+      currentHeaders.delete("cookie");
+    }
+    currentUrl = validatedNext.toString();
+  }
+
+  throw new Error(`SSRF blocked: exceeded maximum redirect hops (${maxRedirects})`);
+}
+
+/** 严格 CORS 来源白名单：生产环境仅允许自有部署域名；仅 NETLIFY_DEV=true 时放行本地调试 */
 const EXACT_ALLOWED_ORIGINS = new Set([
   "https://xiaopang-naiwa-music.netlify.app",
   "https://erryp8126-source.github.io",
@@ -31,8 +201,182 @@ function isTrustedOrigin(origin: string): boolean {
   const normalized = origin.trim().replace(/\/+$/, "").toLowerCase();
   if (EXACT_ALLOWED_ORIGINS.has(normalized)) return true;
   if (/^https:\/\/[a-z0-9-]+--xiaopang-naiwa-music\.netlify\.app$/.test(normalized)) return true;
-  if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalized)) return true;
+  if (process.env.NETLIFY_DEV === "true" && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalized)) {
+    return true;
+  }
   return false;
+}
+
+/** 优先提取 Origin，缺失时回退提取 Referer 的 origin */
+function extractRequestOrigin(req: Request): string | null {
+  const originHeader = req.headers.get("origin")?.trim();
+  if (originHeader) return originHeader;
+
+  const refererHeader = req.headers.get("referer")?.trim();
+  if (refererHeader) {
+    try {
+      const parsed = new URL(refererHeader);
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        return parsed.origin;
+      }
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+let warnedNoApiSecret = false;
+
+function timingSafeEqualStr(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, "utf8");
+  const bufB = Buffer.from(b, "utf8");
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+/**
+ * 服务端鉴权：
+ * - 若配置了环境变量 APP_API_SECRET，强制校验 X-App-Api-Key 或 HMAC-SHA256 签名（X-App-Timestamp + X-App-Signature）
+ * - 未配置时仅允许已通过严格 Origin/Referer 白名单校验的可信前端来源，并记录一次告警日志
+ */
+function verifyApiCredential(req: Request, apiPath: string): boolean {
+  const secret = (process.env.APP_API_SECRET || "").trim();
+  if (!secret) {
+    if (!warnedNoApiSecret) {
+      warnedNoApiSecret = true;
+      console.warn(
+        "[music-api] APP_API_SECRET is not configured; allowing trusted Origin/Referer requests only."
+      );
+    }
+    return true;
+  }
+
+  const providedKey = req.headers.get("x-app-api-key")?.trim();
+  if (providedKey && timingSafeEqualStr(providedKey, secret)) {
+    return true;
+  }
+
+  const tsRaw = req.headers.get("x-app-timestamp")?.trim();
+  const sigRaw = req.headers.get("x-app-signature")?.trim()?.toLowerCase();
+  if (tsRaw && sigRaw) {
+    const tsNum = Number(tsRaw);
+    if (Number.isFinite(tsNum)) {
+      const tsMs = tsNum < 1e12 ? tsNum * 1000 : tsNum;
+      if (Math.abs(Date.now() - tsMs) <= 5 * 60 * 1000) {
+        const expected = crypto
+          .createHmac("sha256", secret)
+          .update(`${tsRaw}:${req.method.toUpperCase()}:${apiPath}`)
+          .digest("hex");
+        if (timingSafeEqualStr(sigRaw, expected)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+const memoryRateLimitMap = new Map<string, { count: number; expiresAt: number }>();
+
+function extractClientIp(req: Request, context?: Context): string {
+  const nfIp = req.headers.get("x-nf-client-connection-ip")?.trim();
+  if (nfIp) return nfIp;
+  const ctxIp = typeof (context as any)?.ip === "string" ? String((context as any).ip).trim() : "";
+  if (ctxIp) return ctxIp;
+  const xff = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  if (xff) return xff;
+  return "unknown";
+}
+
+interface RateLimitDecision {
+  allowed: boolean;
+  limit: number;
+  remaining: number;
+  retryAfterSec: number;
+}
+
+/**
+ * 按客户端 IP（x-nf-client-connection-ip）执行窗口限流：
+ * 1. 优先使用可配置的外部 Redis REST 存储（RATE_LIMIT_REDIS_REST_URL + RATE_LIMIT_REDIS_REST_TOKEN）
+ * 2. 其次使用 Netlify Blobs 部署隔离存储（避免 Serverless 冷启动清零计数）
+ * 3. 本地测试或无 Blobs 运行时优雅回退至进程内存窗口计数
+ */
+async function checkIpRateLimit(clientIp: string): Promise<RateLimitDecision> {
+  const maxReq = Math.max(1, Number(process.env.RATE_LIMIT_MAX || 120) || 120);
+  const windowSec = Math.max(1, Number(process.env.RATE_LIMIT_WINDOW_SEC || 60) || 60);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const windowBucket = Math.floor(nowSec / windowSec);
+  const retryAfterSec = Math.max(1, (windowBucket + 1) * windowSec - nowSec);
+  const ipHash = crypto.createHash("sha256").update(clientIp).digest("hex").slice(0, 24);
+  const key = `rl_${windowBucket}_${ipHash}`;
+
+  // 1. 可选外部 Redis REST 存储
+  const redisUrl = (process.env.RATE_LIMIT_REDIS_REST_URL || "").trim().replace(/\/+$/, "");
+  const redisToken = (process.env.RATE_LIMIT_REDIS_REST_TOKEN || "").trim();
+  if (redisUrl && redisToken) {
+    try {
+      const resp = await fetch(`${redisUrl}/pipeline`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${redisToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify([
+          ["INCR", key],
+          ["EXPIRE", key, windowSec + 5],
+        ]),
+        signal: AbortSignal.timeout(2500),
+      });
+      if (resp.ok) {
+        const data: any = await resp.json();
+        const count = Number(Array.isArray(data) ? data[0]?.result : 0);
+        if (Number.isFinite(count) && count > 0) {
+          return {
+            allowed: count <= maxReq,
+            limit: maxReq,
+            remaining: Math.max(0, maxReq - count),
+            retryAfterSec,
+          };
+        }
+      }
+    } catch {
+      // fall through to Netlify Blobs / memory
+    }
+  }
+
+  // 2. Netlify Blobs 持久化窗口计数（跨冷启动生效）
+  try {
+    const store = getDeployStore({ name: "music-api-ratelimit", consistency: "strong" });
+    const existing = (await store.get(key, { type: "json" })) as { count?: number } | null;
+    const nextCount = (Number(existing?.count) || 0) + 1;
+    await store.setJSON(key, { count: nextCount, windowBucket, updatedAt: Date.now() });
+    return {
+      allowed: nextCount <= maxReq,
+      limit: maxReq,
+      remaining: Math.max(0, maxReq - nextCount),
+      retryAfterSec,
+    };
+  } catch {
+    // 非 Netlify 运行时（如本地单测）自动回退进程内存窗口
+  }
+
+  const nowMs = Date.now();
+  if (memoryRateLimitMap.size > 2000) {
+    for (const [k, entry] of memoryRateLimitMap.entries()) {
+      if (entry.expiresAt <= nowMs) memoryRateLimitMap.delete(k);
+    }
+  }
+  const current = memoryRateLimitMap.get(key);
+  const nextCount = current && current.expiresAt > nowMs ? current.count + 1 : 1;
+  memoryRateLimitMap.set(key, { count: nextCount, expiresAt: nowMs + windowSec * 1000 });
+  return {
+    allowed: nextCount <= maxReq,
+    limit: maxReq,
+    remaining: Math.max(0, maxReq - nextCount),
+    retryAfterSec,
+  };
 }
 
 /** 仅开放前端实际调用的网易云路由白名单，杜绝将 250+ 全量接口暴露为任意开放代理 */
@@ -140,9 +484,10 @@ let anonInitPromise: Promise<string> | null = null;
 function buildCorsHeaders(origin: string | null): Record<string, string> {
   const headers: Record<string, string> = {
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With",
+    "Access-Control-Allow-Headers":
+      "Content-Type, Authorization, X-Requested-With, X-App-Api-Key, X-App-Timestamp, X-App-Signature",
     "Access-Control-Max-Age": "86400",
-    Vary: "Origin",
+    Vary: "Origin, Referer",
   };
   if (origin && isTrustedOrigin(origin)) {
     headers["Access-Control-Allow-Origin"] = origin;
@@ -261,10 +606,10 @@ async function handleMusicUnblock(params: Record<string, any>, corsHeaders: Reco
     }
   }
 
-  const tryGdMusic = async (source: string, trackId: string): Promise<string | null> => {
+  const tryGdMusic = async (source: string, trackId: string, br: string = "320"): Promise<string | null> => {
     try {
-      const urlResp = await fetch(
-        `https://music-api.gdstudio.xyz/api.php?types=url&source=${encodeURIComponent(source)}&id=${encodeURIComponent(trackId)}&br=320`,
+      const urlResp = await safeFetchWithRedirects(
+        `https://music-api.gdstudio.xyz/api.php?types=url&source=${encodeURIComponent(source)}&id=${encodeURIComponent(trackId)}&br=${encodeURIComponent(br)}`,
         {
           headers: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -284,10 +629,11 @@ async function handleMusicUnblock(params: Record<string, any>, corsHeaders: Reco
     return null;
   };
 
-  const directUrl = await tryGdMusic("netease", id);
+  // 默认优先 pyncmd 通道（精准网易云 ID 无损 -> 320k）
+  const directUrl = (await tryGdMusic("netease", id, "999")) || (await tryGdMusic("netease", id, "320"));
   if (directUrl) {
     return Response.json(
-      { code: 200, message: "success", data: { url: directUrl, source: "gdmusic-netease" } },
+      { code: 200, message: "success", data: { url: directUrl, source: "pyncmd" } },
       { status: 200, headers: corsHeaders }
     );
   }
@@ -296,7 +642,7 @@ async function handleMusicUnblock(params: Record<string, any>, corsHeaders: Reco
     const keyword = `${songName} ${artistName}`.trim();
     for (const source of ["kuwo", "joox", "netease"]) {
       try {
-        const searchResp = await fetch(
+        const searchResp = await safeFetchWithRedirects(
           `https://music-api.gdstudio.xyz/api.php?types=search&source=${source}&name=${encodeURIComponent(keyword)}&count=3&pages=1`,
           {
             headers: {
@@ -341,16 +687,16 @@ function resolveModuleName(apiPath: string): string {
   return clean.replace(/^\/+/, "").replace(/\//g, "_");
 }
 
-export default async (req: Request, _context: Context): Promise<Response> => {
-  const origin = req.headers.get("origin");
-  if (origin && !isTrustedOrigin(origin)) {
+export default async (req: Request, context: Context): Promise<Response> => {
+  const resolvedOrigin = extractRequestOrigin(req);
+  if (!resolvedOrigin || !isTrustedOrigin(resolvedOrigin)) {
     return Response.json(
       { code: 403, msg: "Forbidden Origin" },
-      { status: 403, headers: { Vary: "Origin" } }
+      { status: 403, headers: { Vary: "Origin, Referer" } }
     );
   }
 
-  const corsHeaders = buildCorsHeaders(origin);
+  const corsHeaders = buildCorsHeaders(resolvedOrigin);
 
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
@@ -370,10 +716,37 @@ export default async (req: Request, _context: Context): Promise<Response> => {
     .replace(/\/+$/, "");
   if (!apiPath.startsWith("/")) apiPath = `/${apiPath}`;
 
+  if (!verifyApiCredential(req, apiPath)) {
+    return Response.json(
+      { code: 401, msg: "Unauthorized" },
+      { status: 401, headers: corsHeaders }
+    );
+  }
+
+  const clientIp = extractClientIp(req, context);
+  const rl = await checkIpRateLimit(clientIp);
+  const rateHeaders: Record<string, string> = {
+    ...corsHeaders,
+    "X-RateLimit-Limit": String(rl.limit),
+    "X-RateLimit-Remaining": String(rl.remaining),
+  };
+  if (!rl.allowed) {
+    return Response.json(
+      { code: 429, msg: "Too Many Requests" },
+      {
+        status: 429,
+        headers: {
+          ...rateHeaders,
+          "Retry-After": String(rl.retryAfterSec),
+        },
+      }
+    );
+  }
+
   if (apiPath === "/" || apiPath === "/health") {
     return Response.json(
       { ok: true, service: "xiaopang-naiwa-music-api", version: "5.1.4" },
-      { status: 200, headers: corsHeaders }
+      { status: 200, headers: rateHeaders }
     );
   }
 
@@ -424,9 +797,12 @@ export default async (req: Request, _context: Context): Promise<Response> => {
     }
   }
 
-  // 严禁外部传入 proxy 或 realIP 滥用服务端做跳板/SSRF
-  delete params.proxy;
-  delete params.realIP;
+  // 严禁外部传入 proxy 或 realIP（含大小写变体）滥用服务端做跳板/SSRF
+  for (const key of Object.keys(params)) {
+    if (/^(proxy|realip)$/i.test(key)) {
+      delete params[key];
+    }
+  }
 
   if (apiPath === "/music") {
     return handleMusicUnblock(params, corsHeaders);

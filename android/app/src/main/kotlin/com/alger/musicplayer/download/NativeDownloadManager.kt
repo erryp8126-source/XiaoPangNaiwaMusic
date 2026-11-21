@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
+import com.alger.musicplayer.server.SafeHttpGuard
 import com.google.gson.Gson
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
@@ -41,8 +42,9 @@ class NativeDownloadManager(
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
-        .followRedirects(true)
-        .followSslRedirects(true)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .dns(SafeHttpGuard.createSafeDns(SafeHttpGuard.AUDIO_AND_PROXY_ALLOWED_DOMAINS))
         .build()
 
     fun getDownloadDir(): File {
@@ -58,15 +60,7 @@ class NativeDownloadManager(
     }
 
     private fun isSafePublicHttpUrl(rawUrl: String): Boolean {
-        val parsed = runCatching { java.net.URI(rawUrl) }.getOrNull() ?: return false
-        val scheme = parsed.scheme?.lowercase() ?: return false
-        if (scheme != "http" && scheme != "https") return false
-        val host = parsed.host?.lowercase()?.trim() ?: return false
-        if (host.isEmpty() || host == "localhost" || host.endsWith(".local")) return false
-        if (host == "127.0.0.1" || host == "0.0.0.0" || host == "::1" || host.startsWith("127.")) return false
-        if (host.startsWith("10.") || host.startsWith("192.168.") || host.startsWith("169.254.")) return false
-        if (Regex("^172\\.(1[6-9]|2[0-9]|3[0-1])\\.").containsMatchIn(host)) return false
-        return true
+        return SafeHttpGuard.validateUrlSyntax(rawUrl, SafeHttpGuard.AUDIO_AND_PROXY_ALLOWED_DOMAINS) != null
     }
 
     private fun getIndexFile(): File = File(getDownloadDir(), ".alger_downloads_index.json")
@@ -104,7 +98,11 @@ class NativeDownloadManager(
                     reqBuilder.header("Referer", "https://www.bilibili.com/")
                 }
 
-                client.newCall(reqBuilder.build()).execute().use { resp ->
+                SafeHttpGuard.executeWithSafeRedirects(
+                    client,
+                    reqBuilder.build(),
+                    SafeHttpGuard.AUDIO_AND_PROXY_ALLOWED_DOMAINS
+                ).use { resp ->
                     if (!resp.isSuccessful) {
                         throw IllegalStateException("HTTP ${resp.code}")
                     }

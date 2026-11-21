@@ -429,7 +429,18 @@ export class LxMusicSourceRunner {
     };
 
     if (options.body) {
-      fetchOptions.body = options.body;
+      if (
+        typeof options.body === 'object' &&
+        !(options.body instanceof FormData) &&
+        !(options.body instanceof Blob) &&
+        !(options.body instanceof URLSearchParams) &&
+        !(options.body instanceof ArrayBuffer) &&
+        !ArrayBuffer.isView(options.body)
+      ) {
+        fetchOptions.body = JSON.stringify(options.body);
+      } else {
+        fetchOptions.body = options.body;
+      }
     } else if (options.form) {
       fetchOptions.body = new URLSearchParams(options.form);
       fetchOptions.headers = {

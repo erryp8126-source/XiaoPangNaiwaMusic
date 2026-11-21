@@ -242,8 +242,11 @@ export class LxMusicStrategy {
 
       console.log('[LxMusicStrategy] 脚本返回 URL:', rawUrl.substring(0, 80) + '...');
 
-      // 解析可能是 API 端点的 URL
-      const resolvedUrl = await resolveAudioUrl(rawUrl);
+      // 解析可能是 API 端点的 URL，并将网易云 http 直链升级为 https 防止混合内容拦截
+      const rawResolvedUrl = await resolveAudioUrl(rawUrl);
+      const resolvedUrl = rawResolvedUrl
+        ? rawResolvedUrl.replace(/^http:\/\/([^/]*\.126\.net\/)/i, 'https://$1')
+        : rawResolvedUrl;
 
       if (!resolvedUrl) {
         console.log('[LxMusicStrategy] URL 解析失败');

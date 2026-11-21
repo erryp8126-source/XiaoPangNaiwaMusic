@@ -22,6 +22,7 @@ final class NeteaseApiClient {
     private static let specialCodes: Set<Int> = [201, 302, 400, 502, 800, 801, 802, 803]
 
     private let prefs: AppPrefs
+    private let redirectDelegate: SafeRedirectSessionDelegate
     private let session: URLSession
     private let tokenLock = NSLock()
     private let wnmcid: String
@@ -36,7 +37,9 @@ final class NeteaseApiClient {
         cfg.timeoutIntervalForResource = 20
         cfg.httpShouldSetCookies = false
         cfg.httpCookieAcceptPolicy = .never
-        self.session = URLSession(configuration: cfg)
+        let del = SafeRedirectSessionDelegate(allowedSuffixes: SafeHttpGuard.neteaseAllowedDomains)
+        self.redirectDelegate = del
+        self.session = URLSession(configuration: cfg, delegate: del, delegateQueue: nil)
 
         let letters = Array("abcdefghijklmnopqrstuvwxyz")
         let prefix = String((0..<6).map { _ in letters[Int.random(in: 0..<letters.count)] })
@@ -685,8 +688,9 @@ final class NeteaseApiClient {
             targetUrl = "\(Self.apiDomain)/eapi/\(strippedUri)"
         }
 
-        guard let url = URL(string: targetUrl) else {
-            return NcmApiResponse(status: 500, body: "{\"code\":500,\"msg\":\"Invalid target URL\"}", cookies: [])
+        guard let url = URL(string: targetUrl),
+              SafeHttpGuard.validateUrlAndResolve(url, allowedSuffixes: SafeHttpGuard.neteaseAllowedDomains) else {
+            return NcmApiResponse(status: 403, body: "{\"code\":403,\"msg\":\"Blocked non-allowlisted target URL\"}", cookies: [])
         }
 
         var req = URLRequest(url: url, timeoutInterval: 15)

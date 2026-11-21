@@ -3,7 +3,7 @@ import { Howl, Howler } from 'howler';
 import type { AudioOutputDevice } from '@/types/audio';
 import type { SongResult } from '@/types/music';
 import { isElectron } from '@/utils'; // 导入isElectron常量
-import { isAndroid, NativeHowl, onAndroidEvent } from '@/utils/androidBridge';
+import { getNativeCapabilities, isAndroid, NativeHowl, onAndroidEvent } from '@/utils/androidBridge';
 
 class AudioService {
   private currentSound: Howl | null = null;
@@ -199,10 +199,16 @@ class AudioService {
 
   // EQ 相关方法
   public isEQEnabled(): boolean {
+    if (isAndroid() && !getNativeCapabilities().supportsEq) {
+      return false;
+    }
     return !this.bypass;
   }
 
   public setEQEnabled(enabled: boolean) {
+    if (isAndroid() && !getNativeCapabilities().supportsEq) {
+      return;
+    }
     this.bypass = !enabled;
     localStorage.setItem('eqBypass', JSON.stringify(this.bypass));
 
@@ -224,6 +230,7 @@ class AudioService {
 
   public setEQFrequencyGain(frequency: string, gain: number) {
     if (isAndroid()) {
+      if (!getNativeCapabilities().supportsEq) return;
       window.AlgerAndroid?.eqSetBandGain(Number(frequency), gain);
       this.saveEQSettings(frequency, gain);
       return;
@@ -237,6 +244,7 @@ class AudioService {
 
   public resetEQ() {
     if (isAndroid()) {
+      if (!getNativeCapabilities().supportsEq) return;
       window.AlgerAndroid?.eqReset();
       localStorage.removeItem('eqSettings');
       return;
@@ -881,14 +889,16 @@ class AudioService {
         const savedVolume = parseFloat(localStorage.getItem('volume') || '1');
         const initialVol = Number.isNaN(savedVolume) ? 1 : Math.max(0, Math.min(1, savedVolume));
 
-        // 预先同步硬件 EQ 状态，并一次性传入 autoplay + seekTime，避免后台切歌二次往返 WebView
-        const eqEnabled = !this.bypass;
-        window.AlgerAndroid?.eqSetEnabled(eqEnabled);
-        if (eqEnabled) {
-          const saved = this.loadEQSettings();
-          Object.entries(saved).forEach(([freq, gain]) => {
-            window.AlgerAndroid?.eqSetBandGain(Number(freq), Number(gain) || 0);
-          });
+        // 仅在平台声明支持硬件 EQ 时预先同步 EQ 状态，避免 iOS 等不支持端发起无效桥接调用
+        if (getNativeCapabilities().supportsEq) {
+          const eqEnabled = !this.bypass;
+          window.AlgerAndroid?.eqSetEnabled(eqEnabled);
+          if (eqEnabled) {
+            const saved = this.loadEQSettings();
+            Object.entries(saved).forEach(([freq, gain]) => {
+              window.AlgerAndroid?.eqSetBandGain(Number(freq), Number(gain) || 0);
+            });
+          }
         }
 
         const nativeSound = new NativeHowl({

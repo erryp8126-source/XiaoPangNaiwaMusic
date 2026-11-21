@@ -145,6 +145,64 @@ export const useIntelligenceModeStore = defineStore('intelligenceMode', () => {
     }
   };
 
+  let refillingIntelligence = false;
+
+  /**
+   * 当心动模式队列即将耗尽时（如 iOS/Android 原生切歌触发 intelligence-refill），拉取新一批心动推荐并追加到列表
+   */
+  const refillIntelligenceQueue = async (
+    seedSongIdOverride?: string | number,
+    playlistIdOverride?: string | number
+  ): Promise<number> => {
+    if (refillingIntelligence) return 0;
+    const { usePlaylistStore } = await import('./playlist');
+    const playlistStore = usePlaylistStore();
+    if (playlistStore.playMode !== 3) return 0;
+
+    const pid = Number(playlistIdOverride || intelligenceModeInfo.value?.playlistId || 0);
+    const sid = Number(
+      seedSongIdOverride ||
+        playlistStore.playList[playlistStore.playListIndex]?.id ||
+        intelligenceModeInfo.value?.seedSongId ||
+        0
+    );
+    if (!pid || !sid) return 0;
+
+    refillingIntelligence = true;
+    try {
+      const { getIntelligenceList } = await import('@/api/music');
+      const res = await getIntelligenceList({ id: sid, pid });
+      const rawList = Array.isArray(res.data?.data) ? res.data.data : [];
+      if (rawList.length === 0) return 0;
+
+      const existingIds = new Set(playlistStore.playList.map((s: any) => String(s.id)));
+      const appended = rawList
+        .map((item: any) => {
+          const songInfo = item.songInfo || item;
+          return {
+            id: item.id || songInfo.id,
+            name: songInfo.name,
+            picUrl: songInfo.al?.picUrl || songInfo.album?.picUrl,
+            source: 'netease' as Platform,
+            song: songInfo,
+            ...songInfo,
+            playLoading: false
+          };
+        })
+        .filter((s: any) => s.id && !existingIds.has(String(s.id)));
+
+      if (appended.length > 0) {
+        playlistStore.playList = [...playlistStore.playList, ...appended];
+      }
+      return appended.length;
+    } catch (error) {
+      console.warn('[IntelligenceMode] 追加心动推荐列表失败:', error);
+      return 0;
+    } finally {
+      refillingIntelligence = false;
+    }
+  };
+
   return {
     // 状态
     isIntelligenceMode,
@@ -152,6 +210,7 @@ export const useIntelligenceModeStore = defineStore('intelligenceMode', () => {
 
     // Actions
     playIntelligenceMode,
+    refillIntelligenceQueue,
     clearIntelligenceMode
   };
 });

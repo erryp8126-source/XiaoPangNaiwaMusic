@@ -170,7 +170,9 @@ const setupAndroidBackgroundSync = () => {
     try {
       const store = getPlayerStore();
       const { useSettingsStore } = await import('@/store/modules/settings');
+      const { useIntelligenceModeStore } = await import('@/store/modules/intelligenceMode');
       const settingsStore = useSettingsStore();
+      const intelligenceStore = useIntelligenceModeStore();
       const rawCookie = localStorage.getItem('token') || '';
       const sleepTimer = store.sleepTimer;
       const listLen = store.playList?.length || 0;
@@ -184,10 +186,12 @@ const setupAndroidBackgroundSync = () => {
         currentIndex: curIdx,
         playMode: store.playMode ?? 0,
         musicQuality: settingsStore.setData?.musicQuality || 'higher',
-        unblockSources: settingsStore.setData?.enabledMusicSources || ['kuwo', 'kugou', 'migu', 'gdmusic'],
+        unblockSources: settingsStore.setData?.enabledMusicSources || ['lxMusic', 'pyncmd', 'kuwo', 'kugou', 'migu', 'gdmusic'],
         isFm: Boolean(store.isFmPlaying),
         stopAfterCurrent,
-        cookie: rawCookie
+        cookie: rawCookie,
+        intelligencePlaylistId: intelligenceStore.intelligenceModeInfo?.playlistId ?? null,
+        intelligenceSeedSongId: intelligenceStore.intelligenceModeInfo?.seedSongId ?? null
       });
     } catch (e) {
       console.warn('[MusicHook] 同步 Android 后台队列失败:', e);
@@ -236,6 +240,24 @@ const setupAndroidBackgroundSync = () => {
   // 监听原生后台服务自动切歌回传事件，同步接管前端 UI / 歌词 / 索引，绝不打断正在播放的音频
   onAndroidEvent('native-track-changed', (_, payload: any) => {
     applyNativeTrackSync(payload, true);
+  });
+
+  // 监听原生心动模式队列即将耗尽时的补货回调，自动拉取新一轮心动推荐
+  onAndroidEvent('intelligence-refill', (_, payload: any) => {
+    void (async () => {
+      try {
+        const { useIntelligenceModeStore } = await import('@/store/modules/intelligenceMode');
+        const added = await useIntelligenceModeStore().refillIntelligenceQueue(
+          payload?.seedSongId,
+          payload?.playlistId
+        );
+        if (added > 0) {
+          scheduleQueueSync(true);
+        }
+      } catch (err) {
+        console.warn('[MusicHook] 处理心动队列补充回调失败:', err);
+      }
+    })();
   });
 };
 

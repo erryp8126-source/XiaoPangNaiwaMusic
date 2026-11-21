@@ -15,6 +15,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
     private let onOpenExternalUrl: (String) -> Void
     private let onShowToast: (String) -> Void
     private let onPickTextFile: (@escaping ([String: Any]?) -> Void) -> Void
+    private let onPickLocalAudioSources: (@escaping ([String: Any]) -> Void) -> Void
     private let callbackDispatcher: (String, Bool, String) -> Void
 
     private let asyncQueue = DispatchQueue(label: "com.alger.musicplayer.ios.bridge", attributes: .concurrent)
@@ -30,6 +31,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         onOpenExternalUrl: @escaping (String) -> Void,
         onShowToast: @escaping (String) -> Void,
         onPickTextFile: @escaping (@escaping ([String: Any]?) -> Void) -> Void,
+        onPickLocalAudioSources: @escaping (@escaping ([String: Any]) -> Void) -> Void,
         callbackDispatcher: @escaping (String, Bool, String) -> Void
     ) {
         self.prefs = prefs
@@ -42,6 +44,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         self.onOpenExternalUrl = onOpenExternalUrl
         self.onShowToast = onShowToast
         self.onPickTextFile = onPickTextFile
+        self.onPickLocalAudioSources = onPickLocalAudioSources
         self.callbackDispatcher = callbackDispatcher
         super.init()
     }
@@ -64,6 +67,13 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         (function() {
           if (window.AlgerAndroid) return;
           window.__ALGER_PLATFORM__ = 'ios';
+          var _capabilities = {
+            supportsEq: false,
+            supportsFloatingLyric: false,
+            supportsBatteryOptimization: false,
+            supportsAudioCache: false
+          };
+          window.__ALGER_CAPABILITIES__ = _capabilities;
           var _serverCfg = \(cfgJson);
           var _localStatus = \(statusJson);
           var _audioState = { instanceId: 0, position: 0, duration: 0, playing: false };
@@ -78,6 +88,9 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
           }
 
           window.AlgerAndroid = {
+            getCapabilities: function() {
+              return JSON.stringify(_capabilities);
+            },
             getServerConfig: function() {
               return JSON.stringify(_serverCfg);
             },
@@ -125,25 +138,20 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             audioSyncQueue: function(queueJson) {
               post('audioSyncQueue', { json: queueJson });
             },
-            eqSetEnabled: function(enabled) {
-              post('eqSetEnabled', { enabled: Boolean(enabled) });
-            },
-            eqSetBandGain: function(freqHz, gainDb) {
-              post('eqSetBandGain', { freqHz: Number(freqHz), gainDb: Number(gainDb) });
-            },
-            eqReset: function() {
-              post('eqReset', {});
-            },
+            // iOS AVPlayer 未接入 AVAudioEngine + AVAudioUnitEQ，能力标志 supportsEq=false，前端应隐藏或置灰入口
+            eqSetEnabled: function(_enabled) { return false; },
+            eqSetBandGain: function(_freqHz, _gainDb) { return false; },
+            eqReset: function() { return false; },
+            // iOS 系统不支持全局悬浮窗桌面歌词（supportsFloatingLyric=false）
             setFloatingLyricEnabled: function(_enabled) { return false; },
             isFloatingLyricEnabled: function() { return false; },
             updateFloatingLyric: function() {},
             setStatusBarStyle: function(isDark) {
               post('setStatusBarStyle', { isDark: Boolean(isDark) });
             },
+            // iOS 后台播放由 AVAudioSession 托管，无 Android 电池优化白名单概念（supportsBatteryOptimization=false）
             isIgnoringBatteryOptimizations: function() { return true; },
-            requestIgnoreBatteryOptimizations: function() {
-              post('showToast', { msg: 'iOS 原生后台音频保活已自动开启' });
-            },
+            requestIgnoreBatteryOptimizations: function() { return false; },
             openExternalUrl: function(url) {
               post('openExternalUrl', { url: String(url || '') });
             },
@@ -212,9 +220,6 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             if let msg = payload["msg"] as? String {
                 DispatchQueue.main.async { self.onShowToast(msg) }
             }
-        case "eqSetEnabled", "eqSetBandGain", "eqReset":
-            // iOS AVPlayer 流媒体通道保持安全无崩溃桥接
-            break
         default:
             break
         }
@@ -231,7 +236,8 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             case "http-request":
                 self.handleHttpRequest(callbackId: callbackId, payload: payload)
             case "scan-local-music":
-                let res = self.storageManager.scanWithStats()
+                let folderPath = payload["folderPath"] as? String
+                let res = self.storageManager.scanWithStats(folderPath: folderPath)
                 self.callbackDispatcher(callbackId, true, self.jsonString(res))
             case "parse-local-music-metadata":
                 let paths = (payload["filePaths"] as? [String]) ?? []
@@ -280,11 +286,11 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
                 let merged = ListeningStatsTracker.shared.mergeStatsJson(incomingStr)
                 self.callbackDispatcher(callbackId, true, merged)
             case "select-local-music-source":
-                let res: [String: Any] = [
-                    "canceled": false,
-                    "filePaths": [self.storageManager.getDocumentsDir().path]
-                ]
-                self.callbackDispatcher(callbackId, true, self.jsonString(res))
+                DispatchQueue.main.async {
+                    self.onPickLocalAudioSources { result in
+                        self.callbackDispatcher(callbackId, true, self.jsonString(result))
+                    }
+                }
             case "pick-text-file":
                 DispatchQueue.main.async {
                     self.onPickTextFile { result in
@@ -313,7 +319,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             }
         }
         let artists = artistNames.joined(separator: " ")
-        let sources = (payload["enabledSources"] as? [String]) ?? ["kuwo", "kugou", "migu", "gdmusic"]
+        let sources = (payload["enabledSources"] as? [String]) ?? ["pyncmd", "kuwo", "kugou", "migu", "gdmusic"]
 
         if let res = unblockEngine.unblock(songId: songId, songName: songName, artists: artists, enabledSources: sources) {
             let wrapped: [String: Any] = [

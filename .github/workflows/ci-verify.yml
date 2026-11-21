@@ -1,0 +1,148 @@
+name: CI Verify (Security + Android + iOS Simulator)
+
+on:
+  push:
+    branches:
+      - main
+      - 'verify/**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "ci-verify-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  security-tests:
+    name: Security & Runtime Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install root dependencies & run runtime security tests
+        run: |
+          npm ci --no-audit --no-fund
+          npm run test:security
+
+  verify-android:
+    name: Verify Android Build & Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Ensure Android SDK 35 & Licenses
+        run: |
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -name sdkmanager -type f 2>/dev/null | sort -V | tail -n 1)"
+          if [ -n "$SDKMANAGER" ]; then
+            yes | "$SDKMANAGER" --licenses >/dev/null || true
+            "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+          fi
+
+      - name: Build Vue 3 mobile frontend
+        working-directory: upstream
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          npm ci --ignore-scripts --legacy-peer-deps
+          npx vite build --outDir "${{ github.workspace }}/android/app/src/main/assets/www" --emptyOutDir
+          test -f "${{ github.workspace }}/android/app/src/main/assets/www/index.html"
+
+      - name: Run Android unit tests & Release build
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest assembleRelease --no-daemon
+
+  verify-ios:
+    name: Verify iOS xcodegen + xcodebuild + Simulator Tests
+    runs-on: macos-15
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build Vue 3 mobile frontend into iOS bundle
+        working-directory: upstream
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          npm ci --ignore-scripts --legacy-peer-deps
+          npx vite build --outDir "${{ github.workspace }}/ios/XiaoPangNaiwaMusic/Resources/www" --emptyOutDir
+          test -f "${{ github.workspace }}/ios/XiaoPangNaiwaMusic/Resources/www/index.html"
+
+      - name: Generate Xcode project (xcodegen generate)
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build iOS Release (arm64, unsigned)
+        working-directory: ios
+        run: |
+          xcodebuild \
+            -project XiaoPangNaiwaMusic.xcodeproj \
+            -scheme XiaoPangNaiwaMusic \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Run iOS Simulator Verification Tests (XCTest)
+        working-directory: ios
+        run: |
+          SIM_UDID=$(xcrun simctl list devices available -j | node -e "
+            const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+            for (const [runtime, devices] of Object.entries(data.devices || {})) {
+              if (!runtime.includes('iOS')) continue;
+              const iphone = devices.find(d => d.isAvailable && /iPhone/.test(d.name));
+              if (iphone) { console.log(iphone.udid); process.exit(0); }
+            }
+            process.exit(1);
+          ")
+          echo "Selected iOS Simulator UDID: $SIM_UDID"
+          xcrun simctl boot "$SIM_UDID" || true
+          xcodebuild \
+            -project XiaoPangNaiwaMusic.xcodeproj \
+            -scheme XiaoPangNaiwaMusic \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "id=$SIM_UDID" \
+            -derivedDataPath build/SimDerivedData \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=YES \
+            test

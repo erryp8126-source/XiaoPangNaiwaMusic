@@ -64,9 +64,12 @@ final class AudioPlayerManager: NSObject {
     private var nativeQueueIndex: Int = 0
     private var nativePlayMode: Int = 0 // 0=顺序, 1=单曲循环, 2=随机, 3=心动
     private var nativeMusicQuality: String = "higher"
-    private var nativeUnblockSources: [String] = ["kuwo", "kugou", "migu", "gdmusic"]
+    private var nativeUnblockSources: [String] = ["pyncmd", "kuwo", "kugou", "migu", "gdmusic"]
     private var nativeUserCookie: String = ""
     private var nativeIsFm: Bool = false
+    private var nativeIntelligencePlaylistId: String = ""
+    private var nativeIntelligenceSeedSongId: String = ""
+    private var lastIntelligenceRefillAt: TimeInterval = 0
 
     private var pendingAutoNextWorkItem: DispatchWorkItem?
     private var pendingTrackSyncJson: String?
@@ -504,6 +507,16 @@ final class AudioPlayerManager: NSObject {
             if let fm = payload["isFm"] as? Bool { self.nativeIsFm = fm }
             if let stop = payload["stopAfterCurrent"] as? Bool { self.stopAfterCurrent = stop }
             if let c = payload["cookie"] as? String { self.nativeUserCookie = c }
+            if let pid = payload["intelligencePlaylistId"], !(pid is NSNull) {
+                self.nativeIntelligencePlaylistId = "\(pid)"
+            } else if self.nativePlayMode != 3 {
+                self.nativeIntelligencePlaylistId = ""
+            }
+            if let sid = payload["intelligenceSeedSongId"], !(sid is NSNull) {
+                self.nativeIntelligenceSeedSongId = "\(sid)"
+            } else if self.nativePlayMode != 3 {
+                self.nativeIntelligenceSeedSongId = ""
+            }
             if let srcs = payload["unblockSources"] as? [String], !srcs.isEmpty {
                 self.nativeUnblockSources = srcs
             }
@@ -611,10 +624,13 @@ final class AudioPlayerManager: NSObject {
         let tokenId = currentInstanceId
         let queueSnapshot = nativeQueue
         let indexSnapshot = nativeQueueIndex
+        let playModeSnapshot = nativePlayMode
         let qualitySnapshot = nativeMusicQuality
         let sourcesSnapshot = nativeUnblockSources
         let cookieSnapshot = nativeUserCookie
         let isFmSnapshot = nativeIsFm
+        let intelligencePidSnapshot = nativeIntelligencePlaylistId
+        let intelligenceSeedSnapshot = nativeIntelligenceSeedSongId
         let songIdSnapshot = currentSongId
 
         resolveQueue.async { [weak self] in
@@ -641,7 +657,36 @@ final class AudioPlayerManager: NSObject {
 
             var workingQueue = queueSnapshot
             var workingIndex = indexSnapshot
-            if workingQueue.count <= 1 {
+            if playModeSnapshot == 3 {
+                // 心动模式：队列剩余 <= 2 首时，提前通知前端拉取心动推荐并由原生层兜底追加心动队列
+                let curIdx = workingIndex < 0 ? -1 : max(0, min(workingIndex, workingQueue.count - 1))
+                let remainingAfterCurrent = workingQueue.isEmpty ? 0 : max(0, (workingQueue.count - 1) - curIdx)
+                if remainingAfterCurrent <= 2 {
+                    let seedId = songIdSnapshot.isEmpty ? intelligenceSeedSnapshot : songIdSnapshot
+                    self.notifyFrontendIntelligenceRefillIfNeeded(
+                        seedId: seedId,
+                        playlistId: intelligencePidSnapshot,
+                        remaining: remainingAfterCurrent
+                    )
+                    let existingIds = Set(workingQueue.map { $0.id }).union(songIdSnapshot.isEmpty ? [] : [songIdSnapshot])
+                    let intelItems = self.fetchNativeIntelligenceSongs(
+                        seedId: seedId,
+                        playlistId: intelligencePidSnapshot,
+                        excludeIds: existingIds,
+                        cookie: cookieSnapshot
+                    )
+                    if !intelItems.isEmpty {
+                        workingQueue.append(contentsOf: intelItems)
+                        if workingQueue.count == intelItems.count { workingIndex = -1 }
+                        let updated = workingQueue
+                        DispatchQueue.main.async {
+                            if !self.userPaused && self.currentInstanceId == tokenId {
+                                self.nativeQueue = updated
+                            }
+                        }
+                    }
+                }
+            } else if workingQueue.count <= 1 {
                 let existingIds = Set(workingQueue.map { $0.id })
                 let rec = self.fetchNativeRecommendedSongs(excludeId: songIdSnapshot, cookie: cookieSnapshot)
                     .filter { !existingIds.contains($0.id) }
@@ -660,9 +705,14 @@ final class AudioPlayerManager: NSObject {
             let count = workingQueue.count
             let safeIdx = workingIndex < 0 ? -1 : max(0, min(workingIndex, count - 1))
             let candidateIndices: [Int]
-            if self.nativePlayMode == 2 && count > 1 {
+            if playModeSnapshot == 2 && count > 1 {
                 // 真随机模式：打乱候选索引并排除当前曲目
                 candidateIndices = (0..<count).filter { $0 != safeIdx }.shuffled()
+            } else if playModeSnapshot == 3 {
+                // 心动模式：按心动推荐流顺序优先向后切歌（优先消费新追加的心动推荐曲目）
+                let forward = safeIdx + 1 < count ? Array((safeIdx + 1)..<count) : []
+                let wrapped = safeIdx > 0 ? Array(0..<safeIdx) : []
+                candidateIndices = forward.isEmpty && wrapped.isEmpty ? [0] : (forward + wrapped)
             } else {
                 let startIdx = safeIdx < 0 ? 0 : (safeIdx + 1) % count
                 candidateIndices = (0..<count).map { (startIdx + $0) % count }
@@ -797,13 +847,74 @@ final class AudioPlayerManager: NSObject {
         }
     }
 
+    private func fetchNativeIntelligenceSongs(
+        seedId: String,
+        playlistId: String,
+        excludeIds: Set<String>,
+        cookie: String
+    ) -> [NativeQueueItem] {
+        if !seedId.isEmpty && !playlistId.isEmpty {
+            var params: [String: String] = [
+                "id": seedId,
+                "pid": playlistId,
+                "sid": seedId
+            ]
+            if !cookie.isEmpty { params["cookie"] = cookie }
+            let res = ncmClient.dispatch(path: "/playmode/intelligence/list", params: params)
+            if let d = res.body.data(using: .utf8),
+               let root = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+               let arr = root["data"] as? [[String: Any]] {
+                let parsed: [NativeQueueItem] = arr.compactMap { entry in
+                    let songObj = (entry["songInfo"] as? [String: Any]) ?? entry
+                    let id = "\(songObj["id"] ?? entry["id"] ?? "")"
+                    guard !id.isEmpty, !excludeIds.contains(id) else { return nil }
+                    let name = (songObj["name"] as? String) ?? ""
+                    let albumObj = (songObj["al"] as? [String: Any]) ?? (songObj["album"] as? [String: Any])
+                    let artistsArr = (songObj["ar"] as? [[String: Any]]) ?? (songObj["artists"] as? [[String: Any]])
+                    let artistStr = artistsArr?.compactMap { $0["name"] as? String }.joined(separator: " / ") ?? ""
+                    let cover = (albumObj?["picUrl"] as? String) ?? ""
+                    let albumName = (albumObj?["name"] as? String) ?? ""
+                    let dt = ((songObj["dt"] ?? songObj["duration"]) as? NSNumber)?.int64Value ?? 0
+                    return NativeQueueItem(id: id, name: name, artist: artistStr, album: albumName, cover: cover, url: "", source: "netease", dt: dt)
+                }
+                if !parsed.isEmpty {
+                    return parsed
+                }
+            }
+        }
+        // 心动接口不可用（未登录或歌单 ID 缺失）时回退推荐新歌，保证不中断
+        return fetchNativeRecommendedSongs(excludeId: seedId, cookie: cookie)
+            .filter { !excludeIds.contains($0.id) }
+    }
+
+    private func notifyFrontendIntelligenceRefillIfNeeded(seedId: String, playlistId: String, remaining: Int) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let now = Date().timeIntervalSince1970
+            guard now - self.lastIntelligenceRefillAt >= 10.0 else { return }
+            self.lastIntelligenceRefillAt = now
+            let payload: [String: Any] = [
+                "seedSongId": seedId,
+                "playlistId": playlistId,
+                "remaining": remaining
+            ]
+            if let d = try? JSONSerialization.data(withJSONObject: payload),
+               let s = String(data: d, encoding: .utf8) {
+                self.eventEmitter?("intelligence-refill", s)
+            }
+        }
+    }
+
     private func advanceNativeQueue(delta: Int, fromEnded: Bool) {
         let queueSnapshot = nativeQueue
         let indexSnapshot = nativeQueueIndex
+        let playModeSnapshot = nativePlayMode
         let qualitySnapshot = nativeMusicQuality
         let sourcesSnapshot = nativeUnblockSources
         let cookieSnapshot = nativeUserCookie
         let isFmSnapshot = nativeIsFm
+        let intelligencePidSnapshot = nativeIntelligencePlaylistId
+        let intelligenceSeedSnapshot = nativeIntelligenceSeedSongId
         let songIdSnapshot = currentSongId
         let tokenId = currentInstanceId
 
@@ -833,10 +944,40 @@ final class AudioPlayerManager: NSObject {
                 }
             }
 
-            // 2. 普通队列：不点暂停永远不中断（末尾自动循环，空/单曲队列自动拉取推荐新歌续播）
+            // 2. 心动模式（nativePlayMode == 3）与普通队列续播
             var workingQueue = queueSnapshot
             var workingIndex = indexSnapshot
-            if workingQueue.count <= 1 {
+            if playModeSnapshot == 3 && delta >= 0 {
+                let curIdx = workingIndex < 0 ? -1 : max(0, min(workingIndex, workingQueue.count - 1))
+                let remainingAfterCurrent = workingQueue.isEmpty ? 0 : max(0, (workingQueue.count - 1) - curIdx)
+                if remainingAfterCurrent <= 2 {
+                    let seedId = songIdSnapshot.isEmpty ? intelligenceSeedSnapshot : songIdSnapshot
+                    self.notifyFrontendIntelligenceRefillIfNeeded(
+                        seedId: seedId,
+                        playlistId: intelligencePidSnapshot,
+                        remaining: remainingAfterCurrent
+                    )
+                    let existingIds = Set(workingQueue.map { $0.id }).union(songIdSnapshot.isEmpty ? [] : [songIdSnapshot])
+                    let intelItems = self.fetchNativeIntelligenceSongs(
+                        seedId: seedId,
+                        playlistId: intelligencePidSnapshot,
+                        excludeIds: existingIds,
+                        cookie: cookieSnapshot
+                    )
+                    if !intelItems.isEmpty {
+                        workingQueue.append(contentsOf: intelItems)
+                        if workingQueue.count == intelItems.count {
+                            workingIndex = -1
+                        }
+                        let updated = workingQueue
+                        DispatchQueue.main.async {
+                            if !self.userPaused && self.currentInstanceId == tokenId {
+                                self.nativeQueue = updated
+                            }
+                        }
+                    }
+                }
+            } else if workingQueue.count <= 1 {
                 let existingIds = Set(workingQueue.map { $0.id })
                 let rec = self.fetchNativeRecommendedSongs(excludeId: songIdSnapshot, cookie: cookieSnapshot)
                     .filter { !existingIds.contains($0.id) }
@@ -876,8 +1017,18 @@ final class AudioPlayerManager: NSObject {
             let count = workingQueue.count
             let safeIdx = workingIndex < 0 ? -1 : max(0, min(workingIndex, count - 1))
             let candidateIndices: [Int]
-            if self.nativePlayMode == 2 && count > 1 {
+            if playModeSnapshot == 2 && count > 1 {
                 candidateIndices = (0..<count).filter { $0 != safeIdx }.shuffled()
+            } else if playModeSnapshot == 3 {
+                // 心动模式：正向切歌优先顺序消费心动推荐流，反向切歌回溯已播心动曲目
+                if delta >= 0 {
+                    let forward = safeIdx + 1 < count ? Array((safeIdx + 1)..<count) : []
+                    let wrapped = safeIdx > 0 ? Array(0..<safeIdx) : []
+                    candidateIndices = forward.isEmpty && wrapped.isEmpty ? [0] : (forward + wrapped)
+                } else {
+                    let startIdx = safeIdx < 0 ? 0 : ((safeIdx + delta) % count + count) % count
+                    candidateIndices = (0..<count).map { ((startIdx - $0) % count + count) % count }
+                }
             } else {
                 let startIdx = safeIdx < 0 ? 0 : ((safeIdx + delta) % count + count) % count
                 let step = delta >= 0 ? 1 : -1

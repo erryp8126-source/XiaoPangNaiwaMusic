@@ -61,7 +61,7 @@
     </setting-item>
 
     <setting-item
-      v-if="!isIOS"
+      v-if="nativeCapabilities.supportsBatteryOptimization"
       title="后台播放保活"
       description="将本应用加入系统电池优化白名单，防止熄屏后系统限制后台切歌与播放"
     >
@@ -78,11 +78,14 @@
     <setting-item
       v-else
       inline
-      title="iOS 原生后台音频保活"
-      description="已启用 AVAudioSession 后台播放与锁屏/AirPods 自动切歌引擎"
+      title="电池优化白名单"
+      description="仅 Android 支持；iOS 已自动启用 AVAudioSession 后台音频播放与锁屏切歌"
     >
       <template #action>
-        <n-tag type="success" size="small" round>已开启</n-tag>
+        <div class="flex items-center gap-2 opacity-75">
+          <n-tag size="small" round>仅 Android 支持</n-tag>
+          <n-tag type="success" size="small" round>iOS 自动保活</n-tag>
+        </div>
       </template>
     </setting-item>
 
@@ -221,6 +224,7 @@ import {
   getAndroidApiBaseUrl,
   getAndroidLocalAuthToken,
   getAndroidServerConfig,
+  getNativeCapabilities,
   saveAndroidServerConfig
 } from '@/utils/androidBridge';
 import { getDefaultWebApiBaseUrl } from '@/utils/request';
@@ -277,6 +281,7 @@ const localStatus = ref<{ running: boolean; port: number; hasAnonToken: boolean 
 });
 const testingApi = ref(false);
 const ignoringBattery = ref(false);
+const nativeCapabilities = getNativeCapabilities();
 
 const localStatusDesc = computed(() => {
   const activeUrl = getAndroidApiBaseUrl();
@@ -333,6 +338,7 @@ const testCurrentApi = async () => {
 };
 
 const requestBatteryWhitelist = () => {
+  if (!nativeCapabilities.supportsBatteryOptimization) return;
   (window as any).AlgerAndroid?.requestIgnoreBatteryOptimizations?.();
   setTimeout(refreshAndroidStatus, 1500);
 };

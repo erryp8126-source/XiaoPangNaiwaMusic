@@ -7,6 +7,7 @@
     "test:security": "node --test tests/security.test.mjs"
   },
   "dependencies": {
+    "@netlify/blobs": "^11.1.9",
     "netease-cloud-music-api-alger": "^4.30.0"
   },
   "devDependencies": {

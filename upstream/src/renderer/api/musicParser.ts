@@ -162,8 +162,9 @@ export class CacheManager {
       await deleteData('music_url_cache', id);
       console.log(`清除歌曲 ${id} 的URL缓存`);
 
-      // 清除失败缓存 - 需要遍历所有策略
-      const strategies = ['custom', 'gdmusic', 'unblockMusic'];
+      // 清除失败缓存 - 同时清理内存失败缓存与历史 IndexedDB 记录
+      CacheManager.clearFailedCache(id);
+      const strategies = ['lxMusic', 'custom', 'gdmusic', 'unblockMusic'];
       for (const strategy of strategies) {
         const cacheKey = `${id}_${strategy}`;
         try {
@@ -379,14 +380,16 @@ class GDMusicStrategy implements MusicSourceStrategy {
 }
 
 /**
- * UnblockMusic解析策略
+ * UnblockMusic解析策略（含 pyncmd 网易云精准 ID 无损解析 + 酷我/酷狗/咪咕，优先级高于泛搜索 GDMusic）
  */
 class UnblockMusicStrategy implements MusicSourceStrategy {
   name = 'unblockMusic';
-  priority = 4;
+  priority = 2;
 
   canHandle(sources: string[]): boolean {
-    const unblockSources = sources.filter((source) => !['custom', 'gdmusic'].includes(source));
+    const unblockSources = sources.filter(
+      (source) => !['custom', 'gdmusic', 'lxMusic'].includes(source)
+    );
     return unblockSources.length > 0;
   }
 
@@ -403,7 +406,7 @@ class UnblockMusicStrategy implements MusicSourceStrategy {
 
     try {
       const unblockSources = (sources || []).filter(
-        (source) => !['custom', 'gdmusic'].includes(source)
+        (source) => !['custom', 'gdmusic', 'lxMusic'].includes(source)
       );
       console.log('尝试使用UnblockMusic解析:', unblockSources);
 

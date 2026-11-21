@@ -4,11 +4,16 @@ import UniformTypeIdentifiers
 
 /// iOS 主容器页面：全屏 Edge-to-Edge WKWebView + 状态栏联动 + 安全区注入 + 文件选择器
 final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, UIDocumentPickerDelegate {
+    private enum ActiveDocumentPicker {
+        case textFile(([String: Any]?) -> Void)
+        case localAudioSources(([String: Any]) -> Void)
+    }
+
     private let services: AppServices
     private var webView: WKWebView!
     private var jsBridge: IOSJsBridge!
     private var isDarkStatusBar: Bool = false
-    private var pendingFilePickCallback: (([String: Any]?) -> Void)?
+    private var activeDocumentPicker: ActiveDocumentPicker?
 
     init(services: AppServices) {
         self.services = services
@@ -26,6 +31,8 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = UIColor(red: 246 / 255.0, green: 250 / 255.0, blue: 253 / 255.0, alpha: 1.0)
+        // 确保本地服务端口与随机 Token 在 WKWebView 注入桥接脚本前已完全就绪，避免首屏 401
+        services.httpServer.ensureAlive()
         setupWebView()
         wireNativeEvents()
         loadLocalApp()
@@ -57,6 +64,9 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
             },
             onPickTextFile: { [weak self] cb in
                 self?.presentFilePicker(completion: cb)
+            },
+            onPickLocalAudioSources: { [weak self] cb in
+                self?.presentLocalAudioPicker(completion: cb)
             },
             callbackDispatcher: { [weak self] callbackId, success, resultJson in
                 self?.dispatchAsyncCallbackToJs(callbackId: callbackId, success: success, resultJson: resultJson)
@@ -99,12 +109,18 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     }
 
     private func loadLocalApp() {
-        if !services.httpServer.isRunning {
+        let wasRunning = services.httpServer.isRunning
+        if !wasRunning {
             services.httpServer.ensureAlive()
         }
-        guard services.httpServer.isRunning else {
+        guard services.httpServer.isRunning, !services.httpServer.authToken.isEmpty else {
             showToast("本地播放服务启动失败，请重启应用重试")
             return
+        }
+        if !wasRunning {
+            let ucc = webView.configuration.userContentController
+            ucc.removeAllUserScripts()
+            ucc.addUserScript(jsBridge.makeInjectionScript())
         }
         let port = services.httpServer.port
         let ver = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "1"
@@ -210,10 +226,22 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         return String(arr.dropFirst().dropLast())
     }
 
-    // MARK: - Document Picker (.js / .json 音源插件导入)
+    // MARK: - Document Picker (.js / .json 音源插件导入 & 本地音乐导入)
+
+    private func cancelActiveDocumentPickerIfNeeded() {
+        guard let pending = activeDocumentPicker else { return }
+        activeDocumentPicker = nil
+        switch pending {
+        case .textFile(let cb):
+            cb(nil)
+        case .localAudioSources(let cb):
+            cb(["canceled": true, "filePaths": []])
+        }
+    }
 
     private func presentFilePicker(completion: @escaping ([String: Any]?) -> Void) {
-        pendingFilePickCallback = completion
+        cancelActiveDocumentPickerIfNeeded()
+        activeDocumentPicker = .textFile(completion)
         let types: [UTType] = [.plainText, .json, .javaScript, .data]
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
         picker.delegate = self
@@ -221,21 +249,55 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         present(picker, animated: true)
     }
 
+    private func presentLocalAudioPicker(completion: @escaping ([String: Any]) -> Void) {
+        cancelActiveDocumentPickerIfNeeded()
+        activeDocumentPicker = .localAudioSources(completion)
+        let types: [UTType] = [.audio, .folder]
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: false)
+        picker.delegate = self
+        picker.allowsMultipleSelection = true
+        present(picker, animated: true)
+    }
+
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        let cb = pendingFilePickCallback
-        pendingFilePickCallback = nil
-        guard let url = urls.first,
-              let content = try? String(contentsOf: url, encoding: .utf8) else {
-            cb?(nil)
-            return
+        guard let mode = activeDocumentPicker else { return }
+        activeDocumentPicker = nil
+
+        switch mode {
+        case .textFile(let cb):
+            guard let url = urls.first,
+                  let content = try? String(contentsOf: url, encoding: .utf8) else {
+                cb(nil)
+                return
+            }
+            cb(["name": url.lastPathComponent, "content": content])
+
+        case .localAudioSources(let cb):
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self = self else {
+                    cb(["canceled": true, "filePaths": []])
+                    return
+                }
+                let imported = self.services.storageManager.importPickedAudioUrls(urls)
+                let localMusicDir = self.services.storageManager.getLocalMusicDir().path
+                DispatchQueue.main.async {
+                    if imported.isEmpty {
+                        self.showToast("未在所选内容中找到支持的音频文件")
+                    } else {
+                        self.showToast("已导入 \(imported.count) 首本地歌曲")
+                    }
+                    cb([
+                        "canceled": false,
+                        "filePaths": [localMusicDir],
+                        "importedCount": imported.count
+                    ])
+                }
+            }
         }
-        cb?(["name": url.lastPathComponent, "content": content])
     }
 
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-        let cb = pendingFilePickCallback
-        pendingFilePickCallback = nil
-        cb?(nil)
+        cancelActiveDocumentPickerIfNeeded()
     }
 
     // MARK: - Lightweight Native Toast

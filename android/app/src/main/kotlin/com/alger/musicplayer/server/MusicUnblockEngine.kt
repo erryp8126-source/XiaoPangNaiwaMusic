@@ -31,8 +31,9 @@ class MusicUnblockEngine {
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(12, TimeUnit.SECONDS)
         .writeTimeout(10, TimeUnit.SECONDS)
-        .followRedirects(true)
-        .followSslRedirects(true)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .dns(SafeHttpGuard.createSafeDns(SafeHttpGuard.AUDIO_AND_PROXY_ALLOWED_DOMAINS))
         .build()
 
     data class UnblockResult(
@@ -46,35 +47,62 @@ class MusicUnblockEngine {
         songId: String,
         songName: String,
         artists: String,
-        enabledSources: List<String> = listOf("kuwo", "kugou", "migu", "gdmusic")
+        enabledSources: List<String> = listOf("pyncmd", "kuwo", "kugou", "migu", "gdmusic")
     ): UnblockResult? {
         val keyword = "$songName $artists".trim()
-        if (keyword.isBlank()) return null
+        if (keyword.isBlank() && songId.isBlank()) return null
 
         val ordered = if (enabledSources.isEmpty()) {
-            listOf("kuwo", "kugou", "migu", "gdmusic")
+            listOf("pyncmd", "kuwo", "kugou", "migu", "gdmusic")
         } else {
             enabledSources
         }
 
         for (src in ordered) {
             val result = when (src.lowercase()) {
-                "kuwo" -> runCatching { searchKuwo(keyword, songName) }.getOrNull()
-                "kugou" -> runCatching { searchKugou(keyword, songName) }.getOrNull()
-                "migu" -> runCatching { searchMigu(keyword, songName) }.getOrNull()
-                "gdmusic", "pyncmd", "qq", "joox" -> runCatching { searchGdMusic(keyword, songId) }.getOrNull()
+                "pyncmd" -> if (songId.isNotBlank()) runCatching { searchPyncmd(songId) }.getOrNull() else null
+                "kuwo" -> if (keyword.isNotBlank()) runCatching { searchKuwo(keyword, songName) }.getOrNull() else null
+                "kugou" -> if (keyword.isNotBlank()) runCatching { searchKugou(keyword, songName) }.getOrNull() else null
+                "migu" -> if (keyword.isNotBlank()) runCatching { searchMigu(keyword, songName) }.getOrNull() else null
+                "gdmusic", "qq", "joox" -> if (keyword.isNotBlank()) runCatching { searchGdMusic(keyword, songId) }.getOrNull() else null
                 else -> null
             }
             if (result != null && result.url.startsWith("http")) {
-                Log.d(TAG, "Unblocked [$keyword] via ${result.platform}: ${result.url.take(80)}")
+                Log.d(TAG, "Unblocked [$keyword/$songId] via ${result.platform}: ${result.url.take(80)}")
                 return result
             }
         }
 
-        // 兜底尝试 GD 音乐台
-        if (!ordered.contains("gdmusic")) {
+        // 兜底尝试 pyncmd 与 GD 音乐台
+        if (!ordered.any { it.equals("pyncmd", ignoreCase = true) } && songId.isNotBlank()) {
+            val pyncmdFallback = runCatching { searchPyncmd(songId) }.getOrNull()
+            if (pyncmdFallback != null && pyncmdFallback.url.startsWith("http")) return pyncmdFallback
+        }
+        if (!ordered.any { it.equals("gdmusic", ignoreCase = true) } && keyword.isNotBlank()) {
             val fallback = runCatching { searchGdMusic(keyword, songId) }.getOrNull()
             if (fallback != null && fallback.url.startsWith("http")) return fallback
+        }
+        return null
+    }
+
+    /**
+     * 精准网易云 ID 无损解析（对齐 @unblockneteasemusic/server pyncmd 通道）
+     */
+    private fun searchPyncmd(songId: String): UnblockResult? {
+        val cleanId = songId.trim()
+        if (cleanId.isEmpty() || !cleanId.all { it.isDigit() }) return null
+        val baseUrl = "https://music-api.gdstudio.xyz/api.php"
+        for (br in listOf("999", "320")) {
+            val urlEndpoint = "$baseUrl?types=url&source=netease&id=$cleanId&br=$br"
+            val urlBody = httpGetText(urlEndpoint, mapOf("User-Agent" to DEFAULT_UA)) ?: continue
+            val urlObj = runCatching { JsonParser.parseString(urlBody).asJsonObject }.getOrNull() ?: continue
+            val rawUrl = urlObj.get("url")?.takeIf { !it.isJsonNull }?.asString?.replace("\\", "")?.trim()
+            if (!rawUrl.isNullOrBlank() && rawUrl.startsWith("http")) {
+                val playUrl = rawUrl.replace(Regex("^http://([^/]*\\.126\\.net/)", RegexOption.IGNORE_CASE), "https://$1")
+                val bitrate = (urlObj.get("br")?.takeIf { !it.isJsonNull }?.asInt ?: 320) * 1000
+                val size = urlObj.get("size")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                return UnblockResult(url = playUrl, br = bitrate, size = size, platform = "pyncmd")
+            }
         }
         return null
     }
@@ -222,7 +250,11 @@ class MusicUnblockEngine {
     private fun checkAudioUrlReachable(url: String): Boolean {
         return try {
             val req = Request.Builder().url(url).head().header("User-Agent", DEFAULT_UA).build()
-            client.newCall(req).execute().use { resp ->
+            SafeHttpGuard.executeWithSafeRedirects(
+                client,
+                req,
+                SafeHttpGuard.AUDIO_AND_PROXY_ALLOWED_DOMAINS
+            ).use { resp ->
                 resp.isSuccessful && (resp.header("Content-Type")?.contains("text/html") != true)
             }
         } catch (_: Exception) {
@@ -234,7 +266,11 @@ class MusicUnblockEngine {
         return try {
             val builder = Request.Builder().url(url).get()
             headers.forEach { (k, v) -> builder.header(k, v) }
-            client.newCall(builder.build()).execute().use { resp ->
+            SafeHttpGuard.executeWithSafeRedirects(
+                client,
+                builder.build(),
+                SafeHttpGuard.AUDIO_AND_PROXY_ALLOWED_DOMAINS
+            ).use { resp ->
                 if (!resp.isSuccessful) return null
                 resp.body?.string()
             }
@@ -243,24 +279,9 @@ class MusicUnblockEngine {
         }
     }
 
-    private fun isSafePublicHttpUrl(rawUrl: String): Boolean {
-        val parsed = runCatching { java.net.URI(rawUrl) }.getOrNull() ?: return false
-        val scheme = parsed.scheme?.lowercase() ?: return false
-        if (scheme != "http" && scheme != "https") return false
-        val host = parsed.host?.lowercase()?.trim() ?: return false
-        if (host.isEmpty() || host == "localhost" || host.endsWith(".local")) return false
-        if (host == "127.0.0.1" || host == "0.0.0.0" || host == "::1" || host.startsWith("127.")) return false
-        if (host.startsWith("10.") || host.startsWith("192.168.") || host.startsWith("169.254.")) return false
-        if (Regex("^172\\.(1[6-9]|2[0-9]|3[0-1])\\.").containsMatchIn(host)) return false
-        return runCatching {
-            val addr = java.net.InetAddress.getByName(host)
-            !(addr.isLoopbackAddress || addr.isAnyLocalAddress || addr.isLinkLocalAddress || addr.isSiteLocalAddress)
-        }.getOrDefault(false)
-    }
-
     /**
-     * 供 LX Music 脚本、GD 音乐台、自定义 API 插件与 WebDAV 云同步调用的无跨域 HTTP 请求器
-     * 严格禁止访问回环地址与内网私有网段（防 SSRF）
+     * 供 LX Music 脚本、GD 音乐台、自定义 API 插件与云同步调用的无跨域 HTTP 请求器
+     * 强制执行域名白名单、全量公网 IP 校验与手动 3 跳重定向防 SSRF 绕过
      */
     fun proxyHttpRequest(
         url: String,
@@ -270,13 +291,16 @@ class MusicUnblockEngine {
         form: Map<String, String>? = null,
         timeoutMs: Long = 15000
     ): JsonObject {
-        if (!isSafePublicHttpUrl(url)) {
-            throw SecurityException("Blocked non-public or invalid proxy URL")
+        if (!SafeHttpGuard.validateUrlAndResolve(url, SafeHttpGuard.AUDIO_AND_PROXY_ALLOWED_DOMAINS)) {
+            throw SecurityException("Blocked non-allowlisted or unsafe proxy URL")
         }
         val customClient = client.newBuilder()
             .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
             .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
             .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .dns(SafeHttpGuard.createSafeDns(SafeHttpGuard.AUDIO_AND_PROXY_ALLOWED_DOMAINS))
             .build()
 
         val reqBuilder = Request.Builder().url(url)
@@ -310,7 +334,11 @@ class MusicUnblockEngine {
             reqBuilder.method(upperMethod, reqBody)
         }
 
-        customClient.newCall(reqBuilder.build()).execute().use { resp ->
+        SafeHttpGuard.executeWithSafeRedirects(
+            customClient,
+            reqBuilder.build(),
+            SafeHttpGuard.AUDIO_AND_PROXY_ALLOWED_DOMAINS
+        ).use { resp ->
             val rawText = resp.body?.string() ?: ""
             val respHeaders = JsonObject()
             resp.headers.names().forEach { name ->

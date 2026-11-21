@@ -196,10 +196,10 @@ final class LocalHttpServer {
     }
 
     private func isAuthorized(_ req: HttpRequest) -> Bool {
-        if authToken.isEmpty { return true }
+        guard !authToken.isEmpty else { return false }
         let candidate = (req.headers["x-alger-token"] ?? req.query["token"] ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard candidate.count == authToken.count else { return false }
+        guard !candidate.isEmpty, candidate.count == authToken.count else { return false }
         var diff: UInt8 = 0
         for (a, b) in zip(candidate.utf8, authToken.utf8) {
             diff |= (a ^ b)
@@ -420,7 +420,7 @@ final class LocalHttpServer {
         let sources = params["sources"]?
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty } ?? ["kuwo", "kugou", "migu", "gdmusic"]
+            .filter { !$0.isEmpty } ?? ["pyncmd", "kuwo", "kugou", "migu", "gdmusic"]
 
         if let res = unblockEngine.unblock(songId: songId, songName: songName, artists: artists, enabledSources: sources) {
             return jsonResponse(status: 200, obj: [

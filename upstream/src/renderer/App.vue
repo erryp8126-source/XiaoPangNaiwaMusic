@@ -360,9 +360,9 @@ onMounted(async () => {
   // 初始化音频设备变化监听器
   playerCoreStore.initAudioDeviceListener();
 
-  // 初始化落雪音源（如果有激活的音源）
+  // 初始化落雪音源（仅原生端启用，预装 lx-玉宁熙-Pro 开箱即用）
   const activeLxApiId = settingsStore.setData?.activeLxMusicApiId;
-  if (activeLxApiId) {
+  if (isNative && activeLxApiId) {
     const lxMusicScripts = settingsStore.setData?.lxMusicScripts || [];
     const activeScript = lxMusicScripts.find((script: any) => script.id === activeLxApiId);
     if (activeScript && activeScript.script) {

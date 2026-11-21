@@ -259,7 +259,7 @@ const initializeScript = async (script: string, scriptInfo: LxScriptInfo) => {
   `;
   const scriptUrl = URL.createObjectURL(
     new Blob([sandboxScript], {
-      type: 'text/javascript'
+      type: 'text/javascript;charset=utf-8'
     })
   );
 

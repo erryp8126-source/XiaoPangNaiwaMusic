@@ -12,6 +12,7 @@ final class MusicUnblockEngine {
     static let defaultUA =
         "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
 
+    private let redirectDelegate: SafeRedirectSessionDelegate
     private let session: URLSession
 
     init() {
@@ -19,30 +20,34 @@ final class MusicUnblockEngine {
         cfg.timeoutIntervalForRequest = 12
         cfg.timeoutIntervalForResource = 18
         cfg.httpShouldSetCookies = false
-        self.session = URLSession(configuration: cfg)
+        let del = SafeRedirectSessionDelegate(allowedSuffixes: SafeHttpGuard.audioAndProxyAllowedDomains)
+        self.redirectDelegate = del
+        self.session = URLSession(configuration: cfg, delegate: del, delegateQueue: nil)
     }
 
     func unblock(
         songId: String,
         songName: String,
         artists: String,
-        enabledSources: [String] = ["kuwo", "kugou", "migu", "gdmusic"]
+        enabledSources: [String] = ["pyncmd", "kuwo", "kugou", "migu", "gdmusic"]
     ) -> UnblockResult? {
         let keyword = "\(songName) \(artists)".trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !keyword.isEmpty else { return nil }
+        guard !keyword.isEmpty || !songId.isEmpty else { return nil }
 
-        let ordered = enabledSources.isEmpty ? ["kuwo", "kugou", "migu", "gdmusic"] : enabledSources
+        let ordered = enabledSources.isEmpty ? ["pyncmd", "kuwo", "kugou", "migu", "gdmusic"] : enabledSources
         for src in ordered {
             let res: UnblockResult?
             switch src.lowercased() {
+            case "pyncmd":
+                res = songId.isEmpty ? nil : searchPyncmd(songId: songId)
             case "kuwo":
-                res = searchKuwo(keyword: keyword)
+                res = keyword.isEmpty ? nil : searchKuwo(keyword: keyword)
             case "kugou":
-                res = searchKugou(keyword: keyword)
+                res = keyword.isEmpty ? nil : searchKugou(keyword: keyword)
             case "migu":
-                res = searchMigu(keyword: keyword)
-            case "gdmusic", "pyncmd", "qq", "joox":
-                res = searchGdMusic(keyword: keyword)
+                res = keyword.isEmpty ? nil : searchMigu(keyword: keyword)
+            case "gdmusic", "qq", "joox":
+                res = keyword.isEmpty ? nil : searchGdMusic(keyword: keyword)
             default:
                 res = nil
             }
@@ -51,9 +56,39 @@ final class MusicUnblockEngine {
             }
         }
 
-        if !ordered.contains(where: { $0.lowercased() == "gdmusic" }) {
+        if !ordered.contains(where: { $0.lowercased() == "pyncmd" }), !songId.isEmpty {
+            if let pyncmdFallback = searchPyncmd(songId: songId), pyncmdFallback.url.hasPrefix("http") {
+                return pyncmdFallback
+            }
+        }
+        if !ordered.contains(where: { $0.lowercased() == "gdmusic" }), !keyword.isEmpty {
             if let fallback = searchGdMusic(keyword: keyword), fallback.url.hasPrefix("http") {
                 return fallback
+            }
+        }
+        return nil
+    }
+
+    /// 精准网易云 ID 无损解析（对齐 @unblockneteasemusic/server pyncmd 通道）
+    private func searchPyncmd(songId: String) -> UnblockResult? {
+        let cleanId = songId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanId.isEmpty, cleanId.allSatisfy({ $0.isNumber }) else { return nil }
+        let baseUrl = "https://music-api.gdstudio.xyz/api.php"
+        for br in ["999", "320"] {
+            let urlEndpoint = "\(baseUrl)?types=url&source=netease&id=\(cleanId)&br=\(br)"
+            guard let urlBody = httpGetText(urlEndpoint, headers: ["User-Agent": Self.defaultUA]),
+                  let urlObj = parseJsonObject(urlBody),
+                  let rawUrl = urlObj["url"] as? String else { continue }
+            let cleaned = rawUrl.replacingOccurrences(of: "\\", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleaned.hasPrefix("http") {
+                let playUrl = cleaned.replacingOccurrences(
+                    of: #"^http://([^/]*\.126\.net/)"#,
+                    with: "https://$1",
+                    options: [.regularExpression, .caseInsensitive]
+                )
+                let bitrate = ((urlObj["br"] as? Int) ?? 320) * 1000
+                let size = (urlObj["size"] as? NSNumber)?.int64Value ?? 0
+                return UnblockResult(url: playUrl, br: bitrate, size: size, platform: "pyncmd")
             }
         }
         return nil
@@ -193,22 +228,7 @@ final class MusicUnblockEngine {
     }
 
     static func isSafePublicHttpUrl(_ url: URL) -> Bool {
-        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
-            return false
-        }
-        guard let host = url.host?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines), !host.isEmpty else {
-            return false
-        }
-        if host == "localhost" || host == "127.0.0.1" || host == "0.0.0.0" || host == "::1" || host.hasSuffix(".local") {
-            return false
-        }
-        if host.hasPrefix("127.") || host.hasPrefix("10.") || host.hasPrefix("192.168.") || host.hasPrefix("169.254.") {
-            return false
-        }
-        if host.range(of: #"^172\.(1[6-9]|2[0-9]|3[0-1])\."#, options: .regularExpression) != nil {
-            return false
-        }
-        return true
+        return SafeHttpGuard.validateUrlAndResolve(url, allowedSuffixes: SafeHttpGuard.audioAndProxyAllowedDomains)
     }
 
     func proxyHttpRequest(
@@ -220,7 +240,7 @@ final class MusicUnblockEngine {
         timeoutMs: Double = 15000
     ) -> [String: Any] {
         guard let nsUrl = URL(string: url), Self.isSafePublicHttpUrl(nsUrl) else {
-            return ["statusCode": 403, "headers": [:], "body": "Blocked non-public or invalid URL", "finalUrl": url]
+            return ["statusCode": 403, "headers": [:], "body": "Blocked non-allowlisted or unsafe URL", "finalUrl": url]
         }
 
         var req = URLRequest(url: nsUrl, timeoutInterval: max(3.0, timeoutMs / 1000.0))
@@ -292,7 +312,7 @@ final class MusicUnblockEngine {
     }
 
     private func checkAudioUrlReachable(_ url: String) -> Bool {
-        guard let u = URL(string: url) else { return false }
+        guard let u = URL(string: url), Self.isSafePublicHttpUrl(u) else { return false }
         var req = URLRequest(url: u, timeoutInterval: 8)
         req.httpMethod = "HEAD"
         req.setValue(Self.defaultUA, forHTTPHeaderField: "User-Agent")
@@ -310,7 +330,7 @@ final class MusicUnblockEngine {
     }
 
     private func httpGetText(_ url: String, headers: [String: String]) -> String? {
-        guard let u = URL(string: url) else { return nil }
+        guard let u = URL(string: url), Self.isSafePublicHttpUrl(u) else { return nil }
         var req = URLRequest(url: u, timeoutInterval: 10)
         req.httpMethod = "GET"
         for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }

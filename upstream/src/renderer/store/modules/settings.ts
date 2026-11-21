@@ -4,6 +4,7 @@ import { ref, watch } from 'vue';
 
 import setDataDefault from '@/../main/set.json';
 import homeRouter from '@/router/home';
+import { applyBuiltinMusicSourceDefaults } from '@/services/builtinLxSources';
 import { useMenuStore } from '@/store/modules/menu';
 import { isElectron } from '@/utils';
 import {
@@ -66,8 +67,10 @@ export const useSettingsStore = defineStore('settings', () => {
       return undefined;
     };
 
-    // 合并默认设置和保存的设置
-    const mergedSettings = mergeWith({}, setDataDefault, savedSettings, customizer);
+    // 合并默认设置和保存的设置，并按需预装内置落雪音源与默认 pyncmd
+    const mergedSettings = applyBuiltinMusicSourceDefaults(
+      mergeWith({}, setDataDefault, savedSettings, customizer)
+    );
 
     // 更新设置并返回
     setSetData(mergedSettings);

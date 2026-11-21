@@ -27,6 +27,7 @@
 
   <!-- EQ 均衡器弹窗 -->
   <n-modal
+    v-if="nativeCapabilities.supportsEq"
     v-model:show="showEQModal"
     :mask-closable="true"
     :unstable-show-mask="false"
@@ -101,9 +102,11 @@ import { useI18n } from 'vue-i18n';
 import EqControl from '@/components/EQControl.vue';
 import SleepTimer from '@/components/player/SleepTimer.vue';
 import { usePlayerStore } from '@/store/modules/player';
+import { getNativeCapabilities } from '@/utils/androidBridge';
 
 const { t } = useI18n();
 const playerStore = usePlayerStore();
+const nativeCapabilities = getNativeCapabilities();
 
 // 下拉菜单状态
 const showDropdown = ref(false);
@@ -161,30 +164,36 @@ const hasActiveSettings = computed(() => {
 });
 
 // 下拉菜单选项
-const dropdownOptions = computed<DropdownOption[]>(() => [
-  {
-    label: t('player.playBar.eq'),
-    key: 'eq',
-    icon: () => h('i', { class: 'ri-equalizer-line' })
-  },
-  {
-    label: t('player.sleepTimer.title'),
-    key: 'timer',
-    icon: () => h('i', { class: 'ri-timer-line' }),
-    // 如果有激活的定时器，添加标记
-    suffix: () => (hasActiveSleepTimer.value ? h('span', { class: 'active-option-mark' }) : null)
-  },
-  {
-    label: t('player.playBar.playbackSpeed') + `(${playbackRate.value}x)`,
-    key: 'speed',
-    icon: () => h('i', { class: 'ri-speed-line' }),
-    // 如果播放速度不是1.0，添加标记
-    suffix: () =>
-      playbackRate.value !== 1.0
-        ? h('span', { class: 'active-option-mark' }, `${playbackRate.value}x`)
-        : null
+const dropdownOptions = computed<DropdownOption[]>(() => {
+  const options: DropdownOption[] = [];
+  if (nativeCapabilities.supportsEq) {
+    options.push({
+      label: t('player.playBar.eq'),
+      key: 'eq',
+      icon: () => h('i', { class: 'ri-equalizer-line' })
+    });
   }
-]);
+  options.push(
+    {
+      label: t('player.sleepTimer.title'),
+      key: 'timer',
+      icon: () => h('i', { class: 'ri-timer-line' }),
+      // 如果有激活的定时器，添加标记
+      suffix: () => (hasActiveSleepTimer.value ? h('span', { class: 'active-option-mark' }) : null)
+    },
+    {
+      label: t('player.playBar.playbackSpeed') + `(${playbackRate.value}x)`,
+      key: 'speed',
+      icon: () => h('i', { class: 'ri-speed-line' }),
+      // 如果播放速度不是1.0，添加标记
+      suffix: () =>
+        playbackRate.value !== 1.0
+          ? h('span', { class: 'active-option-mark' }, `${playbackRate.value}x`)
+          : null
+    }
+  );
+  return options;
+});
 
 // 处理菜单选择
 const handleSelect = (key: string) => {
@@ -196,7 +205,9 @@ const handleSelect = (key: string) => {
   // 然后仅打开所选弹窗
   switch (key) {
     case 'eq':
-      showEQModal.value = true;
+      if (nativeCapabilities.supportsEq) {
+        showEQModal.value = true;
+      }
       break;
     case 'timer':
       playerStore.showSleepTimer = true;

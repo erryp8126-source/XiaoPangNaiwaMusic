@@ -58,7 +58,9 @@ class NeteaseApiClient(private val prefs: AppPrefs) {
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(12, TimeUnit.SECONDS)
-        .followRedirects(true)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .dns(SafeHttpGuard.createSafeDns(SafeHttpGuard.NETEASE_ALLOWED_DOMAINS))
         .build()
 
     data class ApiResponse(
@@ -915,7 +917,11 @@ class NeteaseApiClient(private val prefs: AppPrefs) {
         headers.forEach { (k, v) -> reqBuilder.header(k, v) }
 
         return try {
-            client.newCall(reqBuilder.build()).execute().use { resp ->
+            SafeHttpGuard.executeWithSafeRedirects(
+                client,
+                reqBuilder.build(),
+                SafeHttpGuard.NETEASE_ALLOWED_DOMAINS
+            ).use { resp ->
                 val rawBody = resp.body?.string() ?: "{}"
                 val setCookies = resp.headers("Set-Cookie").map { c ->
                     c.replace(Regex("\\s*Domain=[^(;|$)]+;*"), "")

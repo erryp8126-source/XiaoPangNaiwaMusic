@@ -171,7 +171,7 @@
                         v-if="api.info.version"
                         class="text-[10px] text-gray-500 bg-gray-100 dark:bg-white/10 px-1.5 py-0.5 rounded"
                       >
-                        v{{ api.info.version }}
+                        v{{ String(api.info.version).replace(/^v/i, '') }}
                       </span>
                     </div>
                   </div>
@@ -307,7 +307,7 @@ const props = defineProps({
   },
   sources: {
     type: Array as () => Platform[],
-    default: () => ['migu', 'kugou', 'kuwo', 'pyncmd'] as Platform[]
+    default: () => ['lxMusic', 'pyncmd', 'kuwo', 'kugou', 'migu', 'gdmusic'] as Platform[]
   }
 });
 
@@ -653,7 +653,10 @@ const saveScriptName = (apiId: string) => {
  * 确认选择
  */
 const handleConfirm = () => {
-  const defaultPlatforms: Platform[] = ['migu', 'kugou', 'kuwo', 'pyncmd'];
+  const defaultPlatforms: Platform[] = ['pyncmd', 'kuwo', 'kugou', 'migu', 'gdmusic'];
+  if (lxMusicApis.value.length > 0 && activeLxApiId.value) {
+    defaultPlatforms.unshift('lxMusic');
+  }
   const valuesToEmit =
     selectedSources.value.length > 0 ? [...new Set(selectedSources.value)] : defaultPlatforms;
   emit('update:sources', valuesToEmit);

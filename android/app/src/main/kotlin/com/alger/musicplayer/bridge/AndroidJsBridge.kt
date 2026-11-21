@@ -47,7 +47,19 @@ class AndroidJsBridge(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // ==================== 服务器配置 ====================
+    // ==================== 服务器配置与平台能力 ====================
+
+    @JavascriptInterface
+    fun getCapabilities(): String {
+        return gson.toJson(
+            mapOf(
+                "supportsEq" to true,
+                "supportsFloatingLyric" to true,
+                "supportsBatteryOptimization" to true,
+                "supportsAudioCache" to true
+            )
+        )
+    }
 
     @JavascriptInterface
     fun getServerConfig(): String {

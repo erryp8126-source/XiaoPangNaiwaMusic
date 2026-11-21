@@ -37,12 +37,16 @@
       </setting-item>
 
       <setting-item
-        v-if="isRealAndroid"
+        v-if="isAndroid"
         inline
         title="桌面歌词"
-        description="在手机桌面及其他应用上方悬浮显示双行逐字歌词，支持锁定防误触、切歌、翻译、配色与字号调节"
+        :description="
+          nativeCapabilities.supportsFloatingLyric
+            ? '在手机桌面及其他应用上方悬浮显示双行逐字歌词，支持锁定防误触、切歌、翻译、配色与字号调节'
+            : '仅 Android 支持（iOS 系统不开放全局悬浮窗权限）'
+        "
       >
-        <div class="flex items-center gap-2.5">
+        <div v-if="nativeCapabilities.supportsFloatingLyric" class="flex items-center gap-2.5">
           <s-btn v-if="floatingLyricEnabled && floatingLyricLocked" variant="primary" @click="handleUnlockFloatingLyric">
             解锁歌词
           </s-btn>
@@ -51,19 +55,31 @@
             <template #unchecked>{{ t('common.off') }}</template>
           </n-switch>
         </div>
+        <div v-else class="flex items-center gap-2 opacity-65">
+          <n-tag size="small" round>仅 Android 支持</n-tag>
+          <n-switch :value="false" disabled />
+        </div>
       </setting-item>
 
       <setting-item
-        v-if="isRealAndroid"
+        v-if="isAndroid"
         inline
         title="均衡器 (EQ)"
-        description="使用手机原生硬件音效均衡器调节 10 段频响"
+        :description="
+          nativeCapabilities.supportsEq
+            ? '使用手机原生硬件音效均衡器调节 10 段频响'
+            : '仅 Android 支持（iOS 端 AVPlayer 暂未启用均衡器）'
+        "
       >
-        <s-btn @click="showEqModal = true">{{ t('common.configure') }}</s-btn>
+        <s-btn v-if="nativeCapabilities.supportsEq" @click="showEqModal = true">{{ t('common.configure') }}</s-btn>
+        <div v-else class="flex items-center gap-2 opacity-65">
+          <n-tag size="small" round>仅 Android 支持</n-tag>
+          <s-btn disabled>{{ t('common.configure') }}</s-btn>
+        </div>
       </setting-item>
 
       <setting-item
-        v-if="isRealAndroid"
+        v-if="nativeCapabilities.supportsAudioCache"
         inline
         title="音频边听边缓存"
         :description="`已缓存 ${audioCacheSizeText} / 上限 200 MB（常听歌曲自动秒开、省流量）`"
@@ -129,7 +145,7 @@
       v-model:sources="musicSources"
     />
 
-    <n-modal v-if="isAndroid" v-model:show="showEqModal" preset="card" style="width: 94vw; max-width: 680px" title="均衡器 (EQ)">
+    <n-modal v-if="isAndroid && nativeCapabilities.supportsEq" v-model:show="showEqModal" preset="card" style="width: 94vw; max-width: 680px" title="均衡器 (EQ)">
       <eq-control />
     </n-modal>
   </div>
@@ -143,7 +159,8 @@ import EqControl from '@/components/EQControl.vue';
 import AudioDeviceSettings from '@/components/settings/AudioDeviceSettings.vue';
 import MusicSourceSettings from '@/components/settings/MusicSourceSettings.vue';
 import { type Platform } from '@/types/music';
-import { isAndroid, isElectron, isNative, isRealAndroid } from '@/utils';
+import { isAndroid, isElectron, isNative } from '@/utils';
+import { getNativeCapabilities } from '@/utils/androidBridge';
 
 import { SETTINGS_DATA_KEY } from '../keys';
 import SBtn from '../SBtn.vue';
@@ -151,7 +168,7 @@ import SettingItem from '../SettingItem.vue';
 import SettingSection from '../SettingSection.vue';
 import SSelect from '../SSelect.vue';
 
-const ALL_PLATFORMS: Platform[] = ['migu', 'kugou', 'kuwo', 'pyncmd'];
+const ALL_PLATFORMS: Platform[] = ['lxMusic', 'pyncmd', 'kuwo', 'kugou', 'migu', 'gdmusic'];
 
 const memberLinks = [
   { name: '网易云音乐会员', url: 'https://music.163.com/store/vip' },
@@ -162,25 +179,30 @@ const memberLinks = [
 const { t } = useI18n();
 const setData = inject(SETTINGS_DATA_KEY)!;
 const platform = window.electron ? window.electron.ipcRenderer.sendSync('get-platform') : 'web';
+const nativeCapabilities = getNativeCapabilities();
 
 const showMusicSourcesModal = ref(false);
 const showEqModal = ref(false);
 const floatingLyricEnabled = ref<boolean>(
-  isAndroid ? Boolean((window as any).AlgerAndroid?.isFloatingLyricEnabled?.()) : false
+  nativeCapabilities.supportsFloatingLyric
+    ? Boolean((window as any).AlgerAndroid?.isFloatingLyricEnabled?.())
+    : false
 );
 const floatingLyricLocked = ref<boolean>(
-  isAndroid ? Boolean((window as any).AlgerAndroid?.isFloatingLyricLocked?.()) : false
+  nativeCapabilities.supportsFloatingLyric
+    ? Boolean((window as any).AlgerAndroid?.isFloatingLyricLocked?.())
+    : false
 );
 
 const handleToggleFloatingLyric = (val: boolean) => {
-  if (!isAndroid) return;
+  if (!nativeCapabilities.supportsFloatingLyric) return;
   const actual = Boolean((window as any).AlgerAndroid?.setFloatingLyricEnabled?.(val));
   floatingLyricEnabled.value = actual;
   floatingLyricLocked.value = Boolean((window as any).AlgerAndroid?.isFloatingLyricLocked?.());
 };
 
 const handleUnlockFloatingLyric = () => {
-  if (!isAndroid) return;
+  if (!nativeCapabilities.supportsFloatingLyric) return;
   (window as any).AlgerAndroid?.setFloatingLyricLocked?.(false);
   floatingLyricLocked.value = false;
 };
@@ -192,12 +214,14 @@ const formatCacheBytes = (bytes: number): string => {
 };
 
 const audioCacheBytes = ref<number>(
-  isAndroid ? Number((window as any).AlgerAndroid?.getAudioCacheSize?.() || 0) : 0
+  nativeCapabilities.supportsAudioCache
+    ? Number((window as any).AlgerAndroid?.getAudioCacheSize?.() || 0)
+    : 0
 );
 const audioCacheSizeText = computed(() => formatCacheBytes(audioCacheBytes.value));
 
 const handleClearAudioCache = () => {
-  if (!isAndroid) return;
+  if (!nativeCapabilities.supportsAudioCache) return;
   const ok = Boolean((window as any).AlgerAndroid?.clearAudioCache?.());
   audioCacheBytes.value = Number((window as any).AlgerAndroid?.getAudioCacheSize?.() || 0);
   (window as any).AlgerAndroid?.showToast?.(ok ? '已清理音频缓存' : '缓存清理失败');

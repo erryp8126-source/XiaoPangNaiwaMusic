@@ -33,48 +33,90 @@ const COMMON_WEAK_CODES = new Set([
   'ALGERMUSIC'
 ]);
 
+function stepDelta(prev: string, curr: string): number | null {
+  const prevCode = prev.charCodeAt(0);
+  const currCode = curr.charCodeAt(0);
+  const prevIsDigit = prevCode >= 48 && prevCode <= 57;
+  const currIsDigit = currCode >= 48 && currCode <= 57;
+  if (prevIsDigit && currIsDigit) {
+    const modDiff = (currCode - prevCode + 10) % 10;
+    if (modDiff === 1) return 1; // 0->1..9->0 循环升序
+    if (modDiff === 9) return -1; // 9->8..0->9 循环降序
+    return null;
+  }
+  const prevIsLetter = prevCode >= 65 && prevCode <= 90;
+  const currIsLetter = currCode >= 65 && currCode <= 90;
+  if (prevIsLetter && currIsLetter) {
+    const modDiff = (currCode - prevCode + 26) % 26;
+    if (modDiff === 1) return 1;
+    if (modDiff === 25) return -1;
+    return null;
+  }
+  const rawDiff = currCode - prevCode;
+  if (rawDiff === 1 || rawDiff === -1) return rawDiff;
+  return null;
+}
+
 function isSequentialString(s: string): boolean {
   if (s.length < 4) return false;
-  let asc = true;
-  let desc = true;
+  let allAsc = true;
+  let allDesc = true;
+  let currentRun = 1;
+  let lastDir: number | null = null;
+  let maxRun = 1;
+
   for (let i = 1; i < s.length; i++) {
-    const diff = s.charCodeAt(i) - s.charCodeAt(i - 1);
-    if (diff !== 1) asc = false;
-    if (diff !== -1) desc = false;
+    const dir = stepDelta(s[i - 1], s[i]);
+    if (dir !== 1) allAsc = false;
+    if (dir !== -1) allDesc = false;
+
+    if (dir !== null && dir === lastDir) {
+      currentRun += 1;
+    } else if (dir !== null) {
+      currentRun = 2;
+      lastDir = dir;
+    } else {
+      currentRun = 1;
+      lastDir = null;
+    }
+    if (currentRun > maxRun) maxRun = currentRun;
   }
-  return asc || desc;
+
+  // 整串顺子/循环顺子（如 123456789012、098765432109、ABCDEFGHIJ）或包含 6 位以上连续顺子片段
+  return allAsc || allDesc || maxRun >= 6;
 }
 
 /**
  * 校验同步口令强度：
- * - 至少 8 位（兼容已生成的 NAIWA-xxxx-xxxx 等口令）
- * - 拦截纯短数字、全重复字符、顺子/倒顺子与常见弱口令，避免无鉴权猜解风险
+ * - 统一要求去分隔符后至少 10 位，且同时包含字母与数字（或使用一键生成高熵口令）
+ * - 拦截任意长度纯数字、循环数字顺子（如 123456789012）、重复字符及常见弱口令
  */
 export function validateSyncCode(raw: string): { valid: boolean; reason?: string } {
   const normalized = normalizeSyncCode(raw);
-  if (normalized.length < 8) {
-    return { valid: false, reason: '同步口令至少需要 8 位字符（建议使用一键生成的随机口令）' };
-  }
   if (normalized.length > 64) {
     return { valid: false, reason: '同步口令长度不能超过 64 位' };
   }
   const stripped = normalized.replace(/[-_]/g, '');
-  if (new Set(stripped).size <= 2) {
+  if (stripped.length < 10) {
+    return { valid: false, reason: '同步口令至少需要 10 位有效字符（且同时包含字母与数字，建议使用一键生成口令）' };
+  }
+  if (new Set(stripped).size <= 3) {
     return { valid: false, reason: '口令过于简单（重复字符过多），请换一个更复杂的口令' };
   }
-  if (COMMON_WEAK_CODES.has(stripped) || isSequentialString(stripped)) {
-    return { valid: false, reason: '口令过于常见或为连续字符，容易被猜中，请使用更强的口令' };
+  if (/^\d+$/.test(stripped)) {
+    return { valid: false, reason: '不允许使用纯数字同步口令，请至少输入 10 位且同时包含字母与数字，或直接一键生成' };
   }
-  if (/^\d+$/.test(stripped) && stripped.length < 12) {
-    return { valid: false, reason: '纯数字口令至少需要 12 位，建议混入字母或直接一键生成' };
+  if (
+    COMMON_WEAK_CODES.has(stripped) ||
+    /^(PASSWORD|QWERTY|ADMIN|XIAOPANG|ALGER)\d*$/.test(stripped) ||
+    isSequentialString(stripped)
+  ) {
+    return { valid: false, reason: '口令过于常见或包含连续顺子字符，容易被猜中，请使用更强的口令' };
   }
   const hasLetter = /[A-Z]/.test(stripped);
   const hasDigit = /\d/.test(stripped);
-  if (!hasLetter && !hasDigit) {
-    return { valid: false, reason: '口令需包含字母或数字' };
-  }
-  if (stripped.length < 12 && !(hasLetter && hasDigit)) {
-    return { valid: false, reason: '不足 12 位的自定义口令需同时包含字母和数字，以防被猜中' };
+  if (!hasLetter || !hasDigit) {
+    return { valid: false, reason: '同步口令需至少 10 位且同时包含字母与数字，建议使用一键生成口令' };
   }
   return { valid: true };
 }
@@ -311,19 +353,10 @@ export async function decryptSyncPayload(envelopeStr: string, rawCode: string): 
     return new TextDecoder().decode(plainBuf);
   }
 
-  if (envelope.enc === 'xor-sha256' && envelope.ct) {
-    const keyHash = await sha256Bytes(`xor-key:${normalizeSyncCode(rawCode)}`);
-    const masked = base64ToBytes(envelope.ct);
-    const plain = new Uint8Array(masked.length);
-    for (let i = 0; i < masked.length; i++) {
-      plain[i] = masked[i] ^ keyHash[i % keyHash.length];
-    }
-    return new TextDecoder().decode(plain);
-  }
-
-  // 兼容明文 JSON
-  if (envelope.schema === 'xiaopang-music-sync-v1') {
-    return envelopeStr;
+  if (envelope.enc === 'xor-sha256' || envelope.schema === 'xiaopang-music-sync-v1') {
+    throw new Error(
+      '检测到已废弃的旧版弱加密或明文云端数据，出于安全策略已停止兼容解密。请在主设备生成新的强同步口令并重新上传同步。'
+    );
   }
 
   throw new Error('无法解密云端数据，请确认同步口令是否正确');

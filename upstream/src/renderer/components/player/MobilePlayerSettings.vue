@@ -38,7 +38,14 @@
           >
             <!-- Android / iOS 原生快捷操作 -->
             <div v-if="isAndroid" class="mb-6">
-              <div class="grid gap-2.5" :class="isIOS ? 'grid-cols-2' : 'grid-cols-3'">
+              <div
+                class="grid gap-2.5"
+                :class="
+                  nativeCapabilities.supportsFloatingLyric && nativeCapabilities.supportsEq
+                    ? 'grid-cols-3'
+                    : 'grid-cols-2'
+                "
+              >
                 <button
                   @click="handleDownloadCurrent"
                   class="flex flex-col items-center justify-center gap-1.5 py-3.5 rounded-2xl bg-slate-800/95 border border-slate-700 text-slate-100 active:scale-95 transition-all"
@@ -47,7 +54,7 @@
                   <span class="text-xs font-semibold">下载歌曲</span>
                 </button>
                 <button
-                  v-if="!isIOS"
+                  v-if="nativeCapabilities.supportsFloatingLyric"
                   @click="toggleAndroidFloatingLyric"
                   class="flex flex-col items-center justify-center gap-1.5 py-3.5 rounded-2xl transition-all active:scale-95 border"
                   :class="
@@ -60,7 +67,7 @@
                   <span class="text-xs font-semibold">{{ floatingLyricOn ? '关闭桌面词' : '桌面歌词' }}</span>
                 </button>
                 <button
-                  v-if="!isIOS"
+                  v-if="nativeCapabilities.supportsEq"
                   @click="openEqModal"
                   class="flex flex-col items-center justify-center gap-1.5 py-3.5 rounded-2xl transition-all active:scale-95 border"
                   :class="
@@ -73,7 +80,7 @@
                   <span class="text-xs font-semibold">{{ eqEnabled ? '均衡器 · 开' : '均衡器 EQ' }}</span>
                 </button>
                 <button
-                  v-else
+                  v-if="!nativeCapabilities.supportsFloatingLyric && !nativeCapabilities.supportsEq"
                   @click="handleOpenDownloads"
                   class="flex flex-col items-center justify-center gap-1.5 py-3.5 rounded-2xl bg-slate-800/95 border border-slate-700 text-slate-100 active:scale-95 transition-all"
                 >
@@ -228,7 +235,7 @@
     <!-- 独立高优先级 EQ 抽屉（避免 Naive UI n-modal 默认 z-index=2000 被 z-[99999] 遮挡） -->
     <Transition name="settings-drawer">
       <div
-        v-if="isAndroid && !isIOS && showEqModal"
+        v-if="isAndroid && nativeCapabilities.supportsEq && showEqModal"
         class="fixed inset-0 z-[100001] flex items-end justify-center"
         @click.self="closeEqModal"
       >
@@ -281,14 +288,15 @@ import EqControl from '@/components/EQControl.vue';
 import { useDownload } from '@/hooks/useDownload';
 import { audioService } from '@/services/audioService';
 import { usePlayerStore } from '@/store/modules/player';
-import { isAndroid, isIOS } from '@/utils';
-import { registerAndroidBackHandler } from '@/utils/androidBridge';
+import { isAndroid } from '@/utils';
+import { getNativeCapabilities, registerAndroidBackHandler } from '@/utils/androidBridge';
 
 const { t } = useI18n();
 const router = useRouter();
 const playerStore = usePlayerStore();
 const { sleepTimer, playbackRate } = storeToRefs(playerStore);
 const { downloadMusic } = useDownload();
+const nativeCapabilities = getNativeCapabilities();
 
 const handleOpenDownloads = () => {
   close();
@@ -297,21 +305,24 @@ const handleOpenDownloads = () => {
 };
 
 const showEqModal = ref(false);
-const eqEnabled = ref<boolean>(audioService.isEQEnabled());
+const eqEnabled = ref<boolean>(nativeCapabilities.supportsEq ? audioService.isEQEnabled() : false);
 const openEqModal = () => {
+  if (!nativeCapabilities.supportsEq) return;
   eqEnabled.value = audioService.isEQEnabled();
   showEqModal.value = true;
 };
 const closeEqModal = () => {
-  eqEnabled.value = audioService.isEQEnabled();
+  eqEnabled.value = nativeCapabilities.supportsEq ? audioService.isEQEnabled() : false;
   showEqModal.value = false;
 };
 const floatingLyricOn = ref<boolean>(
-  isAndroid ? Boolean((window as any).AlgerAndroid?.isFloatingLyricEnabled?.()) : false
+  nativeCapabilities.supportsFloatingLyric
+    ? Boolean((window as any).AlgerAndroid?.isFloatingLyricEnabled?.())
+    : false
 );
 
 const toggleAndroidFloatingLyric = () => {
-  if (!isAndroid) return;
+  if (!nativeCapabilities.supportsFloatingLyric) return;
   floatingLyricOn.value = Boolean(
     (window as any).AlgerAndroid?.setFloatingLyricEnabled?.(!floatingLyricOn.value)
   );
@@ -337,8 +348,8 @@ watch(
   () => props.visible,
   (val) => {
     if (val) {
-      eqEnabled.value = audioService.isEQEnabled();
-      if (isAndroid) {
+      eqEnabled.value = nativeCapabilities.supportsEq ? audioService.isEQEnabled() : false;
+      if (nativeCapabilities.supportsFloatingLyric) {
         floatingLyricOn.value = Boolean((window as any).AlgerAndroid?.isFloatingLyricEnabled?.());
       }
     } else {

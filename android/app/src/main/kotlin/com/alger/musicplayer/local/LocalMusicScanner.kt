@@ -107,6 +107,9 @@ class LocalMusicScanner(
                     val modMs = modSec * 1000L
 
                     if (seenPaths.add(effectivePath)) {
+                        if (!effectivePath.startsWith("content://")) {
+                            LocalAudioRegistry.registerPath(context, effectivePath)
+                        }
                         scannedCache[effectivePath] = ScannedTrack(
                             filePath = effectivePath,
                             title = title.ifBlank { extractFilename(effectivePath) },
@@ -143,6 +146,7 @@ class LocalMusicScanner(
             } else if (f.isFile && supportedExts.any { f.name.lowercase().endsWith(it) }) {
                 val p = f.absolutePath
                 if (seen.add(p)) {
+                    LocalAudioRegistry.registerFile(context, f)
                     out.add(JsonObject().apply {
                         addProperty("path", p)
                         addProperty("modifiedTime", f.lastModified())

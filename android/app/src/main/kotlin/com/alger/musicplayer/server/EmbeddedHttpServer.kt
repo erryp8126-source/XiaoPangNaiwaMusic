@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Environment
 import android.util.Log
 import com.alger.musicplayer.BuildConfig
+import com.alger.musicplayer.local.LocalAudioRegistry
 import com.google.gson.Gson
 import com.google.gson.JsonParser
 import fi.iki.elonen.NanoHTTPD
@@ -41,6 +42,8 @@ class EmbeddedHttpServer(
         private val ALLOWED_AUDIO_EXTS = setOf(
             ".mp3", ".flac", ".wav", ".ogg", ".oga", ".m4a", ".aac", ".opus", ".wma"
         )
+        private val CONTENT_AUDIO_MEDIA_REGEX = Regex("^content://media/external/audio/media/\\d+$")
+        private val CONTENT_ALBUM_ART_REGEX = Regex("^content://media/external/audio/albumart(?:/\\d+)?$")
     }
 
     private val gson = Gson()
@@ -95,7 +98,7 @@ class EmbeddedHttpServer(
     }
 
     private fun isAuthorized(session: IHTTPSession): Boolean {
-        if (authToken.isBlank()) return true
+        if (authToken.isBlank()) return false
         val headerToken = session.headers["x-alger-token"]?.trim()
         val queryToken = session.parameters?.get("token")?.firstOrNull()?.trim()
         val candidate = headerToken ?: queryToken ?: return false
@@ -105,8 +108,10 @@ class EmbeddedHttpServer(
         )
     }
 
-    private fun isAllowedContentAudioUri(uriStr: String): Boolean {
-        return uriStr.startsWith("content://media/external/audio/")
+    private fun isAllowedContentAudioUri(uriStr: String, allowAlbumArt: Boolean = false): Boolean {
+        if (CONTENT_AUDIO_MEDIA_REGEX.matches(uriStr)) return true
+        if (allowAlbumArt && CONTENT_ALBUM_ART_REGEX.matches(uriStr)) return true
+        return false
     }
 
     private fun isAllowedAudioFile(file: File): Boolean {
@@ -125,11 +130,15 @@ class EmbeddedHttpServer(
             return false
         }
 
+        // 仅允许应用专属外部音乐/下载目录，或经 LocalMusicScanner 扫描登记的白名单音频路径
         val allowedRoots = listOfNotNull(
             runCatching { context.getExternalFilesDir(Environment.DIRECTORY_MUSIC)?.canonicalPath }.getOrNull(),
-            runCatching { Environment.getExternalStorageDirectory()?.canonicalPath }.getOrNull()
+            runCatching { context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.canonicalPath }.getOrNull()
         )
-        return allowedRoots.any { root -> canonical.startsWith("$root${File.separator}") }
+        if (allowedRoots.any { root -> canonical.startsWith("$root${File.separator}") }) {
+            return true
+        }
+        return LocalAudioRegistry.isRegistered(canonical)
     }
 
     private fun handleHealth(): Response {
@@ -184,7 +193,7 @@ class EmbeddedHttpServer(
         }
 
         val sources = params["sources"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
-            ?: listOf("kuwo", "kugou", "migu", "gdmusic")
+            ?: listOf("pyncmd", "kuwo", "kugou", "migu", "gdmusic")
 
         val result = unblockEngine.unblock(songId, songName, artists, sources)
         return if (result != null) {
@@ -243,7 +252,7 @@ class EmbeddedHttpServer(
             val retriever = MediaMetadataRetriever()
             try {
                 if (decoded.startsWith("content://")) {
-                    if (!isAllowedContentAudioUri(decoded)) {
+                    if (!isAllowedContentAudioUri(decoded, allowAlbumArt = true)) {
                         return newFixedLengthResponse(Response.Status.FORBIDDEN, "text/plain", "Forbidden path")
                     }
                     retriever.setDataSource(context, Uri.parse(decoded))

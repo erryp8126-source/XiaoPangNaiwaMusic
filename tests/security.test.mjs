@@ -1,11 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
+import { createRequire } from "node:module";
 import path from "node:path";
+import vm from "node:vm";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
+const require = createRequire(import.meta.url);
 
 const syncCryptoMod = await import(
   pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/syncCrypto.ts")).href
@@ -15,17 +20,26 @@ const musicApiMod = await import(
 );
 const musicApiHandler = musicApiMod.default;
 const musicApiConfig = musicApiMod.config;
+const safeFetchWithRedirects = musicApiMod.safeFetchWithRedirects;
 
-test("syncCrypto: rejects weak and guessable sync codes", () => {
+const TRUSTED_ORIGIN = "https://erryp8126-source.github.io";
+
+test("syncCrypto: rejects cyclic sequences, any-length pure digits, short codes, and weak codes", () => {
   const weakCodes = [
     "123456",
     "12345678",
+    "123456789012",
+    "098765432109",
+    "7890123456",
+    "13579246801357",
     "87654321",
-    "aaaaaaaa",
-    "password",
+    "aaaaaaaaaa",
+    "password12",
     "ABCDEFGH",
-    "11223344",
-    "onlyletters",
+    "ABCDEFGHIJ",
+    "A1234567890",
+    "A1B2C3D4E", // 9 chars < 10
+    "onlylettersxx",
     "xiaopang",
   ];
   for (const code of weakCodes) {
@@ -34,10 +48,10 @@ test("syncCrypto: rejects weak and guessable sync codes", () => {
   }
 });
 
-test("syncCrypto: accepts strong generated and legacy codes", () => {
+test("syncCrypto: accepts strong generated and 10+ char alphanumeric codes", () => {
   const generated = syncCryptoMod.generateFriendlySyncCode();
   assert.match(generated, /^NAIWA-\d{4}-[2-9A-HJ-NP-Z]{6}$/);
-  for (const code of [generated, "NAIWA-7392-K8M4", "MyNaiwa2026!", "123456789012"]) {
+  for (const code of [generated, "NAIWA-7392-K8M4", "MyNaiwa2026!"]) {
     const res = syncCryptoMod.validateSyncCode(code);
     assert.equal(res.valid, true, `Expected strong code "${code}" to be accepted: ${res.reason}`);
   }
@@ -63,7 +77,7 @@ test("syncCrypto: AES-256-GCM v2 (100k PBKDF2) round-trip and wrong-code rejecti
   );
 });
 
-test("syncCrypto: backward-compatible decryption of legacy v1 (15k PBKDF2) envelopes", async () => {
+test("syncCrypto: backward-compatible decryption of legacy v1 AES-GCM (15k PBKDF2), rejects xor-sha256 & plaintext", async () => {
   const code = "NAIWA-7392-K8M4";
   const plain = JSON.stringify({ legacy: true });
   const enc = new TextEncoder();
@@ -85,88 +99,510 @@ test("syncCrypto: backward-compatible decryption of legacy v1 (15k PBKDF2) envel
   });
   const decrypted = await syncCryptoMod.decryptSyncPayload(legacyEnvelope, code);
   assert.equal(decrypted, plain);
+
+  const xorEnvelope = JSON.stringify({ v: 1, enc: "xor-sha256", ct: "AAAA" });
+  await assert.rejects(
+    () => syncCryptoMod.decryptSyncPayload(xorEnvelope, code),
+    /已废弃|旧版|新口令/
+  );
+
+  const plaintextPayload = JSON.stringify({ schema: "xiaopang-music-sync-v1", updatedAt: 1 });
+  await assert.rejects(
+    () => syncCryptoMod.decryptSyncPayload(plaintextPayload, code),
+    /已废弃|旧版|新口令/
+  );
 });
 
-test("music-api: enforces strict CORS origin allowlist", async () => {
-  const evilGet = await musicApiHandler(
-    new Request("https://xiaopang-naiwa-music.netlify.app/api/health", {
-      headers: { Origin: "https://evil.example.com" },
-    }),
-    {}
-  );
-  assert.equal(evilGet.status, 403);
-  assert.equal(evilGet.headers.get("access-control-allow-origin"), null);
+test("music-api: enforces strict Origin/Referer allowlist and dev-only localhost", async () => {
+  const prevDev = process.env.NETLIFY_DEV;
+  const prevSecret = process.env.APP_API_SECRET;
+  delete process.env.NETLIFY_DEV;
+  delete process.env.APP_API_SECRET;
 
-  const evilOptions = await musicApiHandler(
-    new Request("https://xiaopang-naiwa-music.netlify.app/api/personalized", {
-      method: "OPTIONS",
-      headers: { Origin: "https://evil.example.com" },
-    }),
-    {}
-  );
-  assert.equal(evilOptions.status, 403);
+  try {
+    // Missing both Origin & Referer => 403
+    const missingBoth = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/health"),
+      {}
+    );
+    assert.equal(missingBoth.status, 403);
+    assert.equal(missingBoth.headers.get("access-control-allow-origin"), null);
 
-  const ghPagesRes = await musicApiHandler(
-    new Request("https://xiaopang-naiwa-music.netlify.app/api/health", {
-      headers: { Origin: "https://erryp8126-source.github.io" },
-    }),
-    {}
-  );
-  assert.equal(ghPagesRes.status, 200);
-  assert.equal(ghPagesRes.headers.get("access-control-allow-origin"), "https://erryp8126-source.github.io");
-  assert.equal(ghPagesRes.headers.get("access-control-allow-credentials"), "true");
+    // Evil Origin => 403
+    const evilGet = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/health", {
+        headers: { Origin: "https://evil.example.com" },
+      }),
+      {}
+    );
+    assert.equal(evilGet.status, 403);
+    assert.equal(evilGet.headers.get("access-control-allow-origin"), null);
+
+    // Localhost blocked in production (NETLIFY_DEV !== 'true')
+    const prodLocalhost = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/health", {
+        headers: { Origin: "http://localhost:5173" },
+      }),
+      {}
+    );
+    assert.equal(prodLocalhost.status, 403);
+
+    // Localhost allowed only when NETLIFY_DEV === 'true'
+    process.env.NETLIFY_DEV = "true";
+    const devLocalhost = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/health", {
+        headers: { Origin: "http://localhost:5173", "x-nf-client-connection-ip": "198.51.100.10" },
+      }),
+      {}
+    );
+    assert.equal(devLocalhost.status, 200);
+    delete process.env.NETLIFY_DEV;
+
+    // Missing Origin falls back to Referer origin => 200
+    const refererRes = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/health", {
+        headers: {
+          Referer: "https://xiaopang-naiwa-music.netlify.app/home?tab=1",
+          "x-nf-client-connection-ip": "198.51.100.11",
+        },
+      }),
+      {}
+    );
+    assert.equal(refererRes.status, 200);
+    assert.equal(
+      refererRes.headers.get("access-control-allow-origin"),
+      "https://xiaopang-naiwa-music.netlify.app"
+    );
+
+    // Trusted Origin => 200
+    const ghPagesRes = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/health", {
+        headers: { Origin: TRUSTED_ORIGIN, "x-nf-client-connection-ip": "198.51.100.12" },
+      }),
+      {}
+    );
+    assert.equal(ghPagesRes.status, 200);
+    assert.equal(ghPagesRes.headers.get("access-control-allow-origin"), TRUSTED_ORIGIN);
+    assert.equal(ghPagesRes.headers.get("access-control-allow-credentials"), "true");
+  } finally {
+    if (prevDev !== undefined) process.env.NETLIFY_DEV = prevDev;
+    else delete process.env.NETLIFY_DEV;
+    if (prevSecret !== undefined) process.env.APP_API_SECRET = prevSecret;
+    else delete process.env.APP_API_SECRET;
+  }
+});
+
+test("music-api: enforces APP_API_SECRET auth (API key & HMAC) and per-IP window rate limiting", async () => {
+  const prevSecret = process.env.APP_API_SECRET;
+  const prevMax = process.env.RATE_LIMIT_MAX;
+  const prevWin = process.env.RATE_LIMIT_WINDOW_SEC;
+
+  try {
+    process.env.APP_API_SECRET = "test-super-secret-key-2026";
+    process.env.RATE_LIMIT_MAX = "2";
+    process.env.RATE_LIMIT_WINDOW_SEC = "60";
+
+    // Missing secret => 401
+    const noCred = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/health", {
+        headers: { Origin: TRUSTED_ORIGIN, "x-nf-client-connection-ip": "203.0.113.50" },
+      }),
+      {}
+    );
+    assert.equal(noCred.status, 401);
+
+    // Direct API key => 200 (1/2)
+    const okKey = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/health", {
+        headers: {
+          Origin: TRUSTED_ORIGIN,
+          "X-App-Api-Key": "test-super-secret-key-2026",
+          "x-nf-client-connection-ip": "203.0.113.50",
+        },
+      }),
+      {}
+    );
+    assert.equal(okKey.status, 200);
+
+    // HMAC-SHA256 signature => 200 (2/2)
+    const ts = String(Date.now());
+    const sig = crypto
+      .createHmac("sha256", "test-super-secret-key-2026")
+      .update(`${ts}:GET:/health`)
+      .digest("hex");
+    const okHmac = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/health", {
+        headers: {
+          Origin: TRUSTED_ORIGIN,
+          "X-App-Timestamp": ts,
+          "X-App-Signature": sig,
+          "x-nf-client-connection-ip": "203.0.113.50",
+        },
+      }),
+      {}
+    );
+    assert.equal(okHmac.status, 200);
+
+    // 3rd request from same IP within window => 429 Too Many Requests
+    const limited = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/health", {
+        headers: {
+          Origin: TRUSTED_ORIGIN,
+          "X-App-Api-Key": "test-super-secret-key-2026",
+          "x-nf-client-connection-ip": "203.0.113.50",
+        },
+      }),
+      {}
+    );
+    assert.equal(limited.status, 429);
+    assert.ok(Number(limited.headers.get("retry-after")) >= 1);
+  } finally {
+    if (prevSecret !== undefined) process.env.APP_API_SECRET = prevSecret;
+    else delete process.env.APP_API_SECRET;
+    if (prevMax !== undefined) process.env.RATE_LIMIT_MAX = prevMax;
+    else delete process.env.RATE_LIMIT_MAX;
+    if (prevWin !== undefined) process.env.RATE_LIMIT_WINDOW_SEC = prevWin;
+    else delete process.env.RATE_LIMIT_WINDOW_SEC;
+  }
 });
 
 test("music-api: blocks unlisted NetEase routes, oversized payloads, and invalid unblock ids", async () => {
-  const unlisted = await musicApiHandler(
-    new Request("https://xiaopang-naiwa-music.netlify.app/api/activate/init/profile"),
-    {}
-  );
-  assert.equal(unlisted.status, 404);
+  const prevSecret = process.env.APP_API_SECRET;
+  delete process.env.APP_API_SECRET;
 
-  const badMethod = await musicApiHandler(
-    new Request("https://xiaopang-naiwa-music.netlify.app/api/health", { method: "DELETE" }),
-    {}
-  );
-  assert.equal(badMethod.status, 405);
+  try {
+    const baseHeaders = { Origin: TRUSTED_ORIGIN, "x-nf-client-connection-ip": "198.51.100.99" };
 
-  const hugeBody = "x".repeat(70 * 1024);
-  const oversized = await musicApiHandler(
-    new Request("https://xiaopang-naiwa-music.netlify.app/api/playlist/create", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: hugeBody,
-    }),
-    {}
-  );
-  assert.equal(oversized.status, 413);
+    const unlisted = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/activate/init/profile", {
+        headers: baseHeaders,
+      }),
+      {}
+    );
+    assert.equal(unlisted.status, 404);
 
-  const badMusicId = await musicApiHandler(
-    new Request("https://xiaopang-naiwa-music.netlify.app/api/music?id=../../etc/passwd"),
-    {}
-  );
-  assert.equal(badMusicId.status, 400);
+    const badMethod = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/health", {
+        method: "DELETE",
+        headers: baseHeaders,
+      }),
+      {}
+    );
+    assert.equal(badMethod.status, 405);
 
-  assert.ok(musicApiConfig?.rateLimit?.windowLimit > 0, "Netlify rateLimit must be configured");
+    const hugeBody = "x".repeat(70 * 1024);
+    const oversized = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/playlist/create", {
+        method: "POST",
+        headers: { ...baseHeaders, "Content-Type": "application/json" },
+        body: hugeBody,
+      }),
+      {}
+    );
+    assert.equal(oversized.status, 413);
+
+    const badMusicId = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/music?id=../../etc/passwd", {
+        headers: baseHeaders,
+      }),
+      {}
+    );
+    assert.equal(badMusicId.status, 400);
+
+    assert.ok(musicApiConfig?.rateLimit?.windowLimit > 0, "Netlify rateLimit must be configured");
+  } finally {
+    if (prevSecret !== undefined) process.env.APP_API_SECRET = prevSecret;
+  }
 });
 
-test("repo security invariants: native loopback auth, least-privilege CI, no dead ci/ folder", () => {
+test("music-api: strips caller-supplied proxy and realIP params (query + JSON body + case variants) at runtime", async () => {
+  const prevSecret = process.env.APP_API_SECRET;
+  delete process.env.APP_API_SECRET;
+
+  const ncmApi = require("netease-cloud-music-api-alger");
+  const originalSearchDefault = ncmApi.search_default;
+  let capturedCallParams = null;
+
+  ncmApi.search_default = async (callParams) => {
+    capturedCallParams = { ...callParams };
+    return { status: 200, body: { code: 200, data: { showKeyword: "ok" } }, cookie: [] };
+  };
+
+  try {
+    const res = await musicApiHandler(
+      new Request(
+        "https://xiaopang-naiwa-music.netlify.app/api/search/default?proxy=http://127.0.0.1:8888&realIP=127.0.0.1&PROXY=http://10.0.0.1&realip=169.254.169.254&cookie=MUSIC_A=unit_test_token",
+        {
+          method: "POST",
+          headers: {
+            Origin: TRUSTED_ORIGIN,
+            "Content-Type": "application/json",
+            "x-nf-client-connection-ip": "198.51.100.77",
+          },
+          body: JSON.stringify({
+            proxy: "socks5://127.0.0.1:1080",
+            realIP: "169.254.169.254",
+            keywords: "周杰伦",
+          }),
+        }
+      ),
+      {}
+    );
+
+    assert.equal(res.status, 200);
+    assert.ok(capturedCallParams, "search_default handler should have been invoked");
+    assert.equal(capturedCallParams.proxy, undefined, "proxy query/body param must be stripped");
+    assert.equal(capturedCallParams.PROXY, undefined, "uppercase PROXY param must be stripped");
+    assert.equal(capturedCallParams.realip, undefined, "lowercase realip param must be stripped");
+    assert.equal(
+      capturedCallParams.realIP,
+      "116.25.146.177",
+      "realIP must be forced to server DEFAULT_CN_IP rather than caller-supplied value"
+    );
+    assert.equal(capturedCallParams.keywords, "周杰伦", "legitimate params must remain intact");
+  } finally {
+    ncmApi.search_default = originalSearchDefault;
+    if (prevSecret !== undefined) process.env.APP_API_SECRET = prevSecret;
+  }
+});
+
+test("SSRF redirect guard: local HTTP server 302 -> http://127.0.0.1 and metadata IP are blocked at runtime", async () => {
+  let secretHits = 0;
+  let lastCrossHostHeaders = null;
+
+  const server = http.createServer((req, res) => {
+    const u = new URL(req.url || "/", "http://127.0.0.1");
+    if (u.pathname === "/redirect-loopback") {
+      res.writeHead(302, { Location: `http://127.0.0.1:${port}/ssrf-secret` });
+      res.end();
+      return;
+    }
+    if (u.pathname === "/redirect-metadata") {
+      res.writeHead(302, { Location: "http://169.254.169.254/latest/meta-data/" });
+      res.end();
+      return;
+    }
+    if (u.pathname === "/redirect-unlisted") {
+      res.writeHead(302, { Location: "https://evil.example.com/exfiltrate" });
+      res.end();
+      return;
+    }
+    if (u.pathname.startsWith("/hop/")) {
+      const hop = Number(u.pathname.split("/")[2] || "0");
+      res.writeHead(302, { Location: `http://music-api.gdstudio.xyz/hop/${hop + 1}` });
+      res.end();
+      return;
+    }
+    if (u.pathname === "/redirect-cross-host") {
+      res.writeHead(302, { Location: "http://m7.music.126.net/ok-track" });
+      res.end();
+      return;
+    }
+    if (u.pathname === "/ok-track") {
+      lastCrossHostHeaders = { ...req.headers };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (u.pathname === "/ssrf-secret") {
+      secretHits += 1;
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("SENSITIVE_INTERNAL_DATA");
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  assert.ok(port > 0, "Temporary local test server must bind a valid port");
+
+  // 路由白名单域名到本地模拟测试服务，但保留真实 IP 校验与非白名单/内网地址判定
+  const simulatedDnsLookup = async (hostname) => {
+    if (hostname === "music-api.gdstudio.xyz" || hostname === "m7.music.126.net") {
+      return [{ address: "93.184.216.34", family: 4 }];
+    }
+    if (hostname === "rebind.gdstudio.xyz") {
+      return [{ address: "127.0.0.1", family: 4 }];
+    }
+    return [{ address: "93.184.216.34", family: 4 }];
+  };
+
+  const localRoutedFetch = (url, init) => {
+    const parsed = new URL(String(url));
+    const localTarget = `http://127.0.0.1:${port}${parsed.pathname}${parsed.search}`;
+    return fetch(localTarget, init);
+  };
+
+  try {
+    // 1. Direct loopback URL blocked immediately
+    await assert.rejects(
+      () => safeFetchWithRedirects(`http://127.0.0.1:${port}/ssrf-secret`),
+      /SSRF blocked/
+    );
+    assert.equal(secretHits, 0);
+
+    // 2. Allowed upstream returning real HTTP 302 -> http://127.0.0.1:<port>/ssrf-secret MUST be blocked
+    await assert.rejects(
+      () =>
+        safeFetchWithRedirects(
+          "http://music-api.gdstudio.xyz/redirect-loopback",
+          {},
+          { dnsLookup: simulatedDnsLookup, fetchImpl: localRoutedFetch }
+        ),
+      /SSRF blocked/
+    );
+    assert.equal(secretHits, 0, "Redirect target http://127.0.0.1 must NEVER be requested");
+
+    // 3. Allowed upstream returning 302 -> cloud metadata 169.254.169.254 MUST be blocked
+    await assert.rejects(
+      () =>
+        safeFetchWithRedirects(
+          "http://music-api.gdstudio.xyz/redirect-metadata",
+          {},
+          { dnsLookup: simulatedDnsLookup, fetchImpl: localRoutedFetch }
+        ),
+      /SSRF blocked/
+    );
+
+    // 4. Allowed upstream returning 302 -> unlisted external host MUST be blocked
+    await assert.rejects(
+      () =>
+        safeFetchWithRedirects(
+          "http://music-api.gdstudio.xyz/redirect-unlisted",
+          {},
+          { dnsLookup: simulatedDnsLookup, fetchImpl: localRoutedFetch }
+        ),
+      /SSRF blocked/
+    );
+
+    // 5. DNS rebinding where allowlisted domain resolves to 127.0.0.1 MUST be blocked
+    await assert.rejects(
+      () =>
+        safeFetchWithRedirects(
+          "http://rebind.gdstudio.xyz/ok-track",
+          {},
+          { dnsLookup: simulatedDnsLookup, fetchImpl: localRoutedFetch }
+        ),
+      /SSRF blocked.*non-public IP/
+    );
+
+    // 6. Redirect loop exceeding maxRedirects (3 hops) MUST be blocked
+    await assert.rejects(
+      () =>
+        safeFetchWithRedirects(
+          "http://music-api.gdstudio.xyz/hop/0",
+          {},
+          { dnsLookup: simulatedDnsLookup, fetchImpl: localRoutedFetch }
+        ),
+      /exceeded maximum redirect hops/
+    );
+
+    // 7. Legitimate 302 across allowlisted domains succeeds AND strips Authorization/Cookie headers
+    const okResp = await safeFetchWithRedirects(
+      "http://music-api.gdstudio.xyz/redirect-cross-host",
+      {
+        headers: {
+          Authorization: "Bearer super-secret",
+          Cookie: "MUSIC_U=secret_cookie",
+          "X-Custom-Safe": "keep-me",
+        },
+      },
+      { dnsLookup: simulatedDnsLookup, fetchImpl: localRoutedFetch }
+    );
+    assert.equal(okResp.status, 200);
+    assert.equal(lastCrossHostHeaders?.authorization, undefined, "Authorization must be stripped cross-host");
+    assert.equal(lastCrossHostHeaders?.cookie, undefined, "Cookie must be stripped cross-host");
+    assert.equal(lastCrossHostHeaders?.["x-custom-safe"], "keep-me");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("repo security invariants: P0 local file narrowing, fail-closed tokens, SSRF redirect guards, Supabase rate-limits, CI", () => {
+  // 1. Android local file narrowing & LocalAudioRegistry
   const androidServer = fs.readFileSync(
     path.join(repoRoot, "android/app/src/main/kotlin/com/alger/musicplayer/server/EmbeddedHttpServer.kt"),
     "utf-8"
   );
   assert.match(androidServer, /x-alger-token/);
-  assert.match(androidServer, /isAllowedAudioFile/);
+  assert.match(androidServer, /if\s*\(authToken\.isBlank\(\)\)\s*return\s+false/);
+  assert.match(androidServer, /DIRECTORY_MUSIC/);
+  assert.match(androidServer, /DIRECTORY_DOWNLOADS/);
+  assert.match(androidServer, /LocalAudioRegistry/);
+  assert.match(androidServer, /\^content:\/\/media\/external\/audio\/media\/\\\\d\+\$/);
+  assert.doesNotMatch(androidServer, /getExternalStorageDirectory/);
   assert.doesNotMatch(androidServer, /session\.headers\["origin"\]\s*\?:\s*"\*"/);
+  assert.equal(
+    fs.existsSync(path.join(repoRoot, "android/app/src/main/kotlin/com/alger/musicplayer/local/LocalAudioRegistry.kt")),
+    true
+  );
 
+  // 2. iOS Fail-Closed token & startup order
   const iosServer = fs.readFileSync(
     path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Server/LocalHttpServer.swift"),
     "utf-8"
   );
-  assert.match(iosServer, /x-alger-token/);
-  assert.match(iosServer, /isAllowedAudioFile/);
+  assert.match(iosServer, /guard\s+!authToken\.isEmpty\s+else\s*\{\s*return\s+false\s*\}/);
+  assert.doesNotMatch(iosServer, /if\s+authToken\.isEmpty\s*\{\s*return\s+true\s*\}/);
   assert.doesNotMatch(iosServer, /req\.headers\["origin"\]\s*\?\?\s*"\*"/);
 
+  const iosMainVc = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/MainViewController.swift"),
+    "utf-8"
+  );
+  assert.ok(
+    iosMainVc.indexOf("services.httpServer.ensureAlive()") < iosMainVc.indexOf("setupWebView()"),
+    "MainViewController must ensure LocalHttpServer is ready before setupWebView()"
+  );
+
+  // 3. Android & iOS SSRF redirect guards + domain allowlists
+  const androidGuard = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/alger/musicplayer/server/SafeHttpGuard.kt"),
+    "utf-8"
+  );
+  assert.match(androidGuard, /InetAddress\.getAllByName/);
+  assert.match(androidGuard, /isMulticastAddress/);
+  assert.match(androidGuard, /executeWithSafeRedirects/);
+
+  for (const ktPath of [
+    "android/app/src/main/kotlin/com/alger/musicplayer/server/MusicUnblockEngine.kt",
+    "android/app/src/main/kotlin/com/alger/musicplayer/server/NeteaseApiClient.kt",
+    "android/app/src/main/kotlin/com/alger/musicplayer/download/NativeDownloadManager.kt",
+  ]) {
+    const src = fs.readFileSync(path.join(repoRoot, ktPath), "utf-8");
+    assert.match(src, /followRedirects\(false\)/, `${ktPath} must disable automatic redirects`);
+    assert.match(src, /followSslRedirects\(false\)/, `${ktPath} must disable automatic SSL redirects`);
+    assert.match(src, /SafeHttpGuard\.executeWithSafeRedirects/, `${ktPath} must use SafeHttpGuard`);
+  }
+
+  const iosGuard = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Server/SafeHttpGuard.swift"),
+    "utf-8"
+  );
+  assert.match(iosGuard, /getaddrinfo/);
+  assert.match(iosGuard, /willPerformHTTPRedirection/);
+
+  for (const swiftPath of [
+    "ios/XiaoPangNaiwaMusic/Server/MusicUnblockEngine.swift",
+    "ios/XiaoPangNaiwaMusic/Server/NeteaseApiClient.swift",
+    "ios/XiaoPangNaiwaMusic/Storage/LocalMusicAndDownloadManager.swift",
+  ]) {
+    const src = fs.readFileSync(path.join(repoRoot, swiftPath), "utf-8");
+    assert.match(src, /SafeRedirectSessionDelegate/, `${swiftPath} must attach SafeRedirectSessionDelegate`);
+  }
+
+  // 5. Supabase server-side rate limits
+  const schemaSql = fs.readFileSync(path.join(repoRoot, "sync-server/supabase/schema.sql"), "utf-8");
+  assert.match(schemaSql, /create table if not exists public\.sync_rate_limits/i);
+  assert.match(schemaSql, /alter table public\.sync_rate_limits enable row level security/i);
+  assert.match(schemaSql, /revoke all on table public\.sync_rate_limits from public, anon, authenticated/i);
+  assert.match(schemaSql, /x-forwarded-for/i);
+  assert.match(schemaSql, /rate_limit_exceeded/i);
+
+  // CI & repo hygiene invariants
   const workflow = fs.readFileSync(
     path.join(repoRoot, ".github/workflows/build-dual-platform.yml"),
     "utf-8"
@@ -178,12 +614,170 @@ test("repo security invariants: native loopback auth, least-privilege CI, no dea
     true,
     "upstream/package-lock.json must exist for reproducible npm ci"
   );
-
   const upstreamGitignore = fs.readFileSync(path.join(repoRoot, "upstream/.gitignore"), "utf-8");
-  assert.doesNotMatch(upstreamGitignore, /^package-lock\.json$/m, "upstream/.gitignore must not ignore package-lock.json");
-
+  assert.doesNotMatch(upstreamGitignore, /^package-lock\.json$/m);
   const netlifyTomlBuf = fs.readFileSync(path.join(repoRoot, "netlify.toml"));
   assert.notEqual(netlifyTomlBuf[0], 0xef, "netlify.toml must not start with UTF-8 BOM");
-  assert.match(netlifyTomlBuf.toString("utf-8"), /\bnpm ci\b/, "netlify.toml must use npm ci");
-  assert.equal(fs.existsSync(path.join(repoRoot, ".github/dependabot.yml")), true, "Dependabot config must exist");
+  assert.match(netlifyTomlBuf.toString("utf-8"), /\bnpm ci\b/);
+  assert.equal(fs.existsSync(path.join(repoRoot, ".github/dependabot.yml")), true);
+});
+
+test("builtin music sources: pre-installed lx-玉宁熙-Pro (5-in-1) & default pyncmd across all platforms", () => {
+  const scriptPath = path.join(repoRoot, "upstream/src/renderer/assets/lx-sources/lx-yuningxi-pro.js");
+  assert.equal(fs.existsSync(scriptPath), true, "Pre-installed lx-yuningxi-pro.js must exist");
+  const script = fs.readFileSync(scriptPath, "utf-8");
+  assert.match(script, /@name\s+lx-玉宁熙-Pro/);
+  assert.match(script, /@version\s+v1\.2\.5/);
+
+  let initedData = null;
+  let hasRequestHandler = false;
+  const ctx = vm.createContext({
+    globalThis: null,
+    console,
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+    Map,
+    Set,
+    Date,
+    URL,
+    URLSearchParams,
+    encodeURIComponent,
+    decodeURIComponent,
+    JSON,
+    Math,
+    Promise,
+    Error,
+    RegExp,
+    Array,
+    Object,
+    String,
+    Number,
+    Boolean,
+    parseInt,
+    parseFloat,
+    isNaN,
+    TextEncoder,
+    TextDecoder,
+  });
+  ctx.globalThis = ctx;
+  ctx.lx = {
+    version: "2.8.0",
+    env: "desktop",
+    appInfo: { version: "2.8.0", versionNum: 208, locale: "zh-cn" },
+    currentScriptInfo: { name: "lx-玉宁熙-Pro", version: "v1.2.5", rawScript: script },
+    EVENT_NAMES: { inited: "inited", request: "request", updateAlert: "updateAlert" },
+    on: (ev) => {
+      if (ev === "request") hasRequestHandler = true;
+    },
+    send: (ev, data) => {
+      if (ev === "inited") initedData = data;
+    },
+    request: () => () => {},
+    utils: {
+      buffer: {
+        from: (d) => (typeof d === "string" ? new TextEncoder().encode(d) : new Uint8Array(d)),
+        bufToString: (b) => new TextDecoder().decode(b),
+      },
+      crypto: {},
+    },
+  };
+  vm.runInContext(`"use strict";\nconst lx = globalThis.lx;\n${script}\n`, ctx);
+  assert.equal(hasRequestHandler, true, "lx-玉宁熙-Pro must register request handler");
+  assert.ok(initedData?.sources, "lx-玉宁熙-Pro must emit inited sources");
+  for (const key of ["wy", "tx", "kw", "kg", "mg"]) {
+    assert.ok(initedData.sources[key], `lx-玉宁熙-Pro must expose 5-in-1 source "${key}"`);
+  }
+
+  const setJson = JSON.parse(fs.readFileSync(path.join(repoRoot, "upstream/src/main/set.json"), "utf-8"));
+  assert.ok(setJson.enabledMusicSources.includes("lxMusic"), "set.json must enable lxMusic by default");
+  assert.ok(setJson.enabledMusicSources.includes("pyncmd"), "set.json must enable pyncmd by default");
+
+  const androidUnblock = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/alger/musicplayer/server/MusicUnblockEngine.kt"),
+    "utf-8"
+  );
+  assert.match(androidUnblock, /private fun searchPyncmd/);
+  assert.match(androidUnblock, /listOf\("pyncmd"/);
+
+  const iosUnblock = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Server/MusicUnblockEngine.swift"),
+    "utf-8"
+  );
+  assert.match(iosUnblock, /private func searchPyncmd/);
+  assert.match(iosUnblock, /\["pyncmd"/);
+});
+
+test("batch 3 invariants: iOS download delegate, local picker & SHA-256 IDs, intelligence mode, capability flags, modular splits", () => {
+  // 1. iOS async URLSessionDownloadDelegate + CryptoKit SHA-256 + separate totalFiles/supportedFiles
+  const iosStorage = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Storage/LocalMusicAndDownloadManager.swift"),
+    "utf-8"
+  );
+  assert.doesNotMatch(iosStorage, /DispatchSemaphore/, "iOS download manager must not block with DispatchSemaphore");
+  assert.match(iosStorage, /URLSessionDownloadDelegate/);
+  assert.match(iosStorage, /totalBytesExpectedToWrite/);
+  assert.match(iosStorage, /import CryptoKit/);
+  assert.match(iosStorage, /SHA256\.hash/);
+  assert.doesNotMatch(iosStorage, /path\.hashValue/, "Must not use unstable Swift path.hashValue for persistent IDs");
+  assert.match(iosStorage, /"totalFiles":\s*totalFiles/);
+  assert.match(iosStorage, /"supportedFiles":\s*files\.count/);
+  assert.match(iosStorage, /func importPickedAudioUrls/);
+
+  // 2. iOS UIDocumentPickerViewController for local audio + explicit capability flags (no empty EQ break)
+  const iosBridge = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Bridge/IOSJsBridge.swift"),
+    "utf-8"
+  );
+  assert.match(iosBridge, /supportsEq:\s*false/);
+  assert.match(iosBridge, /supportsFloatingLyric:\s*false/);
+  assert.match(iosBridge, /supportsBatteryOptimization:\s*false/);
+  assert.match(iosBridge, /getCapabilities:/);
+  assert.match(iosBridge, /onPickLocalAudioSources/);
+  assert.doesNotMatch(iosBridge, /case "eqSetEnabled", "eqSetBandGain", "eqReset":/);
+
+  const iosMainVc = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/MainViewController.swift"),
+    "utf-8"
+  );
+  assert.match(iosMainVc, /presentLocalAudioPicker/);
+  assert.match(iosMainVc, /\[\.audio,\s*\.folder\]/);
+
+  // 3. iOS intelligence mode (nativePlayMode == 3)
+  const iosPlayer = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Player/AudioPlayerManager.swift"),
+    "utf-8"
+  );
+  assert.match(iosPlayer, /playModeSnapshot == 3/);
+  assert.match(iosPlayer, /fetchNativeIntelligenceSongs/);
+  assert.match(iosPlayer, /intelligence-refill/);
+
+  // 4. Android bridge capability declaration + frontend capability gating
+  const androidBridgeKt = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/alger/musicplayer/bridge/AndroidJsBridge.kt"),
+    "utf-8"
+  );
+  assert.match(androidBridgeKt, /fun getCapabilities\(\): String/);
+
+  for (const vuePath of [
+    "upstream/src/renderer/views/set/tabs/PlaybackTab.vue",
+    "upstream/src/renderer/views/set/tabs/NetworkTab.vue",
+    "upstream/src/renderer/components/player/MobilePlayerSettings.vue",
+    "upstream/src/renderer/components/player/AdvancedControlsPopover.vue",
+  ]) {
+    const src = fs.readFileSync(path.join(repoRoot, vuePath), "utf-8");
+    assert.match(src, /getNativeCapabilities/, `${vuePath} must check platform capabilities`);
+  }
+
+  // 5. Large-file splits verified
+  for (const splitFile of [
+    "upstream/src/renderer/utils/bridge/types.ts",
+    "upstream/src/renderer/utils/bridge/core.ts",
+    "upstream/src/renderer/utils/bridge/ipcAdapter.ts",
+    "upstream/src/renderer/utils/bridge/nativeHowl.ts",
+    "upstream/src/renderer/utils/bridge/windowApi.ts",
+    "android/app/src/main/kotlin/com/alger/musicplayer/lyric/LyricParser.kt",
+    "android/app/src/main/kotlin/com/alger/musicplayer/lyric/FloatingLyricViews.kt",
+  ]) {
+    assert.equal(fs.existsSync(path.join(repoRoot, splitFile)), true, `${splitFile} must exist`);
+  }
 });
