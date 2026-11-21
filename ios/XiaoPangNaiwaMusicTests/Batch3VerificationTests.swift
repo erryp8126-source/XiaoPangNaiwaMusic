@@ -1,6 +1,5 @@
 import XCTest
 import JavaScriptCore
-@testable import XiaoPangNaiwaMusic
 
 final class Batch3VerificationTests: XCTestCase {
     private var createdFilesToCleanup: [URL] = []

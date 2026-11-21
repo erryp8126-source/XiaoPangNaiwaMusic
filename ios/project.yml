@@ -27,9 +27,6 @@ targets:
       - path: XiaoPangNaiwaMusic/Resources/www
         type: folder
         buildPhase: resources
-    scheme:
-      testTargets:
-        - XiaoPangNaiwaMusicTests
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.alger.musicplayer
@@ -41,18 +38,20 @@ targets:
         CODE_SIGNING_ALLOWED: "NO"
         CODE_SIGNING_REQUIRED: "NO"
         DEVELOPMENT_TEAM: ""
-      configs:
-        Debug:
-          ENABLE_TESTABILITY: "YES"
 
   XiaoPangNaiwaMusicTests:
     type: bundle.unit-test
     platform: iOS
     deploymentTarget: "15.0"
     sources:
+      - path: XiaoPangNaiwaMusic
+        excludes:
+          - AppDelegate.swift
+          - MainViewController.swift
+          - Info.plist
+          - Resources/www
+          - Resources/www/**
       - path: XiaoPangNaiwaMusicTests
-    dependencies:
-      - target: XiaoPangNaiwaMusic
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.alger.musicplayer.tests
