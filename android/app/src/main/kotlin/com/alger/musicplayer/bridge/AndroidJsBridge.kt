@@ -287,6 +287,12 @@ class AndroidJsBridge(
     }
 
     @JavascriptInterface
+    fun audioGetActiveTrack(): String {
+        return MusicPlaybackService.instance?.getActiveTrackJson()
+            ?: """{"hasActiveTrack":false}"""
+    }
+
+    @JavascriptInterface
     fun audioSyncQueue(queueJson: String) {
         val obj = runCatching { JsonParser.parseString(queueJson).asJsonObject }.getOrNull() ?: return
         MusicPlaybackService.latestSyncedQueue = obj

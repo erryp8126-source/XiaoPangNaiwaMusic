@@ -42,6 +42,8 @@ class MainActivity : AppCompatActivity() {
 
     private var topInsetDp: Int = 0
     private var bottomInsetDp: Int = 0
+    @Volatile
+    private var isWebViewReady: Boolean = false
 
     private var pendingAudioPermissionCallback: ((Boolean) -> Unit)? = null
     private var pendingFilePickCallback: ((JsonObject?) -> Unit)? = null
@@ -101,10 +103,24 @@ class MainActivity : AppCompatActivity() {
             pushEventToJs(channel, payloadJson)
         }
         floatingLyricManager = FloatingLyricManager(this, app.prefs) { cmd ->
-            if (cmd == "close") {
-                pushEventToJs("floating-lyric-closed", "{}")
-            } else {
-                pushEventToJs("lyric-control-back", JSONObject.quote(cmd))
+            when (cmd) {
+                "close" -> pushEventToJs("floating-lyric-closed", "{}")
+                "next" -> {
+                    val svc = MusicPlaybackService.instance
+                    if (svc != null) svc.handleExternalTrackCommand("nexttrack", 1)
+                    else pushEventToJs("lyric-control-back", JSONObject.quote(cmd))
+                }
+                "prev" -> {
+                    val svc = MusicPlaybackService.instance
+                    if (svc != null) svc.handleExternalTrackCommand("previoustrack", -1)
+                    else pushEventToJs("lyric-control-back", JSONObject.quote(cmd))
+                }
+                "playpause" -> {
+                    val svc = MusicPlaybackService.instance
+                    if (svc != null) svc.togglePlayPauseFromOverlay()
+                    else pushEventToJs("lyric-control-back", JSONObject.quote(cmd))
+                }
+                else -> pushEventToJs("lyric-control-back", JSONObject.quote(cmd))
             }
         }
 
@@ -127,9 +143,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        // 从通知栏 / 悬浮窗拉回已存在的 Activity 时，同步原生播放状态但不打断播放
+        if (isWebViewReady) {
+            MusicPlaybackService.onAppForegroundChanged(true)
+        }
+    }
+
     override fun onResume() {
         super.onResume()
-        MusicPlaybackService.onAppForegroundChanged(true)
+        // 若 Activity 是从通知栏冷重建而来且 WebView 尚未加载完毕，不要提前清空 pendingTrackSyncJson；
+        // 前端加载完成后会通过 audioGetActiveTrack() 无缝接管正在播放的原生音轨
+        if (isWebViewReady) {
+            MusicPlaybackService.onAppForegroundChanged(true)
+        } else {
+            MusicPlaybackService.isAppInForeground = true
+        }
     }
 
     override fun onPause() {
@@ -244,6 +275,7 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
+                isWebViewReady = true
                 injectSafeAreaCssVars()
             }
         }

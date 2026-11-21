@@ -25,6 +25,7 @@ export interface AndroidBridgeInterface {
   audioSetVolume(volume: number): void;
   audioSetRate(rate: number): void;
   audioGetState(): string;
+  audioGetActiveTrack?(): string;
   audioSyncQueue(queueJson: string): void;
   // Hardware Equalizer
   eqSetEnabled(enabled: boolean): void;
@@ -662,6 +663,7 @@ export function syncAndroidPlaybackQueue(params: {
   musicQuality?: string;
   unblockSources?: string[];
   isFm?: boolean;
+  stopAfterCurrent?: boolean;
   cookie?: string;
 }): void {
   if (!isAndroid()) return;
@@ -691,6 +693,7 @@ export function syncAndroidPlaybackQueue(params: {
         musicQuality: params.musicQuality || 'higher',
         unblockSources: params.unblockSources || ['kuwo', 'kugou', 'migu', 'gdmusic'],
         isFm: Boolean(params.isFm),
+        stopAfterCurrent: Boolean(params.stopAfterCurrent),
         cookie: params.cookie || '',
         items
       })

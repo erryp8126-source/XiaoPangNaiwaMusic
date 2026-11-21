@@ -58,6 +58,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         ]
         let statusData = (try? JSONSerialization.data(withJSONObject: statusDict)) ?? Data("{}".utf8)
         let statusJson = String(data: statusData, encoding: .utf8) ?? "{}"
+        let activeTrackJson = audioManager.getActiveTrackJson()
 
         let js = """
         (function() {
@@ -66,6 +67,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
           var _serverCfg = \(cfgJson);
           var _localStatus = \(statusJson);
           var _audioState = { instanceId: 0, position: 0, duration: 0, playing: false };
+          var _activeTrack = \(activeTrackJson);
 
           function post(method, payload) {
             try {
@@ -116,6 +118,9 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             },
             audioGetState: function() {
               return JSON.stringify(_audioState);
+            },
+            audioGetActiveTrack: function() {
+              return JSON.stringify(_activeTrack);
             },
             audioSyncQueue: function(queueJson) {
               post('audioSyncQueue', { json: queueJson });

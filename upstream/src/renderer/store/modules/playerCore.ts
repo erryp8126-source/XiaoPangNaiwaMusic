@@ -111,6 +111,17 @@ export const usePlayerCoreStore = defineStore(
     };
 
     /**
+     * 取消待执行的播放状态检测定时器（例如原生层已无缝切歌或从通知栏接管时调用，防止旧定时器误跳回旧歌）
+     */
+    const cancelPlaybackCheck = () => {
+      if (checkPlayTime) {
+        clearTimeout(checkPlayTime);
+        checkPlayTime = null;
+      }
+      checkPlaybackRetryCount = 0;
+    };
+
+    /**
      * 播放状态检测
      * 在播放开始后延迟检查音频是否真正在播放，防止无声播放
      */
@@ -210,6 +221,29 @@ export const usePlayerCoreStore = defineStore(
           audioService.off('play', onPlayHandler);
           audioService.off('playerror', onPlayErrorHandler);
           return;
+        }
+
+        // 原生壳（Android/iOS）：额外核对底层 ExoPlayer/AVPlayer 真实状态，
+        // 避免从后台/通知栏返回时因 WebView 曾休眠误判未播放而跳转回旧歌曲
+        if (isAndroid()) {
+          try {
+            const rawNative = window.AlgerAndroid?.audioGetState?.();
+            if (rawNative) {
+              const st = JSON.parse(rawNative);
+              if (st?.playing) {
+                audioService.off('play', onPlayHandler);
+                audioService.off('playerror', onPlayErrorHandler);
+                return;
+              }
+            }
+          } catch {
+            // ignore
+          }
+          if (String(playMusic.value?.id) !== String(song.id)) {
+            audioService.off('play', onPlayHandler);
+            audioService.off('playerror', onPlayErrorHandler);
+            return;
+          }
         }
 
         if (!audioService.isActuallyPlaying() && userPlayIntent.value && play.value) {
@@ -644,6 +678,26 @@ export const usePlayerCoreStore = defineStore(
      * 初始化播放状态
      */
     const initializePlayState = async () => {
+      // 优先检查 Android / iOS 原生后台服务是否已有正在运行/挂起的音轨！
+      // 例如：系统回收了后台 Activity 后用户点击通知栏/悬浮窗重新进入 App，
+      // 必须直接无缝附着到原生正在播放的歌曲，绝不能用本地缓存覆盖播放导致暂停或跳回旧歌！
+      if (isAndroid()) {
+        try {
+          const rawActive = window.AlgerAndroid?.audioGetActiveTrack?.();
+          if (rawActive) {
+            const active = JSON.parse(rawActive);
+            if (active?.hasActiveTrack && active?.songId) {
+              console.log('[initializePlayState] 检测到原生服务已有活跃曲目，直接无缝接管:', active.title);
+              const { applyNativeTrackSync } = await import('@/hooks/MusicHook');
+              applyNativeTrackSync(active, false);
+              return;
+            }
+          }
+        } catch (e) {
+          console.warn('[initializePlayState] 查询原生活跃曲目失败，回退本地恢复:', e);
+        }
+      }
+
       const { useSettingsStore } = await import('./settings');
       const settingStore = useSettingsStore();
 
@@ -745,6 +799,7 @@ export const usePlayerCoreStore = defineStore(
       playAudio,
       handlePause,
       checkPlaybackState,
+      cancelPlaybackCheck,
       reparseCurrentSong,
       initializePlayState,
       refreshAudioDevices,

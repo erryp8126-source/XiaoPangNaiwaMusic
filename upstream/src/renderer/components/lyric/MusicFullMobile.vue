@@ -936,7 +936,8 @@ const setTextColors = (background: string) => {
   document.documentElement.style.setProperty('--text-color-active', activeColor);
 
   const bgColor = playerStore.playMusic.primaryColor || 'rgba(18, 24, 38, 1)';
-  document.documentElement.style.setProperty('--bg-color', bgColor);
+  // 仅写入播放器专用变量，切勿覆盖全局 --bg-color，避免污染首页/歌单/设置等浅色页面背景
+  document.documentElement.style.setProperty('--player-bg-color', bgColor);
 
   if (background) {
     if (currentBackground.value) {
@@ -2158,8 +2159,8 @@ const getWordStyle = (lineIndex: number, _wordIndex: number, word: any) => {
       height: 40%;
       background: linear-gradient(
         transparent,
-        var(--bg-color, rgba(25, 25, 25, 1)) 70%,
-        var(--bg-color, rgba(25, 25, 25, 1))
+        var(--player-bg-color, rgba(18, 24, 38, 1)) 70%,
+        var(--player-bg-color, rgba(18, 24, 38, 1))
       );
       z-index: 1;
       pointer-events: none;

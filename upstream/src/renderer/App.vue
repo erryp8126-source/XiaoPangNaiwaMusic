@@ -309,7 +309,22 @@ if (isElectron) {
 useAppShortcuts();
 
 onMounted(async () => {
-  playerStore.setIsPlay(false);
+  // 若 Android/iOS 原生服务已在后台播放（如从通知栏/悬浮窗重进 App），切勿先置 false 引起闪烁或状态误判
+  let hasLiveNativeTrack = false;
+  if (isAndroid) {
+    try {
+      const raw = (window as any).AlgerAndroid?.audioGetActiveTrack?.();
+      if (raw) {
+        const active = JSON.parse(raw);
+        hasLiveNativeTrack = Boolean(active?.hasActiveTrack && active?.playing);
+      }
+    } catch {
+      // ignore
+    }
+  }
+  if (!hasLiveNativeTrack) {
+    playerStore.setIsPlay(false);
+  }
   if (isLyricWindow.value) {
     return;
   }

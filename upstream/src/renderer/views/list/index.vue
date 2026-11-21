@@ -10,12 +10,19 @@
     @change="handleTypeChange"
     @scroll="handleScroll"
   >
-    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5 md:gap-6">
+    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5 md:gap-5">
       <!-- Loading State -->
       <template v-if="loading && page === 0">
-        <div v-for="i in 15" :key="`loading-${i}`" class="space-y-2.5">
-          <div class="aspect-square skeleton-shimmer rounded-[20px]" />
-          <div class="h-4 w-3/4 skeleton-shimmer rounded-lg" />
+        <div
+          v-for="i in 12"
+          :key="`loading-${i}`"
+          class="rounded-[20px] overflow-hidden bg-white dark:bg-[#17202e] border border-slate-200/80 dark:border-slate-700/60 shadow-sm"
+        >
+          <div class="aspect-square skeleton-shimmer" />
+          <div class="p-3 space-y-2">
+            <div class="h-3.5 w-5/6 skeleton-shimmer rounded-md" />
+            <div class="h-3 w-1/2 skeleton-shimmer rounded-md" />
+          </div>
         </div>
       </template>
 
@@ -24,11 +31,11 @@
         <div
           v-for="(item, index) in recommendList"
           :key="item.id"
-          class="list-card group cursor-pointer active:scale-[0.97] transition-transform"
+          class="list-card group cursor-pointer active:scale-[0.98] transition-all duration-200 rounded-[20px] overflow-hidden bg-white dark:bg-[#17202e] border border-slate-200/80 dark:border-slate-700/60 shadow-[0_6px_18px_rgba(15,23,42,0.06)] dark:shadow-[0_8px_22px_rgba(0,0,0,0.35)] flex flex-col"
           :class="{ 'animate-item': !animatedIds.has(item.id) }"
           :style="{
             animationDelay: !animatedIds.has(item.id)
-              ? calculateAnimationDelay(index % TOTAL_ITEMS, 0.04)
+              ? calculateAnimationDelay(index % TOTAL_ITEMS, 0.03)
               : '0s'
           }"
           @click.stop="openPlaylist(item)"
@@ -36,31 +43,59 @@
         >
           <!-- Cover Image -->
           <div
-            class="relative aspect-square overflow-hidden rounded-[20px] shadow-naiwa-sm ring-1 ring-white/80 dark:ring-white/10 group-hover:shadow-xl transition-all duration-300"
+            class="relative aspect-square overflow-hidden bg-gradient-to-br from-sky-100 via-amber-50 to-orange-100 dark:from-slate-800 dark:via-slate-800 dark:to-slate-900"
           >
             <img
               :src="getImgUrl(item.picUrl || item.coverImgUrl, '400y400')"
               :alt="item.name"
-              class="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+              class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
               loading="lazy"
+              decoding="async"
+              referrerpolicy="no-referrer"
             />
 
-            <!-- Play Count Badge (始终清晰可见) -->
+            <!-- 底部轻渐变，保证角落角标清晰 -->
             <div
-              class="absolute top-2.5 right-2.5 px-2.5 py-0.5 rounded-full bg-slate-950/45 backdrop-blur-md text-white text-[10.5px] font-semibold flex items-center gap-1"
+              class="pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-slate-950/45 via-slate-950/15 to-transparent"
+            />
+
+            <!-- Play Count Badge -->
+            <div
+              class="absolute top-2 right-2 px-2.5 py-0.5 rounded-full bg-slate-950/65 backdrop-blur-md text-white text-[10.5px] font-semibold flex items-center gap-1 shadow-sm"
             >
               <i class="ri-headphone-fill text-[10px] text-amber-300"></i>
-              {{ formatNumber(item.playCount) }}
+              <span>{{ formatNumber(item.playCount) }}</span>
+            </div>
+
+            <!-- 右下角音乐播放标识 -->
+            <div
+              class="absolute bottom-2 right-2 w-8 h-8 rounded-full bg-white/95 dark:bg-slate-900/90 text-amber-500 dark:text-amber-300 flex items-center justify-center shadow-md ring-1 ring-black/5 dark:ring-white/10"
+            >
+              <i class="ri-play-fill text-base ml-0.5"></i>
             </div>
           </div>
 
-          <!-- Info -->
-          <div class="mt-2.5 px-0.5 space-y-1">
+          <!-- Info Footer（高对比度实底卡片信息区，任何背景都清晰锐利） -->
+          <div class="p-2.5 md:p-3 flex-1 flex flex-col justify-between bg-white dark:bg-[#17202e]">
             <h3
-              class="text-[13.5px] md:text-base font-bold text-slate-800 dark:text-slate-100 line-clamp-2 leading-snug group-hover:text-primary transition-colors"
+              class="text-[13.5px] md:text-[15px] font-bold text-slate-900 dark:text-slate-50 line-clamp-2 leading-[1.38] group-hover:text-amber-600 dark:group-hover:text-amber-300 transition-colors"
             >
               {{ item.name }}
             </h3>
+            <div
+              v-if="item.creator?.nickname || (item.tags && item.tags.length)"
+              class="mt-1.5 flex items-center justify-between gap-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400"
+            >
+              <span class="truncate">
+                {{ item.creator?.nickname || item.tags?.[0] }}
+              </span>
+              <span
+                v-if="item.trackCount"
+                class="flex-shrink-0 text-[10.5px] px-1.5 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300"
+              >
+                {{ item.trackCount }}首
+              </span>
+            </div>
           </div>
         </div>
       </template>
@@ -69,9 +104,9 @@
     <!-- 加载更多 -->
     <div v-if="isLoadingMore" class="flex justify-center items-center py-8">
       <n-spin size="small" />
-      <span class="ml-2 text-neutral-500">{{ t('common.loading') }}</span>
+      <span class="ml-2 text-sm font-medium text-slate-500 dark:text-slate-400">{{ t('common.loading') }}</span>
     </div>
-    <div v-if="!hasMore && recommendList.length > 0" class="text-center py-8 text-neutral-500">
+    <div v-if="!hasMore && recommendList.length > 0" class="text-center py-8 text-xs font-medium text-slate-400 dark:text-slate-500">
       {{ t('common.noMore') }}
     </div>
   </sticky-tab-page>

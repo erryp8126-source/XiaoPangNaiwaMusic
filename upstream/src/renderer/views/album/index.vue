@@ -25,26 +25,28 @@
         <div
           v-for="(album, index) in albumList"
           :key="album.id"
-          class="list-card group cursor-pointer animate-item active:scale-[0.97] transition-transform"
-          :style="{ animationDelay: calculateAnimationDelay(index % TOTAL_ITEMS, 0.04) }"
+          class="list-card group cursor-pointer animate-item active:scale-[0.98] transition-all duration-200 rounded-[20px] overflow-hidden bg-white dark:bg-[#17202e] border border-slate-200/80 dark:border-slate-700/60 shadow-[0_6px_18px_rgba(15,23,42,0.06)] dark:shadow-[0_8px_22px_rgba(0,0,0,0.35)] flex flex-col"
+          :style="{ animationDelay: calculateAnimationDelay(index % TOTAL_ITEMS, 0.03) }"
           @click.stop="openAlbum(album)"
         >
           <!-- Cover Image -->
           <div
-            class="relative aspect-square overflow-hidden rounded-[20px] shadow-naiwa-sm ring-1 ring-white/80 dark:ring-white/10 group-hover:shadow-xl transition-all duration-300"
+            class="relative aspect-square overflow-hidden bg-gradient-to-br from-sky-100 via-amber-50 to-orange-100 dark:from-slate-800 dark:to-slate-900"
           >
             <img
               :src="getImgUrl(album.picUrl, '400y400')"
               :alt="album.name"
-              class="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+              class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
               loading="lazy"
+              decoding="async"
+              referrerpolicy="no-referrer"
               crossorigin="anonymous"
             />
 
             <!-- Quick Play Button -->
             <button
               type="button"
-              class="absolute bottom-2.5 right-2.5 w-9 h-9 rounded-full bg-white/90 dark:bg-slate-900/85 text-amber-600 dark:text-amber-300 flex items-center justify-center shadow-lg backdrop-blur-md active:scale-90 transition-transform"
+              class="absolute bottom-2 right-2 w-8 h-8 rounded-full bg-white/95 dark:bg-slate-900/90 text-amber-500 dark:text-amber-300 flex items-center justify-center shadow-md backdrop-blur-md active:scale-90 transition-transform"
               @click.stop="playAlbum(album)"
             >
               <i class="ri-play-fill text-base ml-0.5"></i>
@@ -53,7 +55,7 @@
             <!-- Album Size Badge -->
             <div
               v-if="album.size"
-              class="absolute top-2.5 left-2.5 px-2.5 py-0.5 rounded-full bg-slate-950/45 backdrop-blur-md text-white text-[10px] font-semibold flex items-center gap-1"
+              class="absolute top-2 left-2 px-2.5 py-0.5 rounded-full bg-slate-950/65 backdrop-blur-md text-white text-[10px] font-semibold flex items-center gap-1"
             >
               <i class="ri-disc-fill text-amber-300"></i>
               {{ album.size }} {{ t('comp.playlistDrawer.count') }}
@@ -61,15 +63,15 @@
           </div>
 
           <!-- Info -->
-          <div class="mt-2.5 px-0.5 space-y-0.5">
+          <div class="p-2.5 md:p-3 flex-1 bg-white dark:bg-[#17202e] space-y-1">
             <h3
-              class="text-[13.5px] md:text-base font-bold text-slate-800 dark:text-slate-100 line-clamp-1 group-hover:text-primary transition-colors"
+              class="text-[13.5px] md:text-[15px] font-bold text-slate-900 dark:text-slate-50 line-clamp-1 group-hover:text-amber-600 dark:group-hover:text-amber-300 transition-colors"
             >
               {{ album.name }}
             </h3>
             <p
               v-if="getArtistNames(album)"
-              class="text-xs text-slate-500 dark:text-slate-400 line-clamp-1"
+              class="text-[11px] font-medium text-slate-500 dark:text-slate-400 line-clamp-1"
             >
               {{ getArtistNames(album) }}
             </p>

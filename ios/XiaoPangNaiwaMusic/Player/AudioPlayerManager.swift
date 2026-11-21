@@ -41,6 +41,7 @@ final class AudioPlayerManager: NSObject {
     private var currentArtist: String = ""
     private var currentAlbum: String = ""
     private var currentCoverUrl: String = ""
+    private var currentPlayUrl: String = ""
     private var currentArtwork: MPMediaItemArtwork?
     private var desiredRate: Float = 1.0
     private var desiredVolume: Float = 1.0
@@ -52,6 +53,11 @@ final class AudioPlayerManager: NSObject {
     private var userPaused: Bool = false
     private var nativeConsecutiveFails: Int = 0
     private var transitionBgTaskId: UIBackgroundTaskIdentifier = .invalid
+    private var stopAfterCurrent: Bool = false
+    private var preResolvedForInstanceId: Int = 0
+    private var preResolvedItem: NativeQueueItem?
+    private var preResolvedIndex: Int = 0
+    private var preResolvedUrl: String = ""
 
     // 后台队列状态
     private var nativeQueue: [NativeQueueItem] = []
@@ -195,6 +201,10 @@ final class AudioPlayerManager: NSObject {
             self.currentArtist = (payload["artist"] as? String) ?? ""
             self.currentAlbum = (payload["album"] as? String) ?? ""
             self.currentCoverUrl = (payload["cover"] as? String) ?? ""
+            self.currentPlayUrl = urlStr
+            self.preResolvedForInstanceId = 0
+            self.preResolvedItem = nil
+            self.preResolvedUrl = ""
             self.desiredAutoplay = (payload["autoplay"] as? Bool) ?? false
             self.userPaused = !self.desiredAutoplay
             self.isTransitioningTrack = self.desiredAutoplay
@@ -271,6 +281,9 @@ final class AudioPlayerManager: NSObject {
                     }
                     if self.desiredAutoplay {
                         self.player?.playImmediately(atRate: max(0.25, min(4.0, self.desiredRate)))
+                    }
+                    if !self.userPaused {
+                        self.preResolveNextTrackIfNeeded(force: false)
                     }
                     self.updateNowPlayingInfo()
                 case .failed:
@@ -424,6 +437,32 @@ final class AudioPlayerManager: NSObject {
         return s
     }
 
+    func getActiveTrackJson() -> String {
+        guard !currentSongId.isEmpty, !currentPlayUrl.isEmpty, currentInstanceId != 0 else {
+            return "{\"hasActiveTrack\":false}"
+        }
+        let dict: [String: Any] = [
+            "hasActiveTrack": true,
+            "instanceId": currentInstanceId,
+            "index": nativeQueueIndex,
+            "songId": currentSongId,
+            "url": currentPlayUrl,
+            "title": currentTitle,
+            "artist": currentArtist,
+            "album": currentAlbum,
+            "cover": currentCoverUrl,
+            "position": cachedPositionSec,
+            "duration": cachedDurationSec,
+            "playing": cachedIsPlaying || isTransitioningTrack,
+            "isFm": nativeIsFm
+        ]
+        guard let d = try? JSONSerialization.data(withJSONObject: dict),
+              let s = String(data: d, encoding: .utf8) else {
+            return "{\"hasActiveTrack\":false}"
+        }
+        return s
+    }
+
     // MARK: - 后台原生自动切歌队列
 
     func syncQueue(payload: [String: Any]) {
@@ -433,6 +472,7 @@ final class AudioPlayerManager: NSObject {
             let incomingIdx = (payload["currentIndex"] as? Int) ?? self.nativeQueueIndex
             if let q = payload["musicQuality"] as? String, !q.isEmpty { self.nativeMusicQuality = q }
             if let fm = payload["isFm"] as? Bool { self.nativeIsFm = fm }
+            if let stop = payload["stopAfterCurrent"] as? Bool { self.stopAfterCurrent = stop }
             if let c = payload["cookie"] as? String { self.nativeUserCookie = c }
             if let srcs = payload["unblockSources"] as? [String], !srcs.isEmpty {
                 self.nativeUnblockSources = srcs
@@ -533,16 +573,93 @@ final class AudioPlayerManager: NSObject {
         pendingAutoNextWorkItem = nil
     }
 
+    private func preResolveNextTrackIfNeeded(force: Bool) {
+        if userPaused || stopAfterCurrent || nativePlayMode == 1 { return }
+        if !force && preResolvedForInstanceId == currentInstanceId && preResolvedItem != nil && !preResolvedUrl.isEmpty {
+            return
+        }
+        let tokenId = currentInstanceId
+        let queueSnapshot = nativeQueue
+        let indexSnapshot = nativeQueueIndex
+        let qualitySnapshot = nativeMusicQuality
+        let sourcesSnapshot = nativeUnblockSources
+        let cookieSnapshot = nativeUserCookie
+        let isFmSnapshot = nativeIsFm
+        let songIdSnapshot = currentSongId
+
+        resolveQueue.async { [weak self] in
+            guard let self = self else { return }
+            if isFmSnapshot {
+                var fmItems = self.fetchNativeFmSongs(excludeId: songIdSnapshot, cookie: cookieSnapshot)
+                if fmItems.isEmpty {
+                    fmItems = self.fetchNativeRecommendedSongs(excludeId: songIdSnapshot, cookie: cookieSnapshot)
+                }
+                for item in fmItems.prefix(6) {
+                    if let resolved = self.resolveItemUrlNatively(item: item, quality: qualitySnapshot, sources: sourcesSnapshot, cookie: cookieSnapshot) {
+                        DispatchQueue.main.async {
+                            guard !self.userPaused, self.currentInstanceId == tokenId else { return }
+                            self.preResolvedForInstanceId = tokenId
+                            self.preResolvedItem = item
+                            self.preResolvedIndex = 0
+                            self.preResolvedUrl = resolved
+                        }
+                        return
+                    }
+                }
+                return
+            }
+
+            var workingQueue = queueSnapshot
+            var workingIndex = indexSnapshot
+            if workingQueue.count <= 1 {
+                let existingIds = Set(workingQueue.map { $0.id })
+                let rec = self.fetchNativeRecommendedSongs(excludeId: songIdSnapshot, cookie: cookieSnapshot)
+                    .filter { !existingIds.contains($0.id) }
+                if !rec.isEmpty {
+                    workingQueue.append(contentsOf: rec)
+                    if workingQueue.count == rec.count { workingIndex = -1 }
+                    let updated = workingQueue
+                    DispatchQueue.main.async {
+                        if !self.userPaused && self.currentInstanceId == tokenId {
+                            self.nativeQueue = updated
+                        }
+                    }
+                }
+            }
+            guard !workingQueue.isEmpty else { return }
+            let count = workingQueue.count
+            let safeIdx = workingIndex < 0 ? -1 : max(0, min(workingIndex, count - 1))
+            let startIdx = safeIdx < 0 ? 0 : (safeIdx + 1) % count
+            for attempt in 0..<min(6, count) {
+                let idx = (startIdx + attempt) % count
+                let item = workingQueue[idx]
+                if count > 1 && item.id == songIdSnapshot { continue }
+                if let resolved = self.resolveItemUrlNatively(item: item, quality: qualitySnapshot, sources: sourcesSnapshot, cookie: cookieSnapshot) {
+                    DispatchQueue.main.async {
+                        guard !self.userPaused, self.currentInstanceId == tokenId else { return }
+                        self.preResolvedForInstanceId = tokenId
+                        self.preResolvedItem = item
+                        self.preResolvedIndex = idx
+                        self.preResolvedUrl = resolved
+                    }
+                    return
+                }
+            }
+        }
+    }
+
     private func handleTrackEnded() {
-        if userPaused {
+        if userPaused || stopAfterCurrent {
             isTransitioningTrack = false
             endTransitionBackgroundTask()
+            if stopAfterCurrent {
+                emitAudioEvent(type: "end")
+            }
             return
         }
 
         beginTransitionBackgroundTask()
         isTransitioningTrack = true
-        let endedId = currentInstanceId
 
         // 1. 单曲循环：直接在 iOS 原生层瞬时重播
         if nativePlayMode == 1, let p = player {
@@ -562,22 +679,23 @@ final class AudioPlayerManager: NSObject {
             return
         }
 
-        // 2. 后台/熄屏状态：直接由 iOS 原生层立刻接管连播（不再与休眠的 WKWebView 竞争）
-        if !isAppInForeground {
-            cancelPendingAutoNext()
-            advanceNativeQueue(delta: 1, fromEnded: true)
+        // 2. 优先使用已提前在播放期解析好的下一首（0ms 无冷网络延迟，息屏/锁屏 100% 必连播）
+        if preResolvedForInstanceId == currentInstanceId,
+           let nextItem = preResolvedItem,
+           !preResolvedUrl.isEmpty {
+            let nextIdx = preResolvedIndex
+            let nextUrl = preResolvedUrl
+            preResolvedForInstanceId = 0
+            preResolvedItem = nil
+            preResolvedUrl = ""
+            if nativeIsFm { nativeQueue = [nextItem] }
+            playNativeQueueItem(index: nextIdx, item: nextItem, url: nextUrl)
             return
         }
 
-        // 3. 前台状态：通知前端 end 事件，同时挂起 3.8s 原生保险丝兜底
-        emitAudioEvent(type: "end")
+        // 3. 无论前后台，均由原生层立即解析并拉起下一首（不再等待休眠 WebView）
         cancelPendingAutoNext()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self = self, !self.userPaused, self.currentInstanceId == endedId, !self.cachedIsPlaying else { return }
-            self.advanceNativeQueue(delta: 1, fromEnded: true)
-        }
-        pendingAutoNextWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.8, execute: work)
+        advanceNativeQueue(delta: 1, fromEnded: true)
     }
 
     private func handleExternalTrackCommand(_ cmd: String, delta: Int) {
@@ -808,6 +926,10 @@ final class AudioPlayerManager: NSObject {
         currentArtist = item.artist
         currentAlbum = item.album
         currentCoverUrl = item.cover
+        currentPlayUrl = url
+        preResolvedForInstanceId = 0
+        preResolvedItem = nil
+        preResolvedUrl = ""
         desiredAutoplay = true
         initialSeekTime = 0
         cachedDurationSec = Double(item.dt) / 1000.0

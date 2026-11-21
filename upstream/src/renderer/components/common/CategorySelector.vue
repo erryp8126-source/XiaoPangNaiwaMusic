@@ -106,29 +106,31 @@ defineExpose({
 <style scoped lang="scss">
 .category-bar {
   background: transparent;
-  border-bottom: 1px solid rgba(186, 218, 238, 0.28);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
 }
 
 :global(.dark) .category-bar {
-  border-bottom-color: rgba(255, 255, 255, 0.06);
+  border-bottom-color: rgba(148, 163, 184, 0.14);
 }
 
 .cat-pill.is-idle {
-  background: rgba(255, 255, 255, 0.78);
-  color: #475569;
-  border: 1px solid rgba(186, 218, 238, 0.45);
+  background: #ffffff;
+  color: #334155;
+  border: 1px solid #d8e4ef;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
 }
 
 .cat-pill.is-active {
-  background: linear-gradient(135deg, #ffc21c 0%, #eb8f00 100%);
+  background: linear-gradient(135deg, #ffc21c 0%, #e88900 100%);
   color: #ffffff;
-  border: 1px solid rgba(255, 215, 102, 0.5);
-  box-shadow: 0 5px 14px rgba(232, 146, 0, 0.28);
+  border: 1px solid rgba(255, 215, 102, 0.65);
+  box-shadow: 0 6px 14px rgba(232, 137, 0, 0.3);
 }
 
 :global(.dark) .cat-pill.is-idle {
-  background: rgba(30, 41, 59, 0.72);
-  color: #cbd5e1;
-  border-color: rgba(255, 255, 255, 0.08);
+  background: #1b2433;
+  color: #e2e8f0;
+  border-color: #334155;
+  box-shadow: none;
 }
 </style>

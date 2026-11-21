@@ -1,23 +1,28 @@
 <template>
-  <div class="h-full w-full bg-transparent transition-colors duration-300">
+  <div class="sticky-tab-page h-full w-full transition-colors duration-300">
     <n-scrollbar ref="scrollbarRef" class="h-full" :size="100" @scroll="handleScroll">
       <div class="w-full pb-44">
         <!-- Page Header (scrolls away) -->
-        <div ref="headerRef" class="page-padding pt-4 pb-2">
-          <div class="flex items-center gap-2.5 mb-1">
-            <span class="h-6 w-1.5 rounded-full bg-gradient-to-b from-amber-400 to-sky-400" />
-            <h1 class="text-2xl font-extrabold tracking-tight text-slate-800 md:text-3xl dark:text-slate-100">
-              {{ title }}
-            </h1>
+        <div ref="headerRef" class="page-padding pt-4 pb-2.5">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <div class="flex items-center gap-2.5">
+                <span class="h-6 w-1.5 rounded-full bg-gradient-to-b from-amber-400 to-sky-400" />
+                <h1 class="text-[22px] font-extrabold tracking-tight text-slate-900 md:text-3xl dark:text-white">
+                  {{ title }}
+                </h1>
+              </div>
+              <p v-if="description" class="text-xs md:text-sm font-medium text-slate-500 dark:text-slate-400 pl-4 mt-1">
+                {{ description }}
+              </p>
+            </div>
+            <slot name="header-extra" />
           </div>
-          <p v-if="description" class="text-xs md:text-sm text-slate-500 dark:text-slate-400 pl-4">
-            {{ description }}
-          </p>
         </div>
 
         <!-- Tabs (sticky on scroll) -->
         <div
-          class="sticky-tabs z-10 transition-all duration-200"
+          class="sticky-tabs z-20 transition-all duration-200"
           :class="isSticky ? 'sticky top-0 is-stuck' : ''"
         >
           <category-selector
@@ -30,7 +35,7 @@
         </div>
 
         <!-- Content slot -->
-        <div class="page-padding pt-4">
+        <div class="page-padding pt-3.5">
           <slot />
         </div>
       </div>
@@ -85,17 +90,23 @@ defineExpose({ scrollbarRef, scrollTo });
 </script>
 
 <style scoped>
+.sticky-tab-page {
+  background-color: var(--bg-color, #f6fafd);
+  background-image:
+    radial-gradient(circle at 12% 0%, var(--naiwa-sky-glow) 0%, transparent 46%),
+    radial-gradient(circle at 92% 4%, var(--naiwa-sun-glow) 0%, transparent 42%);
+}
 .sticky-tabs {
   background: transparent;
 }
 .sticky-tabs.is-stuck {
-  backdrop-filter: blur(18px) saturate(160%);
-  -webkit-backdrop-filter: blur(18px) saturate(160%);
-  background: rgba(246, 250, 253, 0.85);
-  box-shadow: 0 4px 16px rgba(82, 134, 168, 0.08);
+  backdrop-filter: blur(20px) saturate(165%);
+  -webkit-backdrop-filter: blur(20px) saturate(165%);
+  background: rgba(246, 250, 253, 0.94);
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.07);
 }
 :global(.dark) .sticky-tabs.is-stuck {
-  background: rgba(15, 20, 28, 0.85);
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  background: rgba(15, 20, 28, 0.94);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
 }
 </style>

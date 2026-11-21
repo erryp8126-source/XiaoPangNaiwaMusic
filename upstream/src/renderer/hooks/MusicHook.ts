@@ -4,6 +4,7 @@ import { computed, type ComputedRef, nextTick, onUnmounted, ref, watch } from 'v
 
 import useIndexedDB from '@/hooks/IndexDBHook';
 import { audioService } from '@/services/audioService';
+import { playbackRequestManager } from '@/services/playbackRequestManager';
 import type { usePlayerStore } from '@/store';
 import type { Artist, ILyricText, SongResult } from '@/types/music';
 import { isAndroid, isElectron } from '@/utils';
@@ -38,6 +39,127 @@ export const initMusicHook = (store: ReturnType<typeof usePlayerStore>) => {
   }
 };
 
+/**
+ * 将原生层正在播放或刚无缝切换好的曲目同步到前端 Vue Store / NativeHowl（同步执行，0 竞态），
+ * 随后再异步补齐歌词、历史记录与定时关闭计数，绝不打断正在播放的音频。
+ */
+export const applyNativeTrackSync = (payload: any, fromTrackTransition: boolean = true) => {
+  if (!payload || !payload.songId) return;
+  try {
+    const store = getPlayerStore();
+
+    // 同步取消所有旧的前端播放请求与 6s 超时检测定时器，防止延迟回调把曲目拉回旧歌
+    playbackRequestManager.cancelAllRequests?.();
+    store.cancelPlaybackCheck?.();
+    localStorage.removeItem('playProgress');
+
+    const list = store.playList || [];
+    let matchedIndex = typeof payload.index === 'number' ? payload.index : -1;
+    let matchedSong: SongResult | undefined =
+      matchedIndex >= 0 && matchedIndex < list.length ? list[matchedIndex] : undefined;
+
+    if (!matchedSong || String(matchedSong.id) !== String(payload.songId)) {
+      const foundIdx = list.findIndex((s) => String(s.id) === String(payload.songId));
+      if (foundIdx !== -1) {
+        matchedIndex = foundIdx;
+        matchedSong = list[foundIdx];
+      } else {
+        matchedSong = undefined;
+      }
+    }
+
+    // 若是原生层在后台自动补充的推荐新歌或 FM 曲目（前端 playList 尚未包含），动态构造并纳入前端列表
+    if (!matchedSong && payload.songId) {
+      const artistNames = String(payload.artist || '')
+        .split(' / ')
+        .map((n: string) => n.trim())
+        .filter(Boolean);
+      const syntheticSong: SongResult = {
+        id: /^\d+$/.test(String(payload.songId)) ? Number(payload.songId) : payload.songId,
+        name: payload.title || '未知歌曲',
+        picUrl: payload.cover || '',
+        ar: artistNames.map((name: string, i: number) => ({ id: i, name })) as any,
+        al: {
+          id: 0,
+          name: payload.album || '',
+          picUrl: payload.cover || ''
+        } as any,
+        dt: typeof payload.duration === 'number' && payload.duration > 0 ? Math.round(payload.duration * 1000) : 0,
+        playMusicUrl: payload.url || '',
+        source: 'netease',
+        count: 0
+      };
+      if (payload.isFm) {
+        store.playList = [syntheticSong];
+        matchedIndex = 0;
+      } else {
+        store.playList = [...list, syntheticSong];
+        matchedIndex = store.playList.length - 1;
+      }
+      matchedSong = syntheticSong;
+    }
+
+    if (!matchedSong) return;
+
+    const updatedSong: SongResult = {
+      ...matchedSong,
+      playMusicUrl: payload.url || matchedSong.playMusicUrl,
+      playLoading: false,
+      isFirstPlay: false
+    };
+
+    if (matchedIndex >= 0) {
+      store.playListIndex = matchedIndex;
+    }
+    if (typeof payload.isFm === 'boolean') {
+      store.isFmPlaying = payload.isFm;
+    }
+    store.playMusic = updatedSong;
+    store.playMusicUrl = updatedSong.playMusicUrl || '';
+    const isPlayingNow = payload.playing !== false;
+    store.setIsPlay(isPlayingNow);
+    store.userPlayIntent = isPlayingNow;
+
+    const attachedSound = audioService.attachNativeAndroidTrack(payload, updatedSong);
+    sound.value = attachedSound;
+    if (typeof payload.position === 'number' && !Number.isNaN(payload.position)) {
+      nowTime.value = Math.max(0, payload.position);
+    } else {
+      nowTime.value = 0;
+    }
+    if (typeof payload.duration === 'number' && payload.duration > 0) {
+      allTime.value = payload.duration;
+    }
+
+    // 异步补全历史记录、定时关闭计数与歌词（绝不阻塞或打断播放）
+    void (async () => {
+      try {
+        if (fromTrackTransition) {
+          const { usePlayHistoryStore } = await import('@/store/modules/playHistory');
+          const { useSleepTimerStore } = await import('@/store/modules/sleepTimer');
+          usePlayHistoryStore().addMusic(updatedSong);
+          useSleepTimerStore().handleSongChange();
+        }
+        if (!(updatedSong.lyric && updatedSong.lyric.lrcTimeArray?.length > 0)) {
+          const { useLyrics } = await import('@/hooks/usePlayerHooks');
+          const { loadLrc } = useLyrics();
+          const lyric = await loadLrc(updatedSong.id);
+          if (String(store.playMusic?.id) === String(updatedSong.id)) {
+            store.playMusic = { ...store.playMusic, lyric };
+            lrcArray.value = lyric.lrcArray || [];
+            lrcTimeArray.value = lyric.lrcTimeArray || [];
+            nowIndex.value = getLrcIndex(nowTime.value);
+          }
+        }
+      } catch (err) {
+        console.warn('[MusicHook] 后台切歌后异步补全歌词/状态失败:', err);
+      }
+    })();
+  } catch (e) {
+    console.error('[MusicHook] 处理原生曲目同步失败:', e);
+  }
+};
+
 let androidBgSyncInitialized = false;
 const setupAndroidBackgroundSync = () => {
   if (!isAndroid || androidBgSyncInitialized) return;
@@ -50,13 +172,21 @@ const setupAndroidBackgroundSync = () => {
       const { useSettingsStore } = await import('@/store/modules/settings');
       const settingsStore = useSettingsStore();
       const rawCookie = localStorage.getItem('token') || '';
+      const sleepTimer = store.sleepTimer;
+      const listLen = store.playList?.length || 0;
+      const curIdx = store.playListIndex ?? 0;
+      const stopAfterCurrent = Boolean(
+        (sleepTimer?.type === 'end' && listLen > 0 && curIdx >= listLen - 1) ||
+          (sleepTimer?.type === 'songs' && (sleepTimer?.remainingSongs ?? 0) <= 1)
+      );
       syncAndroidPlaybackQueue({
         playList: store.playList || [],
-        currentIndex: store.playListIndex ?? 0,
+        currentIndex: curIdx,
         playMode: store.playMode ?? 0,
         musicQuality: settingsStore.setData?.musicQuality || 'higher',
         unblockSources: settingsStore.setData?.enabledMusicSources || ['kuwo', 'kugou', 'migu', 'gdmusic'],
         isFm: Boolean(store.isFmPlaying),
+        stopAfterCurrent,
         cookie: rawCookie
       });
     } catch (e) {
@@ -79,7 +209,7 @@ const setupAndroidBackgroundSync = () => {
     }
   };
 
-  // 监听整个 playList shallowRef 引用（包含同长度换歌单/洗牌）、当前索引、模式、曲目ID、URL 和 FM 状态
+  // 监听整个 playList shallowRef 引用（包含同长度换歌单/洗牌）、当前索引、模式、曲目ID、URL、FM 与定时关闭状态
   watch(
     () => [
       getPlayerStore().playList,
@@ -88,7 +218,9 @@ const setupAndroidBackgroundSync = () => {
       getPlayerStore().playMode,
       getPlayerStore().playMusic?.id,
       getPlayerStore().playMusicUrl,
-      getPlayerStore().isFmPlaying
+      getPlayerStore().isFmPlaying,
+      getPlayerStore().sleepTimer?.type,
+      getPlayerStore().sleepTimer?.remainingSongs
     ],
     () => scheduleQueueSync(false),
     { immediate: true }
@@ -101,116 +233,9 @@ const setupAndroidBackgroundSync = () => {
     }
   });
 
-  // 监听原生后台服务自动切歌回传事件，无缝同步前端 UI / 歌词 / 索引，绝不打断正在播放的音频
-  onAndroidEvent('native-track-changed', async (_, payload: any) => {
-    if (!payload) return;
-    try {
-      const { usePlaylistStore } = await import('@/store/modules/playlist');
-      const { usePlayerCoreStore } = await import('@/store/modules/playerCore');
-      const { useLyrics } = await import('@/hooks/usePlayerHooks');
-      const { playbackRequestManager } = await import('@/services/playbackRequestManager');
-      const playlistStore = usePlaylistStore();
-      const playerCore = usePlayerCoreStore();
-
-      // 取消所有滞留在 JS 队列中的旧播放请求，防止迟到的前端请求打断原生已切好的新歌
-      playbackRequestManager.cancelAllRequests?.();
-      localStorage.removeItem('playProgress');
-
-      const list = playlistStore.playList || [];
-      let matchedIndex = typeof payload.index === 'number' ? payload.index : -1;
-      let matchedSong: SongResult | undefined =
-        matchedIndex >= 0 && matchedIndex < list.length ? list[matchedIndex] : undefined;
-
-      if (!matchedSong || String(matchedSong.id) !== String(payload.songId)) {
-        const foundIdx = list.findIndex((s) => String(s.id) === String(payload.songId));
-        if (foundIdx !== -1) {
-          matchedIndex = foundIdx;
-          matchedSong = list[foundIdx];
-        } else {
-          matchedSong = undefined;
-        }
-      }
-
-      // 若是原生层在后台自动补充的推荐新歌或 FM 曲目（前端 playList 尚未包含），动态构造并纳入前端列表
-      if (!matchedSong && payload.songId) {
-        const artistNames = String(payload.artist || '')
-          .split(' / ')
-          .map((n: string) => n.trim())
-          .filter(Boolean);
-        const syntheticSong: SongResult = {
-          id: /^\d+$/.test(String(payload.songId)) ? Number(payload.songId) : payload.songId,
-          name: payload.title || '未知歌曲',
-          picUrl: payload.cover || '',
-          ar: artistNames.map((name: string, i: number) => ({ id: i, name })) as any,
-          al: {
-            id: 0,
-            name: payload.album || '',
-            picUrl: payload.cover || ''
-          } as any,
-          dt: typeof payload.duration === 'number' && payload.duration > 0 ? Math.round(payload.duration * 1000) : 0,
-          playMusicUrl: payload.url || '',
-          source: 'netease',
-          count: 0
-        };
-        if (payload.isFm) {
-          playlistStore.playList = [syntheticSong];
-          matchedIndex = 0;
-        } else {
-          playlistStore.playList = [...list, syntheticSong];
-          matchedIndex = playlistStore.playList.length - 1;
-        }
-        matchedSong = syntheticSong;
-      }
-
-      if (!matchedSong) return;
-
-      const updatedSong: SongResult = {
-        ...matchedSong,
-        playMusicUrl: payload.url || matchedSong.playMusicUrl,
-        playLoading: false,
-        isFirstPlay: false
-      };
-
-      if (matchedIndex >= 0) {
-        playlistStore.playListIndex = matchedIndex;
-      }
-      if (typeof payload.isFm === 'boolean') {
-        playerCore.isFmPlaying = payload.isFm;
-      }
-      playerCore.playMusic = updatedSong;
-      playerCore.playMusicUrl = updatedSong.playMusicUrl || '';
-      playerCore.setIsPlay(payload.playing !== false);
-      playerCore.userPlayIntent = payload.playing !== false;
-
-      const attachedSound = audioService.attachNativeAndroidTrack(payload, updatedSong);
-      sound.value = attachedSound;
-      if (typeof payload.position === 'number' && !Number.isNaN(payload.position)) {
-        nowTime.value = Math.max(0, payload.position);
-      } else {
-        nowTime.value = 0;
-      }
-      if (typeof payload.duration === 'number' && payload.duration > 0) {
-        allTime.value = payload.duration;
-      }
-
-      // 异步补全歌词（绝不阻塞播放）
-      if (!(updatedSong.lyric && updatedSong.lyric.lrcTimeArray?.length > 0)) {
-        try {
-          const { loadLrc } = useLyrics();
-          const lyric = await loadLrc(updatedSong.id);
-          if (String(playerCore.playMusic?.id) === String(updatedSong.id)) {
-            playerCore.playMusic = { ...playerCore.playMusic, lyric };
-            lrcArray.value = lyric.lrcArray || [];
-            lrcTimeArray.value = lyric.lrcTimeArray || [];
-            nowIndex.value = getLrcIndex(nowTime.value);
-          }
-        } catch (err) {
-          console.warn('[MusicHook] 后台切歌后异步加载歌词失败:', err);
-        }
-      }
-    } catch (e) {
-      console.error('[MusicHook] 处理原生后台切歌同步失败:', e);
-    }
+  // 监听原生后台服务自动切歌回传事件，同步接管前端 UI / 歌词 / 索引，绝不打断正在播放的音频
+  onAndroidEvent('native-track-changed', (_, payload: any) => {
+    applyNativeTrackSync(payload, true);
   });
 };
 

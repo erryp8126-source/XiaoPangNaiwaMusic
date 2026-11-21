@@ -116,6 +116,7 @@ export const usePlayerStore = defineStore('player', () => {
     playAudio: playerCore.playAudio,
     handlePause: playerCore.handlePause,
     checkPlaybackState: playerCore.checkPlaybackState,
+    cancelPlaybackCheck: playerCore.cancelPlaybackCheck,
     reparseCurrentSong: playerCore.reparseCurrentSong,
 
     // ========== 播放列表管理 (Playlist) ==========
