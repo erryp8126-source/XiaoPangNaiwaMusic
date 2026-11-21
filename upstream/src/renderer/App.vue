@@ -8,7 +8,6 @@
         <n-message-provider>
           <router-view></router-view>
           <disclaimer-modal />
-          <traffic-warning-drawer v-if="!isNative"></traffic-warning-drawer>
         </n-message-provider>
       </n-dialog-provider>
     </n-config-provider>
@@ -23,7 +22,6 @@ import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 
 import DisclaimerModal from '@/components/common/DisclaimerModal.vue';
-import TrafficWarningDrawer from '@/components/TrafficWarningDrawer.vue';
 import { useCloudSyncStore } from '@/store/modules/cloudSync';
 import { useListeningStatsStore } from '@/store/modules/listeningStats';
 import { usePlayerStore } from '@/store/modules/player';

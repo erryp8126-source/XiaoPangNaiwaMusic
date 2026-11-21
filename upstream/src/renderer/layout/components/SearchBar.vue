@@ -446,9 +446,10 @@ watchEffect(() => {
 
 const restartApp = () => window.electron.ipcRenderer.send('restart');
 const toLogin = () => router.push('/user');
-const toGithub = () => window.open('http://donate.alger.fun/download', '_blank');
+const toGithub = () =>
+  window.open('https://github.com/erryp8126-source/XiaoPangNaiwaMusic', '_blank');
 const toGithubRelease = () => {
-  window.location.href = 'https://donate.alger.fun/download';
+  window.open('https://github.com/erryp8126-source/XiaoPangNaiwaMusic/releases/latest', '_blank');
 };
 
 const isDark = computed({
