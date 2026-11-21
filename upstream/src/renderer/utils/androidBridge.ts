@@ -41,6 +41,7 @@ export interface AndroidBridgeInterface {
   isIgnoringBatteryOptimizations(): boolean;
   openExternalUrl(url: string): void;
   showToast(msg: string): void;
+  exitApp?(): void;
 }
 
 declare global {

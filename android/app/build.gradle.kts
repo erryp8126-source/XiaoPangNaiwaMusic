@@ -10,7 +10,7 @@ android {
     applicationId = "com.alger.musicplayer"
     minSdk = 26
     targetSdk = 35
-    versionCode = 51008
+    versionCode = 51009
     versionName = "5.1.0-android"
   }
 

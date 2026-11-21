@@ -380,4 +380,16 @@ class AndroidJsBridge(
             Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show()
         }
     }
+
+    @JavascriptInterface
+    fun exitApp() {
+        mainHandler.post {
+            runCatching {
+                MusicPlaybackService.instance?.stopPlayback()
+                activity.finishAndRemoveTask()
+            }.onFailure {
+                activity.finish()
+            }
+        }
+    }
 }
