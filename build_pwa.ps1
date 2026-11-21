@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $UpstreamDir = Join-Path $Root "upstream"
 $PwaOutDir = Join-Path $Root "releases\pwa"
-$ZipPath = Join-Path $Root "releases\小庞奶娃音乐-v5.1.0-pwa.zip"
+$ZipPath = Join-Path $Root "releases\小庞奶娃音乐-v5.1.1-pwa.zip"
 
 Write-Host "[1/2] 构建 Vue 3 + Safari PWA 静态资源..." -ForegroundColor Cyan
 Push-Location $UpstreamDir

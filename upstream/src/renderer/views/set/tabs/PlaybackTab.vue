@@ -39,13 +39,18 @@
       <setting-item
         v-if="isRealAndroid"
         inline
-        title="桌面悬浮歌词"
-        description="在手机其他应用上方悬浮显示当前歌词（需授予悬浮窗权限）"
+        title="桌面歌词"
+        description="在手机桌面及其他应用上方悬浮显示双行逐字歌词，支持锁定防误触、切歌、翻译、配色与字号调节"
       >
-        <n-switch v-model:value="floatingLyricEnabled" @update:value="handleToggleFloatingLyric">
-          <template #checked>{{ t('common.on') }}</template>
-          <template #unchecked>{{ t('common.off') }}</template>
-        </n-switch>
+        <div class="flex items-center gap-2.5">
+          <s-btn v-if="floatingLyricEnabled && floatingLyricLocked" variant="primary" @click="handleUnlockFloatingLyric">
+            解锁歌词
+          </s-btn>
+          <n-switch v-model:value="floatingLyricEnabled" @update:value="handleToggleFloatingLyric">
+            <template #checked>{{ t('common.on') }}</template>
+            <template #unchecked>{{ t('common.off') }}</template>
+          </n-switch>
+        </div>
       </setting-item>
 
       <setting-item
@@ -55,6 +60,15 @@
         description="使用手机原生硬件音效均衡器调节 10 段频响"
       >
         <s-btn @click="showEqModal = true">{{ t('common.configure') }}</s-btn>
+      </setting-item>
+
+      <setting-item
+        v-if="isRealAndroid"
+        inline
+        title="音频边听边缓存"
+        :description="`已缓存 ${audioCacheSizeText} / 上限 200 MB（常听歌曲自动秒开、省流量）`"
+      >
+        <s-btn @click="handleClearAudioCache">清理缓存</s-btn>
       </setting-item>
 
       <setting-item
@@ -154,11 +168,39 @@ const showEqModal = ref(false);
 const floatingLyricEnabled = ref<boolean>(
   isAndroid ? Boolean((window as any).AlgerAndroid?.isFloatingLyricEnabled?.()) : false
 );
+const floatingLyricLocked = ref<boolean>(
+  isAndroid ? Boolean((window as any).AlgerAndroid?.isFloatingLyricLocked?.()) : false
+);
 
 const handleToggleFloatingLyric = (val: boolean) => {
   if (!isAndroid) return;
   const actual = Boolean((window as any).AlgerAndroid?.setFloatingLyricEnabled?.(val));
   floatingLyricEnabled.value = actual;
+  floatingLyricLocked.value = Boolean((window as any).AlgerAndroid?.isFloatingLyricLocked?.());
+};
+
+const handleUnlockFloatingLyric = () => {
+  if (!isAndroid) return;
+  (window as any).AlgerAndroid?.setFloatingLyricLocked?.(false);
+  floatingLyricLocked.value = false;
+};
+
+const formatCacheBytes = (bytes: number): string => {
+  if (!bytes || bytes <= 0) return '0 MB';
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const audioCacheBytes = ref<number>(
+  isAndroid ? Number((window as any).AlgerAndroid?.getAudioCacheSize?.() || 0) : 0
+);
+const audioCacheSizeText = computed(() => formatCacheBytes(audioCacheBytes.value));
+
+const handleClearAudioCache = () => {
+  if (!isAndroid) return;
+  const ok = Boolean((window as any).AlgerAndroid?.clearAudioCache?.());
+  audioCacheBytes.value = Number((window as any).AlgerAndroid?.getAudioCacheSize?.() || 0);
+  (window as any).AlgerAndroid?.showToast?.(ok ? '已清理音频缓存' : '缓存清理失败');
 };
 
 const qualityOptions = computed(() => [

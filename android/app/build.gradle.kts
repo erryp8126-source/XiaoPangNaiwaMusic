@@ -1,6 +1,28 @@
+import java.util.Properties
+
 plugins {
   alias(libs.plugins.android.application)
 }
+
+val keystoreProps = Properties()
+val keystorePropsFile = rootProject.file("keystore.properties")
+if (keystorePropsFile.exists()) {
+  keystorePropsFile.inputStream().use { keystoreProps.load(it) }
+}
+
+val releaseStorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+  ?: keystoreProps.getProperty("storeFile")
+val releaseStorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+  ?: keystoreProps.getProperty("storePassword")
+val releaseKeyAlias = System.getenv("ANDROID_KEY_ALIAS")
+  ?: keystoreProps.getProperty("keyAlias")
+val releaseKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+  ?: keystoreProps.getProperty("keyPassword")
+val hasReleaseKeystore = !releaseStorePath.isNullOrBlank() &&
+  !releaseStorePassword.isNullOrBlank() &&
+  !releaseKeyAlias.isNullOrBlank() &&
+  !releaseKeyPassword.isNullOrBlank() &&
+  file(releaseStorePath).exists()
 
 android {
   namespace = "com.alger.musicplayer"
@@ -10,16 +32,34 @@ android {
     applicationId = "com.alger.musicplayer"
     minSdk = 26
     targetSdk = 35
-    versionCode = 51009
-    versionName = "5.1.0-android"
+    versionCode = 51102
+    versionName = "5.1.1"
+  }
+
+  signingConfigs {
+    if (hasReleaseKeystore) {
+      create("release") {
+        storeFile = file(releaseStorePath!!)
+        storePassword = releaseStorePassword
+        keyAlias = releaseKeyAlias
+        keyPassword = releaseKeyPassword
+        enableV1Signing = true
+        enableV2Signing = true
+      }
+    }
   }
 
   buildTypes {
     release {
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-      // Sign release with debug keystore so release APK is directly installable on phones
-      signingConfig = signingConfigs.getByName("debug")
+      // 优先使用固定正式签名证书（本地与 GitHub Actions 签名永久一致，支持直接覆盖升级）；
+      // 若第三方克隆构建未配置 keystore，则优雅回退到 debug 签名
+      signingConfig = if (hasReleaseKeystore) {
+        signingConfigs.getByName("release")
+      } else {
+        signingConfigs.getByName("debug")
+      }
     }
     debug {
       isDebuggable = true

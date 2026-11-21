@@ -29,6 +29,7 @@ import { usePlayerCoreStore } from '@/store/modules/playerCore';
 import { useSettingsStore } from '@/store/modules/settings';
 import { useUserStore } from '@/store/modules/user';
 import { isAndroid, isElectron, isLyricWindow, isNative } from '@/utils';
+import { dispatchAndroidBackHandlers } from '@/utils/androidBridge';
 import { checkLoginStatus } from '@/utils/auth';
 
 import { initAudioListeners, initMusicHook } from './hooks/MusicHook';
@@ -228,14 +229,18 @@ if (isAndroid) {
     { immediate: true }
   );
 
-  // 注册 Android 系统返回键处理
+  // 注册 Android 系统侧滑返回键逐层关闭栈：
+  // EQ 抽屉(100) -> 播放设置抽屉(100) -> 播放列表抽屉 -> 歌词页回封面(60) -> 收起全屏播放器 -> 路由返回 -> 退后台
   window.__algerHandleBack = (): boolean => {
-    if (playerStore.musicFull) {
-      playerStore.setMusicFull(false);
+    if (dispatchAndroidBackHandlers()) {
       return true;
     }
     if (playerStore.playListDrawerVisible) {
       playerStore.setPlayListDrawerVisible(false);
+      return true;
+    }
+    if (playerStore.musicFull) {
+      playerStore.setMusicFull(false);
       return true;
     }
     if (router.currentRoute.value.path !== '/') {

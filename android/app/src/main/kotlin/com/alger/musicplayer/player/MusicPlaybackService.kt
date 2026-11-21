@@ -42,6 +42,8 @@ import androidx.media3.session.MediaStyleNotificationHelper
 import com.alger.musicplayer.AlgerApp
 import com.alger.musicplayer.MainActivity
 import com.alger.musicplayer.R
+import com.alger.musicplayer.lyric.FloatingLyricManager
+import com.alger.musicplayer.widget.MusicAppWidgetProvider
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -79,6 +81,7 @@ class MusicPlaybackService : Service() {
         const val ACTION_PREV = "com.alger.musicplayer.ACTION_PREV"
         const val ACTION_PLAY_PAUSE = "com.alger.musicplayer.ACTION_PLAY_PAUSE"
         const val ACTION_NEXT = "com.alger.musicplayer.ACTION_NEXT"
+        const val ACTION_UNLOCK_LYRIC = "com.alger.musicplayer.ACTION_UNLOCK_LYRIC"
 
         private const val MAX_NATIVE_SKIP_FAILS = 8
 
@@ -94,6 +97,11 @@ class MusicPlaybackService : Service() {
 
         @Volatile
         var latestSyncedQueue: JsonObject? = null
+
+        @Volatile
+        var latestEqEnabled: Boolean = false
+
+        val latestEqGainsDb = java.util.concurrent.ConcurrentHashMap<Int, Float>()
 
         private val pendingActions = mutableListOf<(MusicPlaybackService) -> Unit>()
         private val mainHandler = Handler(Looper.getMainLooper())
@@ -264,11 +272,28 @@ class MusicPlaybackService : Service() {
                     if (exoPlayer.isPlaying) pause() else play()
                 }
             }
+            ACTION_UNLOCK_LYRIC -> {
+                FloatingLyricManager.activeInstance?.setLocked(false)
+            }
         }
         // 确保前台通知已启动（避免 Android 8+ ForegroundServiceDidNotStartInTimeException）
         ensureForegroundNotification()
         return START_STICKY
     }
+
+    fun getCurrentPositionMs(): Long {
+        return if (::exoPlayer.isInitialized) exoPlayer.currentPosition.coerceAtLeast(0L)
+        else (cachedPositionSec * 1000.0).toLong().coerceAtLeast(0L)
+    }
+
+    fun isCurrentlyPlaying(): Boolean {
+        return if (::exoPlayer.isInitialized) exoPlayer.isPlaying else cachedIsPlaying
+    }
+
+    fun getCurrentSongId(): String = currentSongId
+    fun getCurrentSongTitle(): String = currentTitle
+    fun getCurrentSongArtist(): String = currentArtist
+    fun getCurrentArtworkBitmap(): Bitmap? = currentArtworkBitmap
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -331,7 +356,7 @@ class MusicPlaybackService : Service() {
 
     private fun initPlayerAndSession() {
         val okHttpDataSourceFactory = OkHttpDataSource.Factory(httpClient)
-        val dataSourceFactory = DefaultDataSource.Factory(this, okHttpDataSourceFactory)
+        val dataSourceFactory = AudioCacheManager.buildDataSourceFactory(this, okHttpDataSourceFactory)
         // 强制启用 CBR/MP3/ADTS 拖拽索引估算，解决部分在线音源进度条无法拖动/拖后无声跳回的问题
         val extractorsFactory = DefaultExtractorsFactory()
             .setConstantBitrateSeekingEnabled(true)
@@ -411,6 +436,7 @@ class MusicPlaybackService : Service() {
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 snapshotPlayerState()
+                FloatingLyricManager.activeInstance?.onNativePlayStateChanged(isPlaying)
                 if (isPlaying) {
                     uiHandler.removeCallbacks(progressTicker)
                     uiHandler.post(progressTicker)
@@ -577,11 +603,17 @@ class MusicPlaybackService : Service() {
             .setAlbumTitle(item.album)
             .setExtras(extras)
             .build()
-        return MediaItem.Builder()
+        val playableUri = resolvePlayableUri(url)
+        val builder = MediaItem.Builder()
             .setMediaId(item.id)
-            .setUri(resolvePlayableUri(url))
+            .setUri(playableUri)
             .setMediaMetadata(metadata)
-            .build()
+        val scheme = playableUri.scheme?.lowercase() ?: ""
+        val host = playableUri.host?.lowercase() ?: ""
+        if ((scheme == "http" || scheme == "https") && host != "127.0.0.1" && host != "localhost" && item.id.isNotBlank()) {
+            builder.setCustomCacheKey("song_${item.id}_${nativeMusicQuality}")
+        }
+        return builder.build()
     }
 
     private fun clearPrequeuedMediaItems() {
@@ -755,6 +787,8 @@ class MusicPlaybackService : Service() {
         }
 
         snapshotPlayerState()
+        FloatingLyricManager.activeInstance?.onNativeTrackChanged(currentSongId, currentTitle, currentArtist)
+        FloatingLyricManager.activeInstance?.onNativePlayStateChanged(true)
         ensureForegroundNotification()
         updateNotification()
         fetchCoverArtworkAsync(currentCoverUrl, currentInstanceId)
@@ -1137,6 +1171,8 @@ class MusicPlaybackService : Service() {
         exoPlayer.prepare()
 
         snapshotPlayerState()
+        FloatingLyricManager.activeInstance?.onNativeTrackChanged(currentSongId, currentTitle, currentArtist)
+        FloatingLyricManager.activeInstance?.onNativePlayStateChanged(true)
         ensureForegroundNotification()
         updateNotification()
         fetchCoverArtworkAsync(currentCoverUrl, currentInstanceId)
@@ -1283,6 +1319,7 @@ class MusicPlaybackService : Service() {
             currentAlbum = payload.get("album")?.asString ?: ""
             currentCoverUrl = payload.get("cover")?.asString ?: ""
             currentPlayUrl = url
+            FloatingLyricManager.activeInstance?.onNativeTrackChanged(currentSongId, currentTitle, currentArtist)
             prequeuedForInstanceId = 0
             prequeuedNextSongId = ""
             val autoplay = payload.get("autoplay")?.asBoolean ?: false
@@ -1475,6 +1512,7 @@ class MusicPlaybackService : Service() {
     // ==================== 硬件均衡器 (Equalizer) ====================
 
     fun setEqEnabled(enabled: Boolean) {
+        latestEqEnabled = enabled
         uiHandler.post {
             eqEnabled = enabled
             if (::exoPlayer.isInitialized && equalizer == null && exoPlayer.audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
@@ -1488,13 +1526,16 @@ class MusicPlaybackService : Service() {
     }
 
     fun setEqBandGain(freqHz: Int, gainDb: Float) {
+        val clamped = gainDb.coerceIn(-12f, 12f)
+        latestEqGainsDb[freqHz] = clamped
         uiHandler.post {
-            eqGainsDb[freqHz] = gainDb.coerceIn(-12f, 12f)
+            eqGainsDb[freqHz] = clamped
             if (eqEnabled) applyAllEqBands()
         }
     }
 
     fun resetEq() {
+        latestEqGainsDb.clear()
         uiHandler.post {
             eqGainsDb.clear()
             runCatching {
@@ -1508,6 +1549,12 @@ class MusicPlaybackService : Service() {
 
     private fun initHardwareEqualizer(audioSessionId: Int) {
         if (audioSessionId == C.AUDIO_SESSION_ID_UNSET || audioSessionId == 0) return
+        // 启动前由 JS 预写入的 EQ 状态同步进来，防止首次播放丢设置
+        eqEnabled = latestEqEnabled
+        if (latestEqGainsDb.isNotEmpty()) {
+            eqGainsDb.clear()
+            eqGainsDb.putAll(latestEqGainsDb)
+        }
         releaseEqualizer()
         runCatching {
             val eq = Equalizer(0, audioSessionId)
@@ -1697,6 +1744,14 @@ class MusicPlaybackService : Service() {
     private fun updateNotification() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.notify(NOTIFICATION_ID, buildNotification())
+        val isPlaying = ::exoPlayer.isInitialized && exoPlayer.isPlaying
+        MusicAppWidgetProvider.updateAllWidgets(
+            this,
+            currentTitle,
+            currentArtist,
+            isPlaying,
+            currentArtworkBitmap
+        )
     }
 
     // ==================== 事件回传至 WebView ====================

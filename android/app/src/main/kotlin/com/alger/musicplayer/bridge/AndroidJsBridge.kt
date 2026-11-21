@@ -14,6 +14,7 @@ import com.alger.musicplayer.MainActivity
 import com.alger.musicplayer.download.NativeDownloadManager
 import com.alger.musicplayer.local.LocalMusicScanner
 import com.alger.musicplayer.lyric.FloatingLyricManager
+import com.alger.musicplayer.player.AudioCacheManager
 import com.alger.musicplayer.player.MusicPlaybackService
 import com.google.gson.Gson
 import com.google.gson.JsonObject
@@ -303,16 +304,19 @@ class AndroidJsBridge(
 
     @JavascriptInterface
     fun eqSetEnabled(enabled: Boolean) {
+        MusicPlaybackService.latestEqEnabled = enabled
         MusicPlaybackService.instance?.setEqEnabled(enabled)
     }
 
     @JavascriptInterface
     fun eqSetBandGain(freqHz: Int, gainDb: Float) {
+        MusicPlaybackService.latestEqGainsDb[freqHz] = gainDb.coerceIn(-12f, 12f)
         MusicPlaybackService.instance?.setEqBandGain(freqHz, gainDb)
     }
 
     @JavascriptInterface
     fun eqReset() {
+        MusicPlaybackService.latestEqGainsDb.clear()
         MusicPlaybackService.instance?.resetEq()
     }
 
@@ -329,8 +333,24 @@ class AndroidJsBridge(
     }
 
     @JavascriptInterface
+    fun isFloatingLyricLocked(): Boolean {
+        return floatingLyricManager.isLockedState()
+    }
+
+    @JavascriptInterface
+    fun setFloatingLyricLocked(locked: Boolean): Boolean {
+        floatingLyricManager.setLocked(locked)
+        return locked
+    }
+
+    @JavascriptInterface
     fun updateFloatingLyric(text: String, translation: String, songTitle: String, isPlaying: Boolean) {
         floatingLyricManager.updateLyric(text, translation, songTitle, isPlaying)
+    }
+
+    @JavascriptInterface
+    fun syncFloatingLyricLines(songId: String, songTitle: String, linesJson: String) {
+        floatingLyricManager.syncLyricLinesFromJs(songId, songTitle, linesJson)
     }
 
     // ==================== 系统 UI、保活与工具 ====================
@@ -382,9 +402,20 @@ class AndroidJsBridge(
     }
 
     @JavascriptInterface
+    fun getAudioCacheSize(): Long {
+        return AudioCacheManager.getCacheSizeBytes(activity)
+    }
+
+    @JavascriptInterface
+    fun clearAudioCache(): Boolean {
+        return AudioCacheManager.clearCache(activity)
+    }
+
+    @JavascriptInterface
     fun exitApp() {
         mainHandler.post {
             runCatching {
+                floatingLyricManager.hide()
                 MusicPlaybackService.instance?.stopPlayback()
                 activity.finishAndRemoveTask()
             }.onFailure {

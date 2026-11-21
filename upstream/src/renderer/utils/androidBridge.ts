@@ -31,10 +31,13 @@ export interface AndroidBridgeInterface {
   eqSetEnabled(enabled: boolean): void;
   eqSetBandGain(freqHz: number, gainDb: number): void;
   eqReset(): void;
-  // Floating Lyrics
+  // Desktop / Floating Lyrics
   setFloatingLyricEnabled(enabled: boolean): boolean;
   isFloatingLyricEnabled(): boolean;
+  isFloatingLyricLocked?(): boolean;
+  setFloatingLyricLocked?(locked: boolean): boolean;
   updateFloatingLyric(text: string, translation: string, songTitle: string, isPlaying: boolean): void;
+  syncFloatingLyricLines?(songId: string, songTitle: string, linesJson: string): void;
   // System UI & Power
   setStatusBarStyle(isDark: boolean): void;
   requestIgnoreBatteryOptimizations(): void;
@@ -42,6 +45,8 @@ export interface AndroidBridgeInterface {
   openExternalUrl(url: string): void;
   showToast(msg: string): void;
   exitApp?(): void;
+  getAudioCacheSize?(): number;
+  clearAudioCache?(): boolean;
 }
 
 declare global {
@@ -56,6 +61,32 @@ declare global {
 export const isAndroid = (): boolean => {
   return typeof window !== 'undefined' && typeof window.AlgerAndroid !== 'undefined';
 };
+
+// ==================== Layered Android Back-Button Stack ====================
+type AndroidBackHandler = () => boolean;
+const androidBackHandlers: Array<{ id: number; priority: number; fn: AndroidBackHandler }> = [];
+let androidBackHandlerSeq = 0;
+
+export function registerAndroidBackHandler(fn: AndroidBackHandler, priority = 0): () => void {
+  const id = ++androidBackHandlerSeq;
+  androidBackHandlers.push({ id, priority, fn });
+  androidBackHandlers.sort((a, b) => b.priority - a.priority || b.id - a.id);
+  return () => {
+    const idx = androidBackHandlers.findIndex((item) => item.id === id);
+    if (idx !== -1) androidBackHandlers.splice(idx, 1);
+  };
+}
+
+export function dispatchAndroidBackHandlers(): boolean {
+  for (const item of [...androidBackHandlers]) {
+    try {
+      if (item.fn()) return true;
+    } catch {
+      // ignore
+    }
+  }
+  return false;
+}
 
 // ==================== Async Callback Registry ====================
 interface PendingCallback {

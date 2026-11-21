@@ -67,9 +67,9 @@ class AudioService {
     } else if ('mediaSession' in navigator) {
       this.initMediaSession();
     }
-    // 从本地存储加载 EQ 开关状态
+    // 从本地存储加载 EQ 开关状态（首次安装默认关闭 EQ，直出原声）
     const bypassState = localStorage.getItem('eqBypass');
-    this.bypass = bypassState ? JSON.parse(bypassState) : false;
+    this.bypass = bypassState !== null ? JSON.parse(bypassState) : true;
 
     // 页面加载时立即强制重置操作锁
     this.forceResetOperationLock();

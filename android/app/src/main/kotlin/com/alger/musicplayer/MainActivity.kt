@@ -102,7 +102,7 @@ class MainActivity : AppCompatActivity() {
         downloadManager = NativeDownloadManager(this) { channel, payloadJson ->
             pushEventToJs(channel, payloadJson)
         }
-        floatingLyricManager = FloatingLyricManager(this, app.prefs) { cmd ->
+        val lyricCmdHandler: (String) -> Unit = { cmd ->
             when (cmd) {
                 "close" -> pushEventToJs("floating-lyric-closed", "{}")
                 "next" -> {
@@ -122,6 +122,13 @@ class MainActivity : AppCompatActivity() {
                 }
                 else -> pushEventToJs("lyric-control-back", JSONObject.quote(cmd))
             }
+        }
+        val existingLyricMgr = FloatingLyricManager.activeInstance
+        floatingLyricManager = if (existingLyricMgr != null) {
+            existingLyricMgr.onControlCommand = lyricCmdHandler
+            existingLyricMgr
+        } else {
+            FloatingLyricManager(applicationContext, app.prefs, lyricCmdHandler)
         }
 
         // 将原生播放器事件回传绑定到当前 WebView
@@ -169,7 +176,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        floatingLyricManager.hide()
+        if (MusicPlaybackService.instance == null) {
+            floatingLyricManager.hide()
+        }
         if (isFinishing) {
             MusicPlaybackService.eventEmitter = null
         }

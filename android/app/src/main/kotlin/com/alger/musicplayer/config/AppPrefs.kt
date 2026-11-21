@@ -46,8 +46,20 @@ class AppPrefs(context: Context) {
         set(value) = prefs.edit().putBoolean("floating_lyric_enabled", value).apply()
 
     var floatingLyricY: Int
-        get() = prefs.getInt("floating_lyric_y", 220)
+        get() = prefs.getInt("floating_lyric_y", 380)
         set(value) = prefs.edit().putInt("floating_lyric_y", value).apply()
+
+    var floatingLyricColor: Int
+        get() = prefs.getInt("floating_lyric_color", 0xFF56A8E8.toInt())
+        set(value) = prefs.edit().putInt("floating_lyric_color", value).apply()
+
+    var floatingLyricTextSize: Float
+        get() = prefs.getFloat("floating_lyric_text_size", 19f).coerceIn(14f, 26f)
+        set(value) = prefs.edit().putFloat("floating_lyric_text_size", value.coerceIn(14f, 26f)).apply()
+
+    var floatingLyricShowTranslation: Boolean
+        get() = prefs.getBoolean("floating_lyric_show_translation", true)
+        set(value) = prefs.edit().putBoolean("floating_lyric_show_translation", value).apply()
 
     var anonymousToken: String
         get() = prefs.getString("anonymous_token", "") ?: ""

@@ -56,16 +56,21 @@
                       : 'bg-slate-800/95 border-slate-700 text-slate-100'
                   "
                 >
-                  <i class="ri-subtitles-line text-xl"></i>
-                  <span class="text-xs font-semibold">{{ floatingLyricOn ? '关闭悬浮词' : '悬浮歌词' }}</span>
+                  <i class="ri-closed-captioning-line text-xl" :class="floatingLyricOn ? 'text-amber-300' : 'text-emerald-400'"></i>
+                  <span class="text-xs font-semibold">{{ floatingLyricOn ? '关闭桌面词' : '桌面歌词' }}</span>
                 </button>
                 <button
                   v-if="!isIOS"
-                  @click="showEqModal = true"
-                  class="flex flex-col items-center justify-center gap-1.5 py-3.5 rounded-2xl bg-slate-800/95 border border-slate-700 text-slate-100 active:scale-95 transition-all"
+                  @click="openEqModal"
+                  class="flex flex-col items-center justify-center gap-1.5 py-3.5 rounded-2xl transition-all active:scale-95 border"
+                  :class="
+                    eqEnabled
+                      ? 'bg-sky-500/25 border-sky-400/60 text-sky-200'
+                      : 'bg-slate-800/95 border-slate-700 text-slate-100'
+                  "
                 >
                   <i class="ri-equalizer-line text-xl text-sky-400"></i>
-                  <span class="text-xs font-semibold">均衡器 EQ</span>
+                  <span class="text-xs font-semibold">{{ eqEnabled ? '均衡器 · 开' : '均衡器 EQ' }}</span>
                 </button>
                 <button
                   v-else
@@ -220,15 +225,48 @@
         </div>
       </div>
     </Transition>
-    <n-modal
-      v-if="isAndroid"
-      v-model:show="showEqModal"
-      preset="card"
-      style="width: 94vw; max-width: 680px"
-      title="均衡器 (EQ)"
-    >
-      <eq-control />
-    </n-modal>
+    <!-- 独立高优先级 EQ 抽屉（避免 Naive UI n-modal 默认 z-index=2000 被 z-[99999] 遮挡） -->
+    <Transition name="settings-drawer">
+      <div
+        v-if="isAndroid && !isIOS && showEqModal"
+        class="fixed inset-0 z-[100001] flex items-end justify-center"
+        @click.self="closeEqModal"
+      >
+        <div class="absolute inset-0 bg-black/70" @click="closeEqModal"></div>
+        <div
+          class="relative w-full max-w-lg bg-[#0f172a]/[0.98] backdrop-blur-2xl rounded-t-[28px] overflow-hidden max-h-[88vh] flex flex-col border-t border-slate-700/80 shadow-2xl"
+        >
+          <div class="flex justify-center pt-3 pb-1 flex-shrink-0">
+            <div class="w-10 h-1 rounded-full bg-slate-500"></div>
+          </div>
+          <div class="flex items-center justify-between px-5 pb-3 flex-shrink-0">
+            <div class="flex items-center gap-2">
+              <button
+                @click="closeEqModal"
+                class="w-8 h-8 rounded-full flex items-center justify-center bg-slate-800 border border-slate-700 text-slate-200 active:scale-90 transition-all"
+                aria-label="返回"
+              >
+                <i class="ri-arrow-left-s-line text-xl"></i>
+              </button>
+              <h2 class="text-lg font-bold text-white tracking-tight">均衡器 (EQ)</h2>
+            </div>
+            <button
+              @click="closeEqModal"
+              class="w-8 h-8 rounded-full flex items-center justify-center bg-slate-800 border border-slate-700 text-slate-200 active:scale-90 transition-all"
+              aria-label="关闭"
+            >
+              <i class="ri-close-line text-xl"></i>
+            </button>
+          </div>
+          <div
+            class="flex-1 overflow-y-auto px-4 pb-6"
+            :style="{ paddingBottom: `calc(24px + var(--safe-area-inset-bottom, 0px))` }"
+          >
+            <eq-control :dark-panel="true" @change-enabled="eqEnabled = $event" />
+          </div>
+        </div>
+      </div>
+    </Transition>
   </Teleport>
 </template>
 
@@ -241,8 +279,10 @@ import { useRouter } from 'vue-router';
 
 import EqControl from '@/components/EQControl.vue';
 import { useDownload } from '@/hooks/useDownload';
+import { audioService } from '@/services/audioService';
 import { usePlayerStore } from '@/store/modules/player';
 import { isAndroid, isIOS } from '@/utils';
+import { registerAndroidBackHandler } from '@/utils/androidBridge';
 
 const { t } = useI18n();
 const router = useRouter();
@@ -257,6 +297,15 @@ const handleOpenDownloads = () => {
 };
 
 const showEqModal = ref(false);
+const eqEnabled = ref<boolean>(audioService.isEQEnabled());
+const openEqModal = () => {
+  eqEnabled.value = audioService.isEQEnabled();
+  showEqModal.value = true;
+};
+const closeEqModal = () => {
+  eqEnabled.value = audioService.isEQEnabled();
+  showEqModal.value = false;
+};
 const floatingLyricOn = ref<boolean>(
   isAndroid ? Boolean((window as any).AlgerAndroid?.isFloatingLyricEnabled?.()) : false
 );
@@ -276,13 +325,27 @@ const handleDownloadCurrent = async () => {
 };
 
 // Props & Emits
-defineProps<{
+const props = defineProps<{
   visible: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: 'update:visible', value: boolean): void;
 }>();
+
+watch(
+  () => props.visible,
+  (val) => {
+    if (val) {
+      eqEnabled.value = audioService.isEQEnabled();
+      if (isAndroid) {
+        floatingLyricOn.value = Boolean((window as any).AlgerAndroid?.isFloatingLyricEnabled?.());
+      }
+    } else {
+      showEqModal.value = false;
+    }
+  }
+);
 
 // 播放速度选项
 const speedOptions = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
@@ -412,14 +475,29 @@ watch(
   { immediate: true }
 );
 
+let unregisterBack: (() => void) | null = null;
+
 onMounted(() => {
   if (hasTimerActive.value && sleepTimer.value.type === 'time') {
     startTimerUpdate();
   }
+  unregisterBack = registerAndroidBackHandler(() => {
+    if (showEqModal.value) {
+      closeEqModal();
+      return true;
+    }
+    if (props.visible) {
+      close();
+      return true;
+    }
+    return false;
+  }, 100);
 });
 
 onUnmounted(() => {
   stopTimerUpdate();
+  unregisterBack?.();
+  unregisterBack = null;
 });
 </script>
 

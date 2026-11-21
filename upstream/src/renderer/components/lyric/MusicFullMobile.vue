@@ -136,7 +136,7 @@
       <!-- 主要内容区域 - 竖屏模式下的普通布局 -->
       <transition name="fade">
         <div v-if="!showFullLyrics && !isLandscape" class="ios-layout-container">
-          <!-- 封面区域 -->
+          <!-- 封面区域（支持左右滑动切歌、下拉收起播放器、轻点切换样式） -->
           <div
             class="cover-container"
             :class="{
@@ -145,7 +145,11 @@
               'full-style': config.mobileCoverStyle === 'full',
               paused: !play
             }"
-            @click="cycleCoverStyle"
+            :style="coverSwipeStyle"
+            @touchstart="handleCoverTouchStart"
+            @touchmove="handleCoverTouchMove"
+            @touchend="handleCoverTouchEnd"
+            @click="handleCoverClick"
           >
             <div class="img-wrapper">
               <n-image
@@ -443,6 +447,7 @@ import { audioService } from '@/services/audioService';
 import { usePlayerStore } from '@/store/modules/player';
 import { DEFAULT_LYRIC_CONFIG, LyricConfig } from '@/types/lyric';
 import { getImgUrl, secondToMinute } from '@/utils';
+import { registerAndroidBackHandler } from '@/utils/androidBridge';
 import { animateGradient, getHoverBackgroundColor, getTextColors } from '@/utils/linearColor';
 import { showBottomToast } from '@/utils/shortcutToast';
 
@@ -749,6 +754,81 @@ const handleTouchEnd = () => {
   }, 3000);
 };
 
+// 封面手势：左滑下一首、右滑上一首、下拉收起播放页
+const coverTouchStartX = ref(0);
+const coverTouchStartY = ref(0);
+const coverSwipeOffsetX = ref(0);
+const coverSwipeOffsetY = ref(0);
+const coverSwipeActive = ref(false);
+let suppressNextCoverClick = false;
+
+const coverSwipeStyle = computed(() => {
+  if (!coverSwipeOffsetX.value && !coverSwipeOffsetY.value) return {};
+  return {
+    transform: `translate3d(${coverSwipeOffsetX.value}px, ${coverSwipeOffsetY.value}px, 0)`,
+    transition: coverSwipeActive.value ? 'none' : 'transform 0.25s cubic-bezier(0.22, 1, 0.36, 1)'
+  };
+});
+
+const handleCoverTouchStart = (e: TouchEvent) => {
+  if (!e.touches.length) return;
+  coverTouchStartX.value = e.touches[0].clientX;
+  coverTouchStartY.value = e.touches[0].clientY;
+  coverSwipeOffsetX.value = 0;
+  coverSwipeOffsetY.value = 0;
+  coverSwipeActive.value = true;
+  suppressNextCoverClick = false;
+};
+
+const handleCoverTouchMove = (e: TouchEvent) => {
+  if (!coverSwipeActive.value || !e.touches.length) return;
+  const dx = e.touches[0].clientX - coverTouchStartX.value;
+  const dy = e.touches[0].clientY - coverTouchStartY.value;
+
+  if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.15) {
+    coverSwipeOffsetX.value = Math.max(-72, Math.min(72, dx * 0.45));
+    coverSwipeOffsetY.value = 0;
+    suppressNextCoverClick = true;
+  } else if (dy > 14 && dy > Math.abs(dx) * 1.2) {
+    coverSwipeOffsetY.value = Math.min(84, dy * 0.45);
+    coverSwipeOffsetX.value = 0;
+    suppressNextCoverClick = true;
+  }
+};
+
+const handleCoverTouchEnd = (e: TouchEvent) => {
+  if (!coverSwipeActive.value) return;
+  coverSwipeActive.value = false;
+  const touch = e.changedTouches[0];
+  if (touch) {
+    const dx = touch.clientX - coverTouchStartX.value;
+    const dy = touch.clientY - coverTouchStartY.value;
+    if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+      suppressNextCoverClick = true;
+      if (dx < 0) {
+        nextSong();
+        showBottomToast('下一首');
+      } else {
+        prevSong();
+        showBottomToast('上一首');
+      }
+    } else if (dy > 90 && dy > Math.abs(dx) * 1.35) {
+      suppressNextCoverClick = true;
+      closeMusicFull();
+    }
+  }
+  coverSwipeOffsetX.value = 0;
+  coverSwipeOffsetY.value = 0;
+};
+
+const handleCoverClick = () => {
+  if (suppressNextCoverClick) {
+    suppressNextCoverClick = false;
+    return;
+  }
+  cycleCoverStyle();
+};
+
 // 封面样式循环切换
 const cycleCoverStyle = () => {
   const styles = ['record', 'square', 'full'];
@@ -976,6 +1056,8 @@ watch(
 
 // 组件卸载时清理动画
 onBeforeUnmount(() => {
+  unregisterFullLyricBack?.();
+  unregisterFullLyricBack = null;
   if (animationFrame.value) {
     cancelAnimationFrame(animationFrame.value);
   }
@@ -1051,8 +1133,22 @@ watch(
   }
 );
 
+let unregisterFullLyricBack: (() => void) | null = null;
+
 // 加载保存的配置
 onMounted(() => {
+  unregisterFullLyricBack = registerAndroidBackHandler(() => {
+    if (playerStore.playListDrawerVisible) {
+      playerStore.setPlayListDrawerVisible(false);
+      return true;
+    }
+    if (isVisible.value && showFullLyrics.value && !isLandscape.value) {
+      showFullLyrics.value = false;
+      return true;
+    }
+    return false;
+  }, 60);
+
   const savedConfig = localStorage.getItem('music-full-config');
   if (savedConfig) {
     config.value = { ...config.value, ...JSON.parse(savedConfig) };
@@ -1953,17 +2049,21 @@ const getWordStyle = (lineIndex: number, _wordIndex: number, word: any) => {
   }
 
   .fullscreen-header {
-    @apply pt-16 pb-4 px-6 flex flex-col items-center fixed top-0 left-0 w-full z-10;
-    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.2) 0%, rgba(0, 0, 0, 0) 100%);
+    @apply flex flex-col items-center fixed top-0 left-0 w-full z-10;
+    padding-top: calc(var(--safe-area-inset-top, 12px) + 12px);
+    padding-bottom: 14px;
+    padding-left: 72px;
+    padding-right: 72px;
+    background: linear-gradient(to bottom, rgba(10, 14, 24, 0.55) 0%, rgba(10, 14, 24, 0) 100%);
     pointer-events: auto;
 
     .song-title {
-      @apply text-xl font-semibold text-center mb-1 max-w-full line-clamp-1;
+      @apply text-lg font-bold text-center mb-0.5 max-w-full line-clamp-1;
       color: var(--text-color-active);
     }
 
     .artist-name {
-      @apply text-sm text-opacity-80 text-center;
+      @apply text-xs text-opacity-80 text-center max-w-full line-clamp-1;
       color: var(--text-color-primary);
     }
   }
@@ -1972,22 +2072,22 @@ const getWordStyle = (lineIndex: number, _wordIndex: number, word: any) => {
     @apply flex-1 overflow-y-auto px-4;
     scroll-behavior: smooth;
     -webkit-overflow-scrolling: touch;
-    mask-image: linear-gradient(to bottom, transparent 0%, black 10%, black 90%, transparent 100%);
+    mask-image: linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%);
     -webkit-mask-image: linear-gradient(
       to bottom,
       transparent 0%,
-      black 10%,
-      black 90%,
+      black 12%,
+      black 88%,
       transparent 100%
     );
-    padding-top: 100px;
+    padding-top: 24px;
     padding-bottom: 200px;
-    margin-bottom: 180px;
-    margin-top: 90px;
+    margin-bottom: calc(var(--safe-area-inset-bottom, 14px) + 168px);
+    margin-top: calc(var(--safe-area-inset-top, 12px) + 84px);
 
     .lyrics-padding-top {
-      height: 70px;
-      min-height: 70px;
+      height: 56px;
+      min-height: 56px;
     }
 
     .lyrics-padding-bottom {

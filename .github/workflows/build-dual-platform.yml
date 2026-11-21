@@ -6,7 +6,7 @@ on:
       release_tag:
         description: '自动上传到指定 GitHub Release 标签（留空则仅生成 Actions 构件）'
         required: false
-        default: 'v5.1.0'
+        default: 'v5.1.1'
         type: string
   push:
     tags:
@@ -14,6 +14,12 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages-and-release"
+  cancel-in-progress: false
 
 jobs:
   build-android:
@@ -43,22 +49,37 @@ jobs:
           npx vite build --outDir "${{ github.workspace }}/android/app/src/main/assets/www" --emptyOutDir
           test -f "${{ github.workspace }}/android/app/src/main/assets/www/index.html"
 
+      - name: Decode Android Release Keystore
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 --decode > "${{ runner.temp }}/xiaopang-release.jks"
+          ls -lh "${{ runner.temp }}/xiaopang-release.jks"
+
       - name: Build Android Release APK
         working-directory: android
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && format('{0}/xiaopang-release.jks', runner.temp) || '' }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
 
       - name: Rename Android APK
         run: |
+          VERSION=$(node -p "require('./upstream/package.json').version")
           mkdir -p artifacts
-          cp android/app/build/outputs/apk/release/app-release.apk artifacts/XiaoPangNaiwaMusic-v5.1.0.apk
+          cp android/app/build/outputs/apk/release/app-release.apk "artifacts/XiaoPangNaiwaMusic-v${VERSION}.apk"
+          ls -lh "artifacts/XiaoPangNaiwaMusic-v${VERSION}.apk"
 
       - name: Upload Android APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: XiaoPangNaiwaMusic-Android-APK
-          path: artifacts/XiaoPangNaiwaMusic-v5.1.0.apk
+          path: artifacts/XiaoPangNaiwaMusic-*.apk
 
   build-ios:
     name: Build iOS IPA (Unsigned)
@@ -107,19 +128,20 @@ jobs:
       - name: Package Unsigned IPA
         working-directory: ios
         run: |
+          VERSION=$(node -p "require('../upstream/package.json').version")
           mkdir -p build/Payload ../artifacts
           cp -R build/DerivedData/Build/Products/Release-iphoneos/XiaoPangNaiwaMusic.app build/Payload/
           test -f build/Payload/XiaoPangNaiwaMusic.app/www/index.html
           ls -lh build/Payload/XiaoPangNaiwaMusic.app/www
           cd build
-          zip -qry ../../artifacts/XiaoPangNaiwaMusic-v5.1.0-unsigned.ipa Payload
-          ls -lh ../../artifacts/XiaoPangNaiwaMusic-v5.1.0-unsigned.ipa
+          zip -qry "../../artifacts/XiaoPangNaiwaMusic-v${VERSION}-unsigned.ipa" Payload
+          ls -lh "../../artifacts/XiaoPangNaiwaMusic-v${VERSION}-unsigned.ipa"
 
       - name: Upload iOS IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: XiaoPangNaiwaMusic-iOS-IPA
-          path: artifacts/XiaoPangNaiwaMusic-v5.1.0-unsigned.ipa
+          path: artifacts/XiaoPangNaiwaMusic-*-unsigned.ipa
 
   build-pwa:
     name: Build Safari PWA Web Bundle
@@ -133,23 +155,44 @@ jobs:
         with:
           node-version: 20
 
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
       - name: Build PWA static bundle
         working-directory: upstream
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: |
+          VERSION=$(node -p "require('./package.json').version")
           npm install --ignore-scripts --legacy-peer-deps
           npx vite build --outDir "${{ github.workspace }}/dist-pwa" --emptyOutDir
           test -f "${{ github.workspace }}/dist-pwa/index.html"
           mkdir -p "${{ github.workspace }}/artifacts"
-          cd "${{ github.workspace }}/dist-pwa" && zip -qry "${{ github.workspace }}/artifacts/XiaoPangNaiwaMusic-v5.1.0-pwa.zip" .
-          ls -lh "${{ github.workspace }}/artifacts/XiaoPangNaiwaMusic-v5.1.0-pwa.zip"
+          cd "${{ github.workspace }}/dist-pwa" && zip -qry "${{ github.workspace }}/artifacts/XiaoPangNaiwaMusic-v${VERSION}-pwa.zip" .
+          ls -lh "${{ github.workspace }}/artifacts/XiaoPangNaiwaMusic-v${VERSION}-pwa.zip"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist-pwa
 
       - name: Upload PWA bundle artifact
         uses: actions/upload-artifact@v4
         with:
           name: XiaoPangNaiwaMusic-Safari-PWA
-          path: artifacts/XiaoPangNaiwaMusic-v5.1.0-pwa.zip
+          path: artifacts/XiaoPangNaiwaMusic-*-pwa.zip
+
+  deploy-pages:
+    name: Deploy Safari PWA to GitHub Pages
+    needs: [build-pwa]
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
 
   release:
     name: Publish Dual-Platform Release
@@ -168,8 +211,8 @@ jobs:
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.release_tag }}
           files: |
-            release-assets/XiaoPangNaiwaMusic-v5.1.0.apk
-            release-assets/XiaoPangNaiwaMusic-v5.1.0-unsigned.ipa
-            release-assets/XiaoPangNaiwaMusic-v5.1.0-pwa.zip
+            release-assets/XiaoPangNaiwaMusic-*.apk
+            release-assets/XiaoPangNaiwaMusic-*-unsigned.ipa
+            release-assets/XiaoPangNaiwaMusic-*-pwa.zip
           fail_on_unmatched_files: true
           generate_release_notes: true

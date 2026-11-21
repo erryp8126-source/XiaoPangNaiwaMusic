@@ -143,15 +143,18 @@ XiaoPangNaiwaMusic/
 | **硬件均衡器** | `eqSetEnabled(enabled: boolean)` | 开关 Android 硬件均衡器（`android.media.audiofx.Equalizer`） |
 | | `eqSetBandGain(freqHz: number, gainDb: number)` | 调整指定频段增益 |
 | | `eqReset()` | 重置所有频段增益 |
-| **悬浮歌词** | `setFloatingLyricEnabled(enabled: boolean): boolean` | 开启/关闭 Android 桌面悬浮歌词窗 |
-| | `isFloatingLyricEnabled(): boolean` | 查询悬浮歌词窗状态 |
-| | `updateFloatingLyric(text, translation, songTitle, isPlaying)` | 推送当前实时歌词与播放状态到悬浮窗 |
+| **桌面歌词** | `setFloatingLyricEnabled(enabled: boolean): boolean` | 开启/关闭 Android 网易云风格双行逐字桌面歌词 |
+| | `isFloatingLyricEnabled(): boolean` | 查询桌面歌词开关状态 |
+| | `isFloatingLyricLocked(): boolean` / `setFloatingLyricLocked(locked: boolean)` | 查询/切换桌面歌词触摸穿透锁定状态（支持通知栏与设置页一键解锁） |
+| | `updateFloatingLyric(text, translation, songTitle, isPlaying)` | 兼容兜底推送当前歌词与播放状态 |
+| | `syncFloatingLyricLines(songId, songTitle, linesJson)` | 同步带时间戳与翻译的歌词行列表供本地歌曲或前端秒开显示 |
 | **系统与生命周期** | `setStatusBarStyle(isDark: boolean)` | 联动浅色 / 深色状态栏图标与底色 |
 | | `isIgnoringBatteryOptimizations(): boolean` | 检查 Android 电池优化白名单状态 |
 | | `requestIgnoreBatteryOptimizations()` | 引导用户加入 Android 后台保活白名单 |
 | | `openExternalUrl(url: string)` | 调用系统浏览器打开外部链接 |
 | | `showToast(msg: string)` | 原生轻提示 Toast |
 | | `exitApp()` | 停止播放并退出 Android 应用（`finishAndRemoveTask()`）；iOS/PWA 端不可强退，改为弹窗提示拦截 |
+| | `getAudioCacheSize(): number` / `clearAudioCache(): boolean` | 查询 / 一键清理 Android Media3 `SimpleCache` 200MB LRU 音频缓存 |
 
 ### 3.3 异步 RPC 协议（`invokeAsync`）
 
@@ -295,27 +298,29 @@ open XiaoPangNaiwaMusic.xcodeproj
 
 ### 7.3 版本号同步清单（每次发版递增）
 
-每次发布功能/修复更新，请同步递增以下 3 处构建号（当前为 `51009`）：
-1. [android/app/build.gradle.kts](../android/app/build.gradle.kts) → `versionCode`
-2. [ios/project.yml](../ios/project.yml) → `CURRENT_PROJECT_VERSION`
-3. [ios/XiaoPangNaiwaMusic/Info.plist](../ios/XiaoPangNaiwaMusic/Info.plist) → `CFBundleVersion`
+每次发布功能/修复更新，请同步递增以下 4 处版本号/构建号（当前为 `v5.1.1` / `51102`）：
+1. [upstream/package.json](../upstream/package.json) → `version`（供应用内「设置 → 关于 → 检查更新」与 GitHub Releases 最新 Tag 对比）
+2. [android/app/build.gradle.kts](../android/app/build.gradle.kts) → `versionCode` / `versionName`
+3. [ios/project.yml](../ios/project.yml) → `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`
+4. [ios/XiaoPangNaiwaMusic/Info.plist](../ios/XiaoPangNaiwaMusic/Info.plist) → `CFBundleShortVersionString` / `CFBundleVersion`
 
 ---
 
 ## 8. GitHub Actions 双端 CI/CD 流水线
 
 工作流文件位于 [.github/workflows/build-dual-platform.yml](../.github/workflows/build-dual-platform.yml)，支持以下两种触发方式：
-1. **手动触发（`workflow_dispatch`）**：在 GitHub Actions 页面运行 `Build & Release Android + iOS + PWA`，可指定 `release_tag`（默认 `v5.1.0`）。
-2. **标签推送（`push: tags: ['v*']`）**：推送 `v*` 标签自动全量构建并发布。
+1. **手动触发（`workflow_dispatch`）**：在 GitHub Actions 页面运行 `Build & Release Android + iOS + PWA`，可指定 `release_tag`（默认 `v5.1.1`）。
+2. **标签推送（`push: tags: ['v*']`）**：推送 `v*` 标签自动全量构建、部署 GitHub Pages 并发布 Release。
 
-### 流水线 4 个并行/串行阶段
+### 流水线 5 个阶段
 
-| Job | Runner | 产出物 |
+| Job | Runner | 产出物 / 目标 |
 | --- | --- | --- |
-| `build-android` | `ubuntu-latest` | `XiaoPangNaiwaMusic-v5.1.0.apk`（JDK 17 + Gradle `assembleRelease`） |
-| `build-ios` | `macos-15` | `XiaoPangNaiwaMusic-v5.1.0-unsigned.ipa`（XcodeGen + `xcodebuild -sdk iphoneos ARCHS=arm64` 打包 `Payload/`，并校验 `www/index.html` 存在） |
-| `build-pwa` | `ubuntu-latest` | `XiaoPangNaiwaMusic-v5.1.0-pwa.zip`（Vite 静态站点压缩包） |
-| `release` | `ubuntu-latest` | 汇聚上述 3 个 Artifact，通过 `softprops/action-gh-release@v2` 自动附加到指定 GitHub Release |
+| `build-android` | `ubuntu-latest` | 使用 GitHub Secrets 中的固定正式签名密钥编出 `XiaoPangNaiwaMusic-v<ver>.apk` |
+| `build-ios` | `macos-15` | `XiaoPangNaiwaMusic-v<ver>-unsigned.ipa`（XcodeGen + `xcodebuild -sdk iphoneos ARCHS=arm64` 打包 `Payload/`，并校验 `www/index.html`） |
+| `build-pwa` | `ubuntu-latest` | `XiaoPangNaiwaMusic-v<ver>-pwa.zip` + 上传 GitHub Pages 构建产物 |
+| `deploy-pages` | `ubuntu-latest` | 自动部署 Safari PWA 在线版至 `https://erryp8126-source.github.io/XiaoPangNaiwaMusic/` |
+| `release` | `ubuntu-latest` | 汇聚 3 个安装/静态产物，通过 `softprops/action-gh-release@v2` 自动发布到对应 GitHub Release |
 
 ---
 
@@ -326,8 +331,8 @@ open XiaoPangNaiwaMusic.xcodeproj
    - **正确做法**：命令行始终传入**绝对路径**（例如 PowerShell 中使用 `Join-Path`，Linux/macOS/CI 中使用 `"${{ github.workspace }}/..."` 或 `"$(pwd)/..."`），并在构建后校验目标目录下确实存在 `index.html`。
 2. **安装前端依赖时卡在下载 Electron 二进制**
    - 移动端无需 Electron，执行 `npm install` 前务必设置环境变量 `ELECTRON_SKIP_BINARY_DOWNLOAD=1`，并附加 `--ignore-scripts --legacy-peer-deps`。
-3. **Android 签名说明**
-   - `android/app/build.gradle.kts` 当前将 `release` 构建类型的 `signingConfig` 指向调试密钥以便个人直接安装与升级覆盖；如需上架正式渠道，请替换为自定义 `keystore.jks` 签名配置并通过 GitHub Secrets 注入。
+3. **Android 固定正式签名配置**
+   - `android/app/build.gradle.kts` 优先读取环境变量（CI 通过 `ANDROID_KEYSTORE_BASE64` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS` / `ANDROID_KEY_PASSWORD` Secrets 注入）或本地被 `.gitignore` 忽略的 `android/keystore.properties`，确保本地构建与云端 Release APK 签名永久一致，可直接覆盖升级；若第三方克隆仓库未配置 keystore，则优雅回退为 `debug` 签名。
 4. **iOS 侧载与真机调试**
    - CI 产出的 `.ipa` 为无签名（unsigned）arm64 包，需通过 **Sideloadly / AltStore / SideStore / 爱思助手**（免费 Apple ID 7 天续签）或 **TrollStore**（永久免签）安装到真机。
 5. **本地回环服务端口冲突**

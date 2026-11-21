@@ -239,6 +239,39 @@ const setupAndroidBackgroundSync = () => {
   });
 };
 
+const syncAndroidFloatingLyricLines = () => {
+  if (!isAndroid) return;
+  try {
+    const bridge = (window as any).AlgerAndroid;
+    if (!bridge?.syncFloatingLyricLines) return;
+    const store = getPlayerStore();
+    const song = store.playMusic;
+    if (!song?.id || !lrcArray.value.length) return;
+    const payload = lrcArray.value
+      .map((item, idx) => {
+        // item.startTime / item.duration 来自 yrcParser，本身已是毫秒；lrcTimeArray 为秒
+        const startMs =
+          typeof item.startTime === 'number' && item.startTime >= 0
+            ? Math.round(item.startTime)
+            : Math.round((lrcTimeArray.value[idx] ?? 0) * 1000);
+        const durMs =
+          typeof item.duration === 'number' && item.duration > 0 ? Math.round(item.duration) : 0;
+        return {
+          t: startMs,
+          d: durMs,
+          text: item.text || '',
+          tr: item.trText || ''
+        };
+      })
+      .filter((x) => x.text.trim().length > 0);
+    if (payload.length > 0) {
+      bridge.syncFloatingLyricLines(String(song.id), song.name || '', JSON.stringify(payload));
+    }
+  } catch {
+    // ignore
+  }
+};
+
 const syncAndroidFloatingLyric = () => {
   if (!isAndroid) return;
   try {
@@ -263,6 +296,14 @@ const setupAndroidFloatingLyricSync = () => {
   watch([nowIndex, () => getPlayerStore().play, () => getPlayerStore().playMusic?.id], () => {
     syncAndroidFloatingLyric();
   });
+
+  watch(
+    () => [lrcArray.value.length, getPlayerStore().playMusic?.id],
+    () => {
+      syncAndroidFloatingLyricLines();
+      syncAndroidFloatingLyric();
+    }
+  );
 
   onAndroidEvent('lyric-control-back', (_, cmd: string) => {
     const store = getPlayerStore();

@@ -19,6 +19,8 @@ android/.kotlin/
 android/build/
 android/app/build/
 android/local.properties
+android/keystore.properties
+keystore.properties
 android/captures/
 *.hprof
 *.jks
