@@ -22,6 +22,30 @@
 
 ---
 
+## 实机界面预览
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="docs/screenshots/home.jpg" width="250" alt="发现主页" />
+      <br />
+      <sub><b>发现主页 · 奶娃暖阳风</b></sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/screenshots/player.jpg" width="250" alt="全屏黑胶播放页" />
+      <br />
+      <sub><b>全屏黑胶播放页</b></sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/screenshots/lyrics.jpg" width="250" alt="沉浸同步歌词页" />
+      <br />
+      <sub><b>沉浸同步歌词页</b></sub>
+    </td>
+  </tr>
+</table>
+
+---
+
 ## 项目简介与功能特性
 
 ### 1. 「奶娃暖阳治愈风」统一双端 UI
@@ -51,7 +75,8 @@ XiaoPangNaiwaMusic/
 ├── upstream/        # Vue 3 + TypeScript + Tailwind CSS 双端共享前端源码
 ├── android/         # Kotlin + Media3 ExoPlayer + NanoHTTPD Android 原生工程
 ├── ios/             # 纯 Swift + AVPlayer + NWListener iOS 原生工程 (XcodeGen)
-├── ci/              # GitHub Actions 云端自动编译 Android APK + iOS IPA + PWA 工作流模板
+├── docs/screenshots/# 实机运行截图
+├── .github/workflows/# GitHub Actions 云端自动编译并发布 Android APK + iOS IPA + PWA
 ├── build_apk.ps1    # Windows 一键本地编译 Android APK 脚本
 └── build_pwa.ps1    # Windows 一键本地导出 Safari PWA 静态包脚本
 ```
@@ -67,16 +92,16 @@ XiaoPangNaiwaMusic/
   .\build_apk.ps1
   ```
 
-### iOS 端（.ipa，Windows 电脑可借助 GitHub Actions 免费云端 Mac 编译）
-1. **GitHub 云端编译出 `.ipa`**（无需 Mac）：
-   - 在 GitHub 网页端将 [ci/build-dual-platform.yml](ci/build-dual-platform.yml) 复制/新建为 `.github/workflows/build-dual-platform.yml`。
-   - 进入仓库 **Actions → Build & Release Android + iOS + PWA → Run workflow**，等待约 4 分钟，即可在页面底部 Artifacts 中下载编译好的 **`XiaoPangNaiwaMusic-v5.1.0-unsigned.ipa`**（同时也会一并编出 Android APK 和 PWA 包）。
-2. **Mac 本地编译**（需 Xcode 15+ 与 `brew install xcodegen`）：
+### iOS 端（.ipa）
+1. **直接下载 `.ipa`**：前往 [Releases 页面](https://github.com/erryp8126-source/XiaoPangNaiwaMusic/releases/latest) 直接下载云端编好的 **`XiaoPangNaiwaMusic-v5.1.0-unsigned.ipa`**（支持 iOS 15.0+）。
+2. **GitHub Actions 云端重新编译**（无需 Mac）：
+   - 进入仓库 **Actions → Build & Release Android + iOS + PWA → Run workflow**，约 4 分钟即可自动编出最新的 Android APK、iOS IPA 与 PWA 压缩包并同步更新 Release。
+3. **Mac 本地编译**（需 Xcode 15+ 与 `brew install xcodegen`）：
    ```bash
-   cd upstream && npm install --ignore-scripts --legacy-peer-deps && npx vite build --outDir ../ios/XiaoPangNaiwaMusic/Resources/www --emptyOutDir
+   cd upstream && npm install --ignore-scripts --legacy-peer-deps && npx vite build --outDir "$(pwd)/../ios/XiaoPangNaiwaMusic/Resources/www" --emptyOutDir
    cd ../ios && xcodegen generate && open XiaoPangNaiwaMusic.xcodeproj
    ```
-3. **iPhone 安装 `.ipa`**：
+4. **iPhone 安装 `.ipa`**：
    - 使用 **Sideloadly**、**爱思助手**、**AltStore / SideStore**（免费 Apple ID 自签，每 7 天续签）或 **TrollStore 巨魔商店**（永久免签）将 `.ipa` 签装到 iPhone 即可。
 
 ### Safari PWA 静态包
