@@ -40,7 +40,8 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: |
           npm install --ignore-scripts --legacy-peer-deps
-          npx vite build --outDir ../android/app/src/main/assets/www --emptyOutDir
+          npx vite build --outDir "${{ github.workspace }}/android/app/src/main/assets/www" --emptyOutDir
+          test -f "${{ github.workspace }}/android/app/src/main/assets/www/index.html"
 
       - name: Build Android Release APK
         working-directory: android
@@ -80,7 +81,8 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: |
           npm install --ignore-scripts --legacy-peer-deps
-          npx vite build --outDir ../ios/XiaoPangNaiwaMusic/Resources/www --emptyOutDir
+          npx vite build --outDir "${{ github.workspace }}/ios/XiaoPangNaiwaMusic/Resources/www" --emptyOutDir
+          test -f "${{ github.workspace }}/ios/XiaoPangNaiwaMusic/Resources/www/index.html"
 
       - name: Generate Xcode project
         working-directory: ios
@@ -107,8 +109,11 @@ jobs:
         run: |
           mkdir -p build/Payload ../artifacts
           cp -R build/DerivedData/Build/Products/Release-iphoneos/XiaoPangNaiwaMusic.app build/Payload/
+          test -f build/Payload/XiaoPangNaiwaMusic.app/www/index.html
+          ls -lh build/Payload/XiaoPangNaiwaMusic.app/www
           cd build
           zip -qry ../../artifacts/XiaoPangNaiwaMusic-v5.1.0-unsigned.ipa Payload
+          ls -lh ../../artifacts/XiaoPangNaiwaMusic-v5.1.0-unsigned.ipa
 
       - name: Upload iOS IPA artifact
         uses: actions/upload-artifact@v4
@@ -134,9 +139,11 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: |
           npm install --ignore-scripts --legacy-peer-deps
-          npx vite build --outDir ../dist-pwa --emptyOutDir
-          mkdir -p ../artifacts
-          cd ../dist-pwa && zip -qry ../artifacts/XiaoPangNaiwaMusic-v5.1.0-pwa.zip .
+          npx vite build --outDir "${{ github.workspace }}/dist-pwa" --emptyOutDir
+          test -f "${{ github.workspace }}/dist-pwa/index.html"
+          mkdir -p "${{ github.workspace }}/artifacts"
+          cd "${{ github.workspace }}/dist-pwa" && zip -qry "${{ github.workspace }}/artifacts/XiaoPangNaiwaMusic-v5.1.0-pwa.zip" .
+          ls -lh "${{ github.workspace }}/artifacts/XiaoPangNaiwaMusic-v5.1.0-pwa.zip"
 
       - name: Upload PWA bundle artifact
         uses: actions/upload-artifact@v4
