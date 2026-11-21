@@ -12,7 +12,7 @@
           <img src="@/assets/logo.png" alt="App Icon" />
         </div>
         <div class="app-info">
-          <h2 class="app-name">Alger Music Player {{ config.version }}</h2>
+          <h2 class="app-name">小庞奶娃音乐 {{ config.version }}</h2>
           <p class="app-desc mb-2">{{ t('comp.installApp.description') }}</p>
           <n-checkbox v-model:checked="noPrompt">{{ t('comp.installApp.noPrompt') }}</n-checkbox>
         </div>
@@ -31,7 +31,7 @@
           <a
             class="text-green-500"
             target="_blank"
-            href="https://github.com/algerkong/AlgerMusicPlayer/releases"
+            href="https://github.com/erryp8126-source/XiaoPangNaiwaMusic/releases"
             >GitHub</a
           >
           {{ t('comp.installApp.downloadProblemLinkText') }}
@@ -76,7 +76,7 @@ onMounted(async () => {
 });
 
 const handleInstall = async (): Promise<void> => {
-  window.open('http://donate.alger.fun/download', '_blank');
+  window.open('https://github.com/erryp8126-source/XiaoPangNaiwaMusic/releases/latest', '_blank');
 };
 </script>
 

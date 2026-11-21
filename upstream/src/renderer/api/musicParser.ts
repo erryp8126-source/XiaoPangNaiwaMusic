@@ -500,10 +500,20 @@ export class MusicParser {
     const startTime = performance.now();
 
     try {
-      // 非桌面/原生安卓环境直接使用API请求
+      // 非桌面/原生安卓环境直接使用云端音源解析接口（附带歌名和歌手加速跨平台匹配）
       if (!isNative) {
-        console.log('非原生环境，使用API请求');
-        return await requestMusic.get<any>('/music', { params: { id } });
+        const artistName = Array.isArray((data as any)?.ar)
+          ? (data as any).ar.map((a: any) => a.name).join(' ')
+          : Array.isArray((data as any)?.song?.artists)
+            ? (data as any).song.artists.map((a: any) => a.name).join(' ')
+            : '';
+        return await requestMusic.get<any>('/music', {
+          params: {
+            id,
+            name: (data as any)?.name || '',
+            artist: artistName
+          }
+        });
       }
 
       // 获取设置存储

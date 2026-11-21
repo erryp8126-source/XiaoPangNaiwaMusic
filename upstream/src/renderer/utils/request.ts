@@ -13,6 +13,22 @@ interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
   noRetry?: boolean;
 }
 
+const DEFAULT_CLOUD_WEB_API = 'https://xiaopang-naiwa-music.netlify.app/api';
+
+export const getDefaultWebApiBaseUrl = (): string => {
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname.toLowerCase();
+    if (host.endsWith('.netlify.app')) {
+      return '/api';
+    }
+  }
+  const envApi = typeof import.meta.env.VITE_API === 'string' ? import.meta.env.VITE_API.trim() : '';
+  if (envApi && envApi !== 'undefined') {
+    return envApi.replace(/\/+$/, '');
+  }
+  return DEFAULT_CLOUD_WEB_API;
+};
+
 const resolveBaseURL = () => {
   if (window.electron) {
     return `http://127.0.0.1:${setData?.musicApiPort}`;
@@ -24,7 +40,7 @@ const resolveBaseURL = () => {
   if (pwaApi) {
     return pwaApi.replace(/\/+$/, '');
   }
-  return import.meta.env.VITE_API;
+  return getDefaultWebApiBaseUrl();
 };
 
 const baseURL = resolveBaseURL();

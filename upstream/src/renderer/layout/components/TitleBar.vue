@@ -4,18 +4,18 @@
     class="flex justify-between px-6 py-2 select-none relative text-dark dark:text-white"
     @mousedown="drag"
   >
-    <div id="title">Alger Music</div>
+    <div id="title" class="font-bold tracking-tight">小庞奶娃音乐</div>
     <div id="buttons" class="flex gap-4">
       <n-button
         v-if="!isElectron"
         type="primary"
         size="small"
         text
-        title="下载应用"
+        title="下载手机客户端"
         @click="openDownloadPage"
       >
         <i class="ri-download-line"></i>
-        下载桌面版
+        下载手机版
       </n-button>
       <template v-if="isElectron">
         <div class="text-gray-600 dark:text-gray-400 hover:text-green-500" @click="miniWindow">
@@ -133,7 +133,7 @@ const rememberChoice = ref(false);
 
 const openDownloadPage = () => {
   if (!isElectron) {
-    window.open('http://donate.alger.fun/download', '_blank');
+    window.open('https://github.com/erryp8126-source/XiaoPangNaiwaMusic/releases/latest', '_blank');
   }
 };
 

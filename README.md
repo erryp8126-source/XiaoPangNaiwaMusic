@@ -65,7 +65,7 @@
 | --- | :---: | :---: | :---: |
 | **「奶娃暖阳治愈风」浅色/深色双模 UI** | 支持 | 支持 | 支持 |
 | **全屏黑胶播放器 + 左右滑切歌 / 下拉收起** | 支持 | 支持 | 支持 |
-| **内置本地回环直连服务 (`127.0.0.1:30488`)** | 支持 (`NanoHTTPD`) | 支持 (`NWListener`) | 需配置远程 API 地址 |
+| **内置本地回环直连服务 (`127.0.0.1:30488`)** | 支持 (`NanoHTTPD`) | 支持 (`NWListener`) | 内置 Netlify Serverless 云端接口（开箱即用） |
 | **息屏后台播放 & 锁屏/蓝牙/耳机播控** | 支持 (`Media3 ExoPlayer`) | 支持 (`AVPlayer` + `MediaPlayer`) | 依赖浏览器前台 |
 | **熄屏原生队列自动无缝切歌** | 支持（多曲预排无断流） | 支持（后台预解析连播） | 基础支持 |
 | **网易云风格双行逐字桌面歌词（含翻译/配色/字号/锁定）** | 支持 | 系统限制暂不支持 | 不支持 |
@@ -99,9 +99,10 @@
 - 开启 `AVAudioSession (.playback)` 后台音频模式 + `MPRemoteCommandCenter` / `MPNowPlayingInfoCenter` 锁屏、控制中心与 AirPods 播控，并内置 **Swift 原生后台自动切歌队列引擎**。
 - 内置纯 Swift 本地回环服务（`127.0.0.1:30488`），支持扫码/Cookie/UID 登录与离线下载，同时开启 `UIFileSharingEnabled`，可直接在 iPhone「文件」App 中拖入 MP3/FLAC/M4A 歌曲播放。
 
-### 4. iPhone Safari PWA 免签在线版
-- 已自动托管至 GitHub Pages：**https://erryp8126-source.github.io/XiaoPangNaiwaMusic/**
-- 在 iPhone Safari 打开上方链接，点击「分享 → 添加到主屏幕」即可免证书全屏使用，并在「设置 → 网络」填写自定义 API 服务地址。
+### 4. iPhone Safari PWA / 网页版免签在线体验
+- **Netlify 全栈版（前端 + 云端音乐接口同域直连）**：**https://xiaopang-naiwa-music.netlify.app**
+- **GitHub Pages 镜像版（默认自动连接上方云端接口）**：**https://erryp8126-source.github.io/XiaoPangNaiwaMusic/**
+- 在 iPhone Safari 打开上方任意链接，点击「分享 → 添加到主屏幕」即可免证书全屏使用，开箱即看歌单、热搜、歌词与听歌，且支持「一键口令云同步」。
 
 ### 5. 一键口令云同步 & 原生听歌时长统计（`v5.1.2` 新增）
 - **一键口令云同步（普通人 3 秒上手）**：打开「设置 → 云同步与备份」，点一下生成专属同步口令（如 `NAIWA-xxxx-xxxx`），客户端采用 **PBKDF2 + AES-256-GCM 端到端加密**后同步至云端（服务端仅保存不可逆 SHA-256 哈希与密文）；换机或在 iPhone Safari 网页版输入口令即可 3 秒双向合并**播放历史 + 我喜欢 + 听歌时长统计**。

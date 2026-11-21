@@ -1,6 +1,7 @@
 import axios from 'axios';
 
 import { getAndroidMusicApiBaseUrl, isAndroid } from '@/utils/androidBridge';
+import { getDefaultWebApiBaseUrl } from '@/utils/request';
 
 const resolveMusicBaseUrl = () => {
   if (isAndroid()) {
@@ -11,7 +12,12 @@ const resolveMusicBaseUrl = () => {
   if (pwaMusicApi) {
     return pwaMusicApi.replace(/\/+$/, '');
   }
-  return `${import.meta.env.VITE_API_MUSIC}`;
+  const envMusicApi =
+    typeof import.meta.env.VITE_API_MUSIC === 'string' ? import.meta.env.VITE_API_MUSIC.trim() : '';
+  if (envMusicApi && envMusicApi !== 'undefined' && envMusicApi !== '***') {
+    return envMusicApi.replace(/\/+$/, '');
+  }
+  return getDefaultWebApiBaseUrl();
 };
 
 const baseURL = resolveMusicBaseUrl();

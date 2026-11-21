@@ -1,4 +1,6 @@
 # Dependencies & build outputs
+node_modules/
+.netlify/
 upstream/node_modules/
 upstream/dist/
 upstream/out/

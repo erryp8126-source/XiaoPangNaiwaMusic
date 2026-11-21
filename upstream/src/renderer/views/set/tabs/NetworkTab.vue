@@ -103,33 +103,34 @@
     </setting-item>
   </setting-section>
 
-  <!-- Web / iPhone Safari PWA 端：配置远程 API 与添加到主屏幕指引 -->
+  <!-- Web / iPhone Safari PWA 端：内置云端免费音乐接口，也支持自定义远程 API -->
   <setting-section v-if="!isNative" title="Web / Safari PWA 接口设置">
     <setting-item
       title="网易云音乐 API 地址"
-      description="网页 / iPhone Safari PWA 模式下需连接远程 NeteaseCloudMusicApi 服务地址"
+      :description="`默认已内置云端接口 (${defaultWebApiUrl})，开箱即用无需填写；如需改用自建服务可在此覆盖（留空恢复默认）`"
     >
       <template #action>
         <div class="flex items-center gap-2 w-full max-md:flex-col">
           <s-input
             v-model="pwaApiUrl"
-            placeholder="https://your-ncm-api.example.com"
+            :placeholder="`留空默认: ${defaultWebApiUrl}`"
             width="w-[260px] max-md:w-full"
           />
           <s-btn variant="primary" @click="savePwaApiConfig">保存</s-btn>
+          <s-btn :loading="testingApi" @click="testPwaApi">测试连接</s-btn>
         </div>
       </template>
     </setting-item>
 
     <setting-item
       title="备用音源解析接口（可选）"
-      description="配置自建音频解析服务根地址，留空则使用默认内置配置"
+      description="留空默认复用上方云端多平台解析引擎（GD音乐台 / 酷我 / 网易云），也可填写自建解析地址"
     >
       <template #action>
         <div class="flex items-center gap-2 w-full max-md:flex-col">
           <s-input
             v-model="pwaMusicApiUrl"
-            placeholder="https://your-music-parser.example.com"
+            placeholder="留空使用默认云端解析"
             width="w-[260px] max-md:w-full"
           />
           <s-btn @click="savePwaApiConfig">保存</s-btn>
@@ -221,6 +222,7 @@ import {
   getAndroidServerConfig,
   saveAndroidServerConfig
 } from '@/utils/androidBridge';
+import { getDefaultWebApiBaseUrl } from '@/utils/request';
 
 import { SETTINGS_DATA_KEY, SETTINGS_MESSAGE_KEY } from '../keys';
 import SBtn from '../SBtn.vue';
@@ -234,6 +236,7 @@ const setData = inject(SETTINGS_DATA_KEY)!;
 const message = inject(SETTINGS_MESSAGE_KEY)!;
 
 // ==================== Web / PWA 配置状态 ====================
+const defaultWebApiUrl = getDefaultWebApiBaseUrl();
 const pwaApiUrl = ref<string>(localStorage.getItem('alger_pwa_api_url') || '');
 const pwaMusicApiUrl = ref<string>(localStorage.getItem('alger_pwa_music_api_url') || '');
 
@@ -244,7 +247,24 @@ const savePwaApiConfig = () => {
   else localStorage.removeItem('alger_pwa_api_url');
   if (musicVal) localStorage.setItem('alger_pwa_music_api_url', musicVal);
   else localStorage.removeItem('alger_pwa_music_api_url');
-  message.success('PWA 接口配置已保存并立即生效');
+  message.success('PWA 接口配置已保存，刷新后即生效');
+};
+
+const testPwaApi = async () => {
+  testingApi.value = true;
+  try {
+    const base = pwaApiUrl.value.trim().replace(/\/+$/, '') || defaultWebApiUrl;
+    const res = await axios.get(`${base}/health`, { timeout: 8000 });
+    if (res.status === 200) {
+      message.success(`云端接口连接正常 (${base})`);
+    } else {
+      message.warning(`响应异常: HTTP ${res.status}`);
+    }
+  } catch (e: any) {
+    message.error(`连接失败: ${e?.message || '请检查网络或确认云端接口已部署'}`);
+  } finally {
+    testingApi.value = false;
+  }
 };
 
 // ==================== Android 配置状态 ====================
