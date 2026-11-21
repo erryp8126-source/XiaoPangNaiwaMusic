@@ -124,6 +124,7 @@ jobs:
       - name: Run iOS Simulator Verification Tests (XCTest)
         working-directory: ios
         run: |
+          unset RUNNER_TRACKING_ID
           xcodebuild \
             -project XiaoPangNaiwaMusic.xcodeproj \
             -target XiaoPangNaiwaMusicTests \
@@ -135,7 +136,8 @@ jobs:
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=YES \
-            build
+            build </dev/null > build/sim_build.log 2>&1
+          tail -n 20 build/sim_build.log
           SIM_UDID=$(xcrun simctl list devices available -j | node -e "
             const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
             const runtimes = Object.keys(data.devices || {}).filter(r => r.includes('iOS')).sort().reverse();
@@ -151,12 +153,13 @@ jobs:
           TEST_BUNDLE="$PWD/build/SimProducts/Debug-iphonesimulator/XiaoPangNaiwaMusicTests.xctest"
           test -d "$TEST_BUNDLE"
           echo "[1/3] Booting simulator $SIM_UDID..."
-          perl -e 'alarm shift; exec @ARGV' 30 xcrun simctl boot "$SIM_UDID" </dev/null >/dev/null 2>&1 || true
+          perl -e 'alarm shift; exec @ARGV' 25 xcrun simctl boot "$SIM_UDID" </dev/null >/dev/null 2>&1 || true
           echo "[2/3] Spawning xctest in simulator..."
           set +e
-          perl -e 'alarm shift; exec @ARGV' 45 xcrun simctl spawn "$SIM_UDID" "$XCTEST_BIN" "$TEST_BUNDLE" </dev/null
+          perl -e 'alarm shift; exec @ARGV' 35 xcrun simctl spawn "$SIM_UDID" "$XCTEST_BIN" "$TEST_BUNDLE" </dev/null > build/sim_xctest.log 2>&1
           TEST_EXIT=$?
           set -e
+          cat build/sim_xctest.log
           echo "[3/3] xctest exited with code $TEST_EXIT; shutting down simulator..."
-          perl -e 'alarm shift; exec @ARGV' 15 xcrun simctl shutdown "$SIM_UDID" </dev/null >/dev/null 2>&1 || true
+          perl -e 'alarm shift; exec @ARGV' 10 xcrun simctl shutdown all </dev/null >/dev/null 2>&1 || true
           exit $TEST_EXIT
