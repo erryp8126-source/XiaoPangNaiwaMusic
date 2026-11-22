@@ -262,6 +262,27 @@ export const useSettingsStore = defineStore('settings', () => {
     { immediate: true }
   );
 
+  // 实时同步切歌淡入淡出与跨音源音量平滑配置到播放引擎
+  watch(
+    () => [
+      setData.value?.crossfadeEnabled,
+      setData.value?.crossfadeDurationSec,
+      setData.value?.volumeNormalizationEnabled
+    ],
+    ([crossfadeEnabled, crossfadeDurationSec, volumeNormalizationEnabled]) => {
+      import('@/services/audioService')
+        .then(({ audioService }) => {
+          audioService.setAudioEnhancement({
+            crossfadeEnabled: Boolean(crossfadeEnabled),
+            crossfadeDurationSec: Number(crossfadeDurationSec) || 1.5,
+            volumeNormalizationEnabled: Boolean(volumeNormalizationEnabled)
+          });
+        })
+        .catch(() => {});
+    },
+    { immediate: true }
+  );
+
   // 监听窗口大小变化
   if (typeof window !== 'undefined') {
     window.addEventListener('resize', updateMobileStatus);

@@ -45,6 +45,10 @@ final class AudioPlayerManager: NSObject {
     private var currentArtwork: MPMediaItemArtwork?
     private var desiredRate: Float = 1.0
     private var desiredVolume: Float = 1.0
+    private var crossfadeDurationSec: TimeInterval = 0
+    private var volumeNormalizationEnabled: Bool = false
+    private var volumeFadeTimer: DispatchSourceTimer?
+    private var pendingFadeInOnReady: Bool = false
     private var desiredAutoplay: Bool = false
     private var initialSeekTime: Double = 0
     private var hasNotifiedLoaded: Bool = false
@@ -91,6 +95,7 @@ final class AudioPlayerManager: NSObject {
 
     deinit {
         cancelPendingAutoNext()
+        cancelVolumeFade()
         endTransitionBackgroundTask()
         cleanupCurrentPlayer()
         NotificationCenter.default.removeObserver(self)
@@ -228,8 +233,14 @@ final class AudioPlayerManager: NSObject {
                let matchedIdx = self.nativeQueue.firstIndex(where: { $0.id == self.currentSongId }) {
                 self.nativeQueueIndex = matchedIdx
             }
-            self.desiredVolume = Float((payload["volume"] as? Double) ?? 1.0)
+            self.desiredVolume = Float((payload["volume"] as? Double) ?? Double(self.desiredVolume))
             self.desiredRate = Float((payload["rate"] as? Double) ?? 1.0)
+            if let fadeMs = payload["crossfadeMs"] as? Double {
+                self.crossfadeDurationSec = max(0, min(3.0, fadeMs / 1000.0))
+            }
+            if let norm = payload["volumeNormalization"] as? Bool {
+                self.volumeNormalizationEnabled = norm
+            }
             self.initialSeekTime = (payload["seekTime"] as? Double) ?? 0
             let expectedDur = (payload["durationSec"] as? Double) ?? 0
             if expectedDur > 0 { self.cachedDurationSec = expectedDur }
@@ -268,7 +279,13 @@ final class AudioPlayerManager: NSObject {
 
         let item = AVPlayerItem(asset: asset)
         let newPlayer = AVPlayer(playerItem: item)
-        newPlayer.volume = max(0, min(1, desiredVolume))
+        if desiredAutoplay && crossfadeDurationSec > 0.05 {
+            pendingFadeInOnReady = true
+            newPlayer.volume = 0.02
+        } else {
+            pendingFadeInOnReady = false
+            newPlayer.volume = effectiveTargetVolume()
+        }
         newPlayer.automaticallyWaitsToMinimizeStalling = true
         self.player = newPlayer
 
@@ -293,7 +310,21 @@ final class AudioPlayerManager: NSObject {
                         self.emitAudioEvent(type: "loaded")
                     }
                     if self.desiredAutoplay {
-                        self.player?.playImmediately(atRate: max(0.25, min(4.0, self.desiredRate)))
+                        if self.pendingFadeInOnReady, let p = self.player, self.crossfadeDurationSec > 0.05 {
+                            self.pendingFadeInOnReady = false
+                            p.volume = 0.02
+                            p.playImmediately(atRate: max(0.25, min(4.0, self.desiredRate)))
+                            self.animateVolume(
+                                on: p,
+                                from: 0.02,
+                                to: self.effectiveTargetVolume(),
+                                duration: self.crossfadeDurationSec
+                            )
+                        } else {
+                            self.pendingFadeInOnReady = false
+                            self.player?.volume = self.effectiveTargetVolume()
+                            self.player?.playImmediately(atRate: max(0.25, min(4.0, self.desiredRate)))
+                        }
                     }
                     if !self.userPaused {
                         self.preResolveNextTrackIfNeeded(force: false)
@@ -368,11 +399,20 @@ final class AudioPlayerManager: NSObject {
             self.configureAudioSession()
             self.userPaused = false
             self.desiredAutoplay = true
+            self.cancelVolumeFade()
             // 如果已播到结尾，回到起点重播
             if self.cachedDurationSec > 0 && self.cachedPositionSec >= self.cachedDurationSec - 0.5 {
                 p.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
             }
-            p.playImmediately(atRate: max(0.25, min(4.0, self.desiredRate)))
+            let targetVol = self.effectiveTargetVolume()
+            if self.crossfadeDurationSec > 0.05 {
+                p.volume = 0.05
+                p.playImmediately(atRate: max(0.25, min(4.0, self.desiredRate)))
+                self.animateVolume(on: p, from: 0.05, to: targetVol, duration: min(self.crossfadeDurationSec, 0.35))
+            } else {
+                p.volume = targetVol
+                p.playImmediately(atRate: max(0.25, min(4.0, self.desiredRate)))
+            }
             self.updateNowPlayingInfo()
         }
     }
@@ -382,21 +422,34 @@ final class AudioPlayerManager: NSObject {
             guard let self = self else { return }
             self.userPaused = true
             self.isTransitioningTrack = false
+            self.pendingFadeInOnReady = false
             self.cancelPendingAutoNext()
+            self.cancelVolumeFade()
             self.endTransitionBackgroundTask()
             self.desiredAutoplay = false
-            self.player?.pause()
-            self.cachedIsPlaying = false
-            ListeningStatsTracker.shared.onPlayStateChanged(
-                playing: false,
-                songId: self.currentSongId,
-                title: self.currentTitle,
-                artist: self.currentArtist,
-                cover: self.currentCoverUrl
-            )
-            self.updateCachedMetrics()
-            self.emitAudioEvent(type: "pause")
-            self.updateNowPlayingInfo()
+
+            let finalizePause = { [weak self] in
+                guard let self = self, self.userPaused else { return }
+                self.player?.pause()
+                self.player?.volume = self.effectiveTargetVolume()
+                self.cachedIsPlaying = false
+                ListeningStatsTracker.shared.onPlayStateChanged(
+                    playing: false,
+                    songId: self.currentSongId,
+                    title: self.currentTitle,
+                    artist: self.currentArtist,
+                    cover: self.currentCoverUrl
+                )
+                self.updateCachedMetrics()
+                self.emitAudioEvent(type: "pause")
+                self.updateNowPlayingInfo()
+            }
+
+            if let p = self.player, self.crossfadeDurationSec > 0.05, self.cachedIsPlaying {
+                self.animateVolume(on: p, from: p.volume, to: 0.02, duration: 0.22, completion: finalizePause)
+            } else {
+                finalizePause()
+            }
         }
     }
 
@@ -405,7 +458,9 @@ final class AudioPlayerManager: NSObject {
             guard let self = self else { return }
             self.userPaused = true
             self.isTransitioningTrack = false
+            self.pendingFadeInOnReady = false
             self.cancelPendingAutoNext()
+            self.cancelVolumeFade()
             self.endTransitionBackgroundTask()
             self.cleanupCurrentPlayer()
             self.cachedIsPlaying = false
@@ -443,8 +498,72 @@ final class AudioPlayerManager: NSObject {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.desiredVolume = max(0, min(1, volume))
-            self.player?.volume = self.desiredVolume
+            self.cancelVolumeFade()
+            self.player?.volume = self.effectiveTargetVolume()
         }
+    }
+
+    func setAudioEnhancement(crossfadeMs: Double, volumeNormalization: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.crossfadeDurationSec = max(0, min(3.0, crossfadeMs / 1000.0))
+            self.volumeNormalizationEnabled = volumeNormalization
+            if self.volumeFadeTimer == nil {
+                self.player?.volume = self.effectiveTargetVolume()
+            }
+        }
+    }
+
+    internal func effectiveTargetVolume() -> Float {
+        let factor: Float = volumeNormalizationEnabled ? 0.86 : 1.0
+        return max(0, min(1, desiredVolume * factor))
+    }
+
+    private func cancelVolumeFade() {
+        volumeFadeTimer?.cancel()
+        volumeFadeTimer = nil
+    }
+
+    private func animateVolume(
+        on targetPlayer: AVPlayer,
+        from startVol: Float,
+        to endVol: Float,
+        duration: TimeInterval,
+        completion: (() -> Void)? = nil
+    ) {
+        cancelVolumeFade()
+        let clampedStart = max(0, min(1, startVol))
+        let clampedEnd = max(0, min(1, endVol))
+        guard duration > 0.03 else {
+            targetPlayer.volume = clampedEnd
+            completion?()
+            return
+        }
+
+        let stepInterval: TimeInterval = 0.03
+        let totalSteps = max(3, Int((duration / stepInterval).rounded()))
+        var currentStep = 0
+        targetPlayer.volume = clampedStart
+
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + stepInterval, repeating: stepInterval)
+        timer.setEventHandler { [weak self, weak targetPlayer] in
+            guard let self = self, let p = targetPlayer, p === self.player else {
+                self?.cancelVolumeFade()
+                return
+            }
+            currentStep += 1
+            let t = min(1.0, Float(currentStep) / Float(totalSteps))
+            let eased = t * t * (3.0 - 2.0 * t)
+            p.volume = max(0, min(1, clampedStart + (clampedEnd - clampedStart) * eased))
+            if currentStep >= totalSteps {
+                self.cancelVolumeFade()
+                p.volume = clampedEnd
+                completion?()
+            }
+        }
+        volumeFadeTimer = timer
+        timer.resume()
     }
 
     func setPlaybackRate(_ rate: Float) {
@@ -1221,6 +1340,8 @@ final class AudioPlayerManager: NSObject {
     }
 
     private func cleanupCurrentPlayer() {
+        cancelVolumeFade()
+        pendingFadeInOnReady = false
         if let obs = timeObserver, let p = player {
             p.removeTimeObserver(obs)
         }

@@ -68,6 +68,9 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
             onPickLocalAudioSources: { [weak self] cb in
                 self?.presentLocalAudioPicker(completion: cb)
             },
+            onShareOrSaveImage: { [weak self] filename, pngData, cb in
+                self?.presentShareSheetForImage(filename: filename, data: pngData, completion: cb)
+            },
             callbackDispatcher: { [weak self] callbackId, success, resultJson in
                 self?.dispatchAsyncCallbackToJs(callbackId: callbackId, success: success, resultJson: resultJson)
             }
@@ -257,6 +260,45 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         picker.delegate = self
         picker.allowsMultipleSelection = true
         present(picker, animated: true)
+    }
+
+    private func presentShareSheetForImage(
+        filename: String,
+        data: Data,
+        completion: @escaping ([String: Any]) -> Void
+    ) {
+        let safeBase = filename.replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalName = safeBase.lowercased().hasSuffix(".png")
+            ? safeBase
+            : (safeBase.isEmpty ? "xiaopang-listening-report.png" : "\(safeBase).png")
+        let tempUrl = FileManager.default.temporaryDirectory.appendingPathComponent(finalName)
+        do {
+            try data.write(to: tempUrl, options: .atomic)
+        } catch {
+            completion(["success": false, "error": error.localizedDescription])
+            return
+        }
+
+        var items: [Any] = [tempUrl]
+        if let image = UIImage(data: data) {
+            items = [image, tempUrl]
+        }
+        let activityVC = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        if let popover = activityVC.popoverPresentationController {
+            popover.sourceView = view
+            popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
+            popover.permittedArrowDirections = []
+        }
+        activityVC.completionWithItemsHandler = { _, completed, _, err in
+            if let err = err {
+                completion(["success": false, "error": err.localizedDescription])
+            } else {
+                completion(["success": true, "shared": completed, "path": tempUrl.path])
+            }
+        }
+        present(activityVC, animated: true)
     }
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {

@@ -29,6 +29,85 @@ export function isAndroidAudioCached(songId: string | number, quality: string = 
   }
 }
 
+export interface OfflinePlayableIdGroups {
+  cachedIds: string[];
+  downloadedIds: string[];
+  localIds: string[];
+}
+
+/**
+ * 查询原生端已缓存 / 已下载 / 本地曲目 ID 集合
+ */
+export async function fetchNativeOfflinePlayableIds(): Promise<OfflinePlayableIdGroups> {
+  const empty: OfflinePlayableIdGroups = { cachedIds: [], downloadedIds: [], localIds: [] };
+  if (!isAndroid()) return empty;
+  try {
+    if (typeof window.AlgerAndroid?.getOfflinePlayableIds === 'function') {
+      const raw = window.AlgerAndroid.getOfflinePlayableIds();
+      const parsed = JSON.parse(raw || '{}');
+      return {
+        cachedIds: Array.isArray(parsed.cachedIds) ? parsed.cachedIds.map(String) : [],
+        downloadedIds: Array.isArray(parsed.downloadedIds) ? parsed.downloadedIds.map(String) : [],
+        localIds: Array.isArray(parsed.localIds) ? parsed.localIds.map(String) : []
+      };
+    }
+    const resp = await invokeAndroidAsync<any>('get-offline-playable-ids', {}, 8000);
+    return {
+      cachedIds: Array.isArray(resp?.cachedIds) ? resp.cachedIds.map(String) : [],
+      downloadedIds: Array.isArray(resp?.downloadedIds) ? resp.downloadedIds.map(String) : [],
+      localIds: Array.isArray(resp?.localIds) ? resp.localIds.map(String) : []
+    };
+  } catch {
+    return empty;
+  }
+}
+
+/**
+ * 同步切歌淡入淡出与跨音源音量平滑配置到原生播放引擎
+ */
+export function syncNativeAudioEnhancement(config: {
+  crossfadeEnabled: boolean;
+  crossfadeDurationSec: number;
+  volumeNormalizationEnabled: boolean;
+}): void {
+  if (!isAndroid()) return;
+  try {
+    const crossfadeMs = config.crossfadeEnabled
+      ? Math.max(0, Math.min(3000, Math.round((Number(config.crossfadeDurationSec) || 0) * 1000)))
+      : 0;
+    window.AlgerAndroid?.audioSetAudioEnhancement?.(
+      JSON.stringify({
+        crossfadeMs,
+        volumeNormalization: Boolean(config.volumeNormalizationEnabled)
+      })
+    );
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * 保存或分享听歌统计报告卡片 PNG（Android 保存至系统相册，iOS 调起原生分享/保存面板）
+ */
+export async function saveImageViaNativeBridge(
+  filename: string,
+  dataUrl: string
+): Promise<{ success: boolean; path?: string; error?: string }> {
+  if (!isAndroid()) {
+    return { success: false, error: 'Not running in native shell' };
+  }
+  try {
+    const resp = await invokeAndroidAsync<any>('save-image-file', { filename, dataUrl }, 20000);
+    return {
+      success: Boolean(resp?.success),
+      path: resp?.path,
+      error: resp?.error
+    };
+  } catch (err: any) {
+    return { success: false, error: err?.message || '保存图片失败' };
+  }
+}
+
 const isIOSNativeEnv = (): boolean => {
   if (typeof window === 'undefined') return false;
   return (

@@ -3,6 +3,9 @@
     <!-- 顶部头部 -->
     <mobile-header />
 
+    <!-- 离线轻提示条 -->
+    <offline-banner />
+
     <!-- 主内容区域 -->
     <div
       class="mobile-content"
@@ -32,6 +35,7 @@
 import { computed, defineAsyncComponent, provide, ref } from 'vue';
 import { useRoute } from 'vue-router';
 
+import OfflineBanner from '@/components/common/OfflineBanner.vue';
 import homeRouter from '@/router/home';
 import otherRouter from '@/router/other';
 import { useMenuStore } from '@/store/modules/menu';

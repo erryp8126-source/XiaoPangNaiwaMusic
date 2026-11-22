@@ -24,6 +24,14 @@
       >
         {{ type.label }}
       </div>
+      <div
+        v-if="searchType === SEARCH_TYPE.MUSIC"
+        class="type-tag offline-filter-tag"
+        :class="{ 'offline-active': onlyOfflinePlayable }"
+        @click="toggleOnlyOffline"
+      >
+        <i class="ri-download-cloud-2-line mr-1"></i>仅看离线可播
+      </div>
     </div>
 
     <!-- 搜索结果列表 -->
@@ -35,11 +43,11 @@
       </div>
 
       <!-- 搜索结果 -->
-      <div v-else-if="results.length" class="result-list">
+      <div v-else-if="displayedResults.length" class="result-list">
         <!-- 歌曲搜索 -->
         <template v-if="searchType === SEARCH_TYPE.MUSIC">
           <song-item
-            v-for="item in results"
+            v-for="item in displayedResults"
             :key="item.id"
             :item="item"
             :is-next="true"
@@ -49,7 +57,7 @@
 
         <!-- 专辑/歌单/MV 搜索 -->
         <template v-else>
-          <search-item v-for="item in results" :key="item.id" :item="item" class="mb-3" />
+          <search-item v-for="item in displayedResults" :key="item.id" :item="item" class="mb-3" />
         </template>
 
         <!-- 加载更多 -->
@@ -59,15 +67,17 @@
         </div>
 
         <!-- 没有更多 -->
-        <div v-if="!hasMore && results.length" class="no-more">
+        <div v-if="!hasMore && displayedResults.length" class="no-more">
           {{ t('search.noMore') }}
         </div>
       </div>
 
       <!-- 无结果 -->
       <div v-else-if="!loading" class="empty-state">
-        <i class="ri-search-line"></i>
-        <span>{{ t('comp.musicList.noSearchResults') }}</span>
+        <i :class="onlyOfflinePlayable ? 'ri-wifi-off-line' : 'ri-search-line'"></i>
+        <span>{{
+          onlyOfflinePlayable ? '当前搜索结果暂无离线可播歌曲' : t('comp.musicList.noSearchResults')
+        }}</span>
       </div>
     </div>
   </div>
@@ -82,14 +92,27 @@ import { getSearch } from '@/api/search';
 import SearchItem from '@/components/common/SearchItem.vue';
 import SongItem from '@/components/common/SongItem.vue';
 import { SEARCH_TYPE, SEARCH_TYPES } from '@/const/bar-const';
+import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';
 import { usePlayerStore } from '@/store/modules/player';
 import { useSearchStore } from '@/store/modules/search';
+import { triggerHaptic } from '@/utils/androidBridge';
 
 const { t, locale } = useI18n();
 const route = useRoute();
 const router = useRouter();
 const playerStore = usePlayerStore();
 const searchStore = useSearchStore();
+const offlineStore = useOfflineAvailabilityStore();
+offlineStore.ensureInitialized();
+
+const onlyOfflinePlayable = ref(false);
+const toggleOnlyOffline = () => {
+  triggerHaptic('selection');
+  onlyOfflinePlayable.value = !onlyOfflinePlayable.value;
+  if (onlyOfflinePlayable.value) {
+    void offlineStore.refresh();
+  }
+};
 
 // 注入是否有安全区域
 const hasSafeArea = inject('hasSafeArea', false);
@@ -110,6 +133,13 @@ const searchTypes = computed(() => {
 // 搜索结果
 const results = ref<any[]>([]);
 const loading = ref(false);
+
+const displayedResults = computed(() => {
+  if (searchType.value !== SEARCH_TYPE.MUSIC || !onlyOfflinePlayable.value) {
+    return results.value;
+  }
+  return results.value.filter((item) => offlineStore.isOfflinePlayable(item));
+});
 
 // 分页
 const ITEMS_PER_PAGE = 30;
@@ -361,6 +391,13 @@ onMounted(() => {
     color: #ffffff;
     border-color: transparent;
     box-shadow: 0 4px 12px rgba(232, 146, 0, 0.26);
+  }
+
+  &.offline-active {
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+    color: #ffffff !important;
+    border-color: transparent !important;
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.28);
   }
 }
 

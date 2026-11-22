@@ -934,3 +934,387 @@ test("phase 1 runtime: playbackMeta quality/source labels and cross-platform hap
   );
   assert.match(playerCore, /已自动切换备用/);
 });
+
+test("phase 2 runtime: cloudSyncMerge conflict detection & smart merge prevents cross-device data loss", async () => {
+  const mergeMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/cloudSyncMerge.ts")).href
+  );
+
+  const baseSnapshot = {
+    schema: "xiaopang-music-sync-v1",
+    revision: 2,
+    clientUpdatedAt: 1000,
+    updatedAt: 1000,
+    deviceId: "dev_android_a",
+    deviceName: "Android",
+    favoriteList: [1001, 1002],
+    dislikeList: [9001],
+    customPlaylists: [
+      {
+        id: "pl_1",
+        name: "通勤歌单",
+        updatedAt: 1000,
+        tracks: [{ id: 1001, name: "基础曲目" }],
+      },
+    ],
+    playHistory: {
+      musicHistory: [{ id: 1001, name: "基础曲目", count: 2, lastPlayTime: 900 }],
+      playlistHistory: [],
+      albumHistory: [],
+      podcastHistory: [],
+      podcastRadioHistory: [],
+    },
+    listeningStats: {
+      totalSeconds: 600,
+      dailySeconds: { "2026-11-21": 600 },
+      hourlySeconds: Array.from({ length: 24 }, (_, i) => (i === 20 ? 600 : 0)),
+      songs: {
+        "1001": { id: "1001", name: "基础曲目", artist: "歌手甲", cover: "", seconds: 600, plays: 2 },
+      },
+      artists: { 歌手甲: 600 },
+    },
+    preferences: {
+      updatedAt: 1000,
+      data: { crossfadeEnabled: false, crossfadeDurationSec: 1.5, volumeNormalizationEnabled: false },
+    },
+  };
+
+  const baselineDigest = mergeMod.computeSyncSnapshotDigest(baseSnapshot);
+
+  // Device A (local) concurrently adds favorite 2001, playlist track 2001, history 2001, older prefs ts=2000
+  const localDeviceA = {
+    ...baseSnapshot,
+    revision: 2,
+    clientUpdatedAt: 2000,
+    updatedAt: 2000,
+    deviceId: "dev_android_a",
+    deviceName: "Android",
+    favoriteList: [1001, 1002, 2001],
+    customPlaylists: [
+      {
+        id: "pl_1",
+        name: "通勤歌单",
+        updatedAt: 2000,
+        tracks: [
+          { id: 1001, name: "基础曲目" },
+          { id: 2001, name: "设备A新增收藏" },
+        ],
+      },
+    ],
+    playHistory: {
+      ...baseSnapshot.playHistory,
+      musicHistory: [
+        { id: 2001, name: "设备A新增收藏", count: 1, lastPlayTime: 2000 },
+        { id: 1001, name: "基础曲目", count: 4, lastPlayTime: 1800 },
+      ],
+    },
+    listeningStats: {
+      totalSeconds: 900,
+      dailySeconds: { "2026-11-21": 600, "2026-11-22": 300 },
+      hourlySeconds: Array.from({ length: 24 }, (_, i) => (i === 20 ? 600 : i === 9 ? 300 : 0)),
+      songs: {
+        "1001": { id: "1001", name: "基础曲目", artist: "歌手甲", cover: "", seconds: 720, plays: 4 },
+        "2001": { id: "2001", name: "设备A新增收藏", artist: "歌手A", cover: "", seconds: 180, plays: 1 },
+      },
+      artists: { 歌手甲: 720, 歌手A: 180 },
+    },
+    preferences: {
+      updatedAt: 2000,
+      data: { crossfadeEnabled: false, crossfadeDurationSec: 1.5, volumeNormalizationEnabled: false },
+    },
+  };
+
+  // Device B (remote) concurrently adds favorite 3001, playlist track 3001 + new pl_2, history 3001, newer prefs ts=3000
+  const remoteDeviceB = {
+    ...baseSnapshot,
+    revision: 3,
+    clientUpdatedAt: 3000,
+    updatedAt: 3000,
+    deviceId: "dev_ios_b",
+    deviceName: "iOS",
+    favoriteList: [1001, 1002, 3001],
+    dislikeList: [9001, 9002],
+    customPlaylists: [
+      {
+        id: "pl_1",
+        name: "通勤歌单（已改名）",
+        updatedAt: 3000,
+        tracks: [
+          { id: 1001, name: "基础曲目" },
+          { id: 3001, name: "设备B新增收藏" },
+        ],
+      },
+      {
+        id: "pl_2",
+        name: "夜跑歌单",
+        updatedAt: 3000,
+        tracks: [{ id: 3002, name: "夜跑节奏" }],
+      },
+    ],
+    playHistory: {
+      ...baseSnapshot.playHistory,
+      musicHistory: [
+        { id: 3001, name: "设备B新增收藏", count: 3, lastPlayTime: 3000 },
+        { id: 1001, name: "基础曲目", count: 3, lastPlayTime: 2500 },
+      ],
+    },
+    listeningStats: {
+      totalSeconds: 1100,
+      dailySeconds: { "2026-11-21": 700, "2026-11-22": 400 },
+      hourlySeconds: Array.from({ length: 24 }, (_, i) => (i === 20 ? 700 : i === 22 ? 400 : 0)),
+      songs: {
+        "1001": { id: "1001", name: "基础曲目", artist: "歌手甲", cover: "", seconds: 700, plays: 3 },
+        "3001": { id: "3001", name: "设备B新增收藏", artist: "歌手B", cover: "", seconds: 400, plays: 3 },
+      },
+      artists: { 歌手甲: 700, 歌手B: 400 },
+    },
+    preferences: {
+      updatedAt: 3000,
+      data: { crossfadeEnabled: true, crossfadeDurationSec: 3, volumeNormalizationEnabled: true },
+    },
+  };
+
+  // 1. Concurrent modifications must trigger conflict detection
+  const conflict = mergeMod.detectSyncConflict({
+    localSnapshot: localDeviceA,
+    remoteSnapshot: remoteDeviceB,
+    remoteUpdatedAt: 3000,
+    lastRemoteUpdatedAt: 1000,
+    lastSyncedRevision: 2,
+    lastSyncedLocalDigest: baselineDigest,
+    currentDeviceId: "dev_android_a",
+  });
+  assert.equal(conflict.hasConflict, true, "Two devices modifying concurrently must trigger conflict");
+  assert.equal(conflict.reason, "concurrent-modification");
+
+  // 2. Identical snapshots or local-only updates must NOT falsely trigger conflict
+  const identicalCheck = mergeMod.detectSyncConflict({
+    localSnapshot: baseSnapshot,
+    remoteSnapshot: baseSnapshot,
+    remoteUpdatedAt: 1000,
+    lastRemoteUpdatedAt: 1000,
+    lastSyncedRevision: 2,
+    lastSyncedLocalDigest: baselineDigest,
+    currentDeviceId: "dev_android_a",
+  });
+  assert.equal(identicalCheck.hasConflict, false);
+  assert.equal(identicalCheck.reason, "already-identical");
+
+  const localOnlyCheck = mergeMod.detectSyncConflict({
+    localSnapshot: localDeviceA,
+    remoteSnapshot: baseSnapshot,
+    remoteUpdatedAt: 1000,
+    lastRemoteUpdatedAt: 1000,
+    lastSyncedRevision: 2,
+    lastSyncedLocalDigest: baselineDigest,
+    currentDeviceId: "dev_android_a",
+  });
+  assert.equal(localOnlyCheck.hasConflict, false);
+  assert.equal(localOnlyCheck.reason, "local-only-updated");
+
+  // 3. Smart merge preserves ALL favorites, playlist tracks, history, stats max, and newer preferences
+  const merged = mergeMod.smartMergeCloudSnapshots(localDeviceA, remoteDeviceB, 4000);
+  assert.equal(merged.revision, 4, "Revision must increment monotonically to max(local, remote) + 1");
+  assert.equal(merged.clientUpdatedAt, 4000);
+
+  // Favorites: union of both devices, no duplicates, zero loss
+  const favSet = new Set(merged.favoriteList.map(String));
+  assert.deepEqual([...favSet].sort(), ["1001", "1002", "2001", "3001"]);
+  assert.equal(merged.favoriteList.length, 4);
+  assert.deepEqual(merged.dislikeList.map(String).sort(), ["9001", "9002"]);
+
+  // Custom playlists: pl_1 tracks union (1001, 2001, 3001), newer name wins, plus pl_2 preserved
+  assert.equal(merged.customPlaylists.length, 2);
+  const pl1 = merged.customPlaylists.find((p) => p.id === "pl_1");
+  assert.ok(pl1);
+  assert.equal(pl1.name, "通勤歌单（已改名）");
+  assert.deepEqual(
+    pl1.tracks.map((t) => String(t.id)).sort(),
+    ["1001", "2001", "3001"]
+  );
+  assert.ok(merged.customPlaylists.find((p) => p.id === "pl_2"));
+
+  // Play history: union of both devices, shared song retains max count & newer lastPlayTime
+  const histIds = merged.playHistory.musicHistory.map((s) => String(s.id));
+  assert.deepEqual([...histIds].sort(), ["1001", "2001", "3001"]);
+  const song1001 = merged.playHistory.musicHistory.find((s) => s.id === 1001);
+  assert.equal(song1001.count, 4);
+  assert.equal(song1001.lastPlayTime, 2500);
+
+  // Listening stats: idempotent max merge
+  assert.equal(merged.listeningStats.dailySeconds["2026-11-21"], 700);
+  assert.equal(merged.listeningStats.dailySeconds["2026-11-22"], 400);
+  assert.equal(merged.listeningStats.hourlySeconds[9], 300);
+  assert.equal(merged.listeningStats.hourlySeconds[22], 400);
+  assert.equal(merged.listeningStats.songs["2001"].seconds, 180);
+  assert.equal(merged.listeningStats.songs["3001"].seconds, 400);
+
+  // Preferences: newer updatedAt (3000 from Device B > 2000 from Device A) wins
+  assert.equal(merged.preferences.updatedAt, 3000);
+  assert.equal(merged.preferences.data.crossfadeEnabled, true);
+  assert.equal(merged.preferences.data.crossfadeDurationSec, 3);
+  assert.equal(merged.preferences.data.volumeNormalizationEnabled, true);
+});
+
+test("phase 2 runtime: listeningReportCard aggregates week/month stats, peak hour, Top 5 songs & Top 3 artists", async () => {
+  const reportMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/listeningReportCard.ts")).href
+  );
+
+  const mockStats = {
+    totalSeconds: 42000,
+    dailySeconds: {
+      "2026-11-22": 1800,
+      "2026-11-20": 3600,
+      "2026-11-01": 7200, // in 30-day month window, outside 7-day week window
+      "2026-09-01": 9000, // outside both windows
+    },
+    hourlySeconds: Array.from({ length: 24 }, (_, h) => (h === 23 ? 5400 : h === 8 ? 1200 : 0)),
+    songs: {
+      s1: { id: "s1", name: "晴天", artist: "周杰伦", cover: "", seconds: 3600, plays: 12 },
+      s2: { id: "s2", name: "稻香", artist: "周杰伦", cover: "", seconds: 2400, plays: 9 },
+      s3: { id: "s3", name: "夜曲", artist: "周杰伦", cover: "", seconds: 1800, plays: 7 },
+      s4: { id: "s4", name: "富士山下", artist: "陈奕迅", cover: "", seconds: 1500, plays: 5 },
+      s5: { id: "s5", name: "海阔天空", artist: "Beyond", cover: "", seconds: 1200, plays: 4 },
+      s6: { id: "s6", name: "第六首应被截断", artist: "林俊杰", cover: "", seconds: 900, plays: 3 },
+    },
+    artists: {
+      周杰伦: 7800,
+      陈奕迅: 3900,
+      Beyond: 1950,
+      林俊杰: 900,
+    },
+  };
+
+  const fixedNow = new Date(2026, 10, 22, 18, 0, 0);
+  const weekSummary = reportMod.buildListeningReportSummary(mockStats, "week", fixedNow);
+  assert.equal(weekSummary.periodTitle, "本周听歌报告");
+  assert.equal(weekSummary.periodSeconds, 5400);
+  assert.equal(weekSummary.activeDays, 2);
+  assert.equal(weekSummary.peakHour, 23);
+  assert.equal(weekSummary.topSongs.length, 5);
+  assert.equal(weekSummary.topSongs[0].name, "晴天");
+  assert.equal(weekSummary.topArtists.length, 3);
+  assert.equal(weekSummary.topArtists[0].name, "周杰伦");
+  assert.equal(weekSummary.topArtists[0].percent, 100);
+  assert.equal(weekSummary.topArtists[1].percent, 50);
+  assert.equal(weekSummary.badgeTitle, "旋律挚友");
+
+  const monthSummary = reportMod.buildListeningReportSummary(mockStats, "month", fixedNow);
+  assert.equal(monthSummary.periodTitle, "本月听歌报告");
+  assert.equal(monthSummary.periodSeconds, 12600);
+  assert.equal(monthSummary.activeDays, 3);
+  assert.equal(reportMod.formatReportDuration(5400), "1 小时 30 分");
+});
+
+test("phase 2 invariants: Android/iOS offline IDs, crossfade & loudness, report export, and 3-choice conflict UI", () => {
+  // 1. Android native Phase 2 hooks
+  const androidCache = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/player/AudioCacheManager.kt"),
+    "utf-8"
+  );
+  assert.match(androidCache, /fun getCachedSongIds\(/);
+
+  const androidDl = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/download/NativeDownloadManager.kt"),
+    "utf-8"
+  );
+  assert.match(androidDl, /fun getDownloadedSongIds\(/);
+  assert.match(androidDl, /fun saveImageToGallery\(/);
+
+  const androidPlayer = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/player/MusicPlaybackService.kt"),
+    "utf-8"
+  );
+  assert.match(androidPlayer, /LoudnessEnhancer/);
+  assert.match(androidPlayer, /fun setAudioEnhancement\(/);
+  assert.match(androidPlayer, /animateVolumeTo\(/);
+
+  const androidBridge = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/bridge/AndroidJsBridge.kt"),
+    "utf-8"
+  );
+  assert.match(androidBridge, /@JavascriptInterface[\s\S]{0,60}fun getOfflinePlayableIds\(/);
+  assert.match(androidBridge, /@JavascriptInterface[\s\S]{0,60}fun audioSetAudioEnhancement\(/);
+  assert.match(androidBridge, /"save-image-file"/);
+
+  // 2. iOS native Phase 2 hooks (zero third-party deps)
+  const iosStorage = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Storage/LocalMusicAndDownloadManager.swift"),
+    "utf-8"
+  );
+  assert.match(iosStorage, /func getOfflinePlayableIds\(/);
+  assert.match(iosStorage, /\.xiaopang_downloads_index\.json/);
+
+  const iosPlayer = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Player/AudioPlayerManager.swift"),
+    "utf-8"
+  );
+  assert.match(iosPlayer, /func setAudioEnhancement\(/);
+  assert.match(iosPlayer, /DispatchSourceTimer/);
+  assert.match(iosPlayer, /cancelVolumeFade\(/);
+
+  const iosBridge = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Bridge/IOSJsBridge.swift"),
+    "utf-8"
+  );
+  assert.match(iosBridge, /audioSetAudioEnhancement/);
+  assert.match(iosBridge, /case "get-offline-playable-ids":/);
+  assert.match(iosBridge, /case "save-image-file":/);
+
+  const iosMainVc = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/MainViewController.swift"),
+    "utf-8"
+  );
+  assert.match(iosMainVc, /presentShareSheetForImage/);
+  assert.match(iosMainVc, /UIActivityViewController/);
+
+  const iosPlist = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Info.plist"),
+    "utf-8"
+  );
+  assert.match(iosPlist, /NSPhotoLibraryAddUsageDescription/);
+
+  // 3. Frontend offline banner, filter, crossfade/loudness, report card, and 3-choice sync conflict dialog
+  assert.equal(
+    fs.existsSync(path.join(repoRoot, "upstream/src/renderer/components/common/OfflineBanner.vue")),
+    true
+  );
+  for (const layoutPath of [
+    "upstream/src/renderer/layout/AppLayout.vue",
+    "upstream/src/renderer/layout/MobileLayout.vue",
+  ]) {
+    const src = fs.readFileSync(path.join(repoRoot, layoutPath), "utf-8");
+    assert.match(src, /OfflineBanner/);
+  }
+  for (const listPath of [
+    "upstream/src/renderer/views/music/MusicListPage.vue",
+    "upstream/src/renderer/views/mobile-search-result/index.vue",
+    "upstream/src/renderer/views/search/SearchResult.vue",
+  ]) {
+    const src = fs.readFileSync(path.join(repoRoot, listPath), "utf-8");
+    assert.match(src, /仅看离线可播/);
+  }
+
+  const playbackTab = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/set/tabs/PlaybackTab.vue"),
+    "utf-8"
+  );
+  assert.match(playbackTab, /crossfadeEnabled/);
+  assert.match(playbackTab, /volumeNormalizationEnabled/);
+
+  const statsPanel = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/stats/ListeningStatsPanel.vue"),
+    "utf-8"
+  );
+  assert.match(statsPanel, /renderListeningReportCanvas/);
+  assert.match(statsPanel, /生成报告卡/);
+
+  const cloudSyncTab = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/set/tabs/CloudSyncTab.vue"),
+    "utf-8"
+  );
+  assert.match(cloudSyncTab, /智能合并（推荐）/);
+  assert.match(cloudSyncTab, /以云端为准/);
+  assert.match(cloudSyncTab, /覆盖云端/);
+});

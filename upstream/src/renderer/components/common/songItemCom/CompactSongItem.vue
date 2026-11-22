@@ -34,7 +34,7 @@
     <template #content>
       <div class="song-item-content-compact">
         <div class="song-item-content-compact-wrapper">
-          <div class="song-item-content-compact-title">
+          <div class="song-item-content-compact-title gap-1.5">
             <n-ellipsis
               class="text-ellipsis"
               line-clamp="1"
@@ -42,6 +42,19 @@
             >
               {{ item.name }}
             </n-ellipsis>
+            <span
+              v-if="offlineBadge"
+              class="px-1.5 py-[1px] rounded text-[10px] font-bold leading-tight flex-shrink-0"
+              :class="
+                offlineBadge === 'downloaded'
+                  ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/25'
+                  : offlineBadge === 'cached'
+                    ? 'bg-sky-500/15 text-sky-600 dark:text-sky-300 border border-sky-500/25'
+                    : 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/25'
+              "
+            >
+              {{ offlineBadge === 'downloaded' ? '已下载' : offlineBadge === 'cached' ? '已缓存' : '本地' }}
+            </span>
           </div>
           <div class="song-item-content-compact-artist">
             <n-ellipsis line-clamp="1">
@@ -142,6 +155,7 @@ const play = computed(() => playerStore.isPlay);
 const isPlaying = computed(() => baseItem.value?.isPlaying || false);
 const playLoading = computed(() => baseItem.value?.playLoading || false);
 const isFavorite = computed(() => baseItem.value?.isFavorite || false);
+const offlineBadge = computed(() => baseItem.value?.offlineBadge || null);
 const isHovering = computed(() => baseItem.value?.isHovering || false);
 const artists = computed(() => baseItem.value?.artists || []);
 

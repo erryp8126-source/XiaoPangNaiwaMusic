@@ -6,6 +6,7 @@ import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.util.Base64
 import android.util.Log
 import com.xiaopang.naiwamusic.server.SafeHttpGuard
 import com.google.gson.Gson
@@ -252,6 +253,85 @@ class NativeDownloadManager(
                 addProperty("error", e.message ?: "保存失败")
             }
         }
+    }
+
+    /**
+     * 将前端 Canvas 导出的 Base64 PNG 听歌报告图片保存至系统相册（Pictures/XiaoPangNaiwaMusic）
+     */
+    fun saveImageToGallery(filename: String, base64Data: String): JsonObject {
+        return try {
+            val pureBase64 = base64Data.substringAfter("base64,", base64Data).trim()
+            if (pureBase64.isEmpty()) {
+                return JsonObject().apply {
+                    addProperty("success", false)
+                    addProperty("error", "图片内容为空")
+                }
+            }
+            val bytes = Base64.decode(pureBase64, Base64.DEFAULT)
+            if (bytes.isEmpty() || bytes.size > 12 * 1024 * 1024) {
+                return JsonObject().apply {
+                    addProperty("success", false)
+                    addProperty("error", "图片体积超出限制")
+                }
+            }
+            val safeBase = sanitizeFilename(filename).removeSuffix(".png").ifBlank {
+                "xiaopang-listening-report-${System.currentTimeMillis()}"
+            }
+            val finalName = "$safeBase.png"
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, finalName)
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/XiaoPangNaiwaMusic")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val resolver = context.contentResolver
+                val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                    ?: throw IllegalStateException("无法创建相册图片条目")
+                resolver.openOutputStream(uri)?.use { out ->
+                    out.write(bytes)
+                } ?: throw IllegalStateException("无法写入相册图片流")
+                values.clear()
+                values.put(MediaStore.Images.Media.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+                JsonObject().apply {
+                    addProperty("success", true)
+                    addProperty("path", "Pictures/XiaoPangNaiwaMusic/$finalName")
+                    addProperty("uri", uri.toString())
+                }
+            } else {
+                val picRoot = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: getDownloadDir()
+                val targetDir = File(picRoot, "XiaoPangNaiwaMusic").apply { if (!exists()) mkdirs() }
+                val outFile = File(targetDir, finalName)
+                outFile.writeBytes(bytes)
+                MediaScannerConnection.scanFile(context, arrayOf(outFile.absolutePath), arrayOf("image/png"), null)
+                JsonObject().apply {
+                    addProperty("success", true)
+                    addProperty("path", outFile.absolutePath)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "saveImageToGallery failed: ${e.message}", e)
+            JsonObject().apply {
+                addProperty("success", false)
+                addProperty("error", e.message ?: "保存图片失败")
+            }
+        }
+    }
+
+    fun getDownloadedSongIds(): Set<String> {
+        val ids = LinkedHashSet<String>()
+        val list = getDownloadedList()
+        for (el in list) {
+            val obj = el.asJsonObject
+            val idEl = obj.get("id")
+            if (idEl != null && !idEl.isJsonNull) {
+                val raw = idEl.asString.trim()
+                if (raw.isNotEmpty()) ids.add(raw)
+            }
+        }
+        return ids
     }
 
     fun getDownloadedList(): JsonArray {

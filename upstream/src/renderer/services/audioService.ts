@@ -3,7 +3,13 @@ import { Howl, Howler } from 'howler';
 import type { AudioOutputDevice } from '@/types/audio';
 import type { SongResult } from '@/types/music';
 import { isElectron } from '@/utils'; // 导入isElectron常量
-import { getNativeCapabilities, isAndroid, NativeHowl, onAndroidEvent } from '@/utils/androidBridge';
+import {
+  getNativeCapabilities,
+  isAndroid,
+  NativeHowl,
+  onAndroidEvent,
+  syncNativeAudioEnhancement
+} from '@/utils/androidBridge';
 
 class AudioService {
   private currentSound: Howl | null = null;
@@ -22,6 +28,10 @@ class AudioService {
   private bypass = false;
 
   private playbackRate = 1.0; // 添加播放速度属性
+
+  private crossfadeEnabled = false;
+  private crossfadeDurationSec = 1.5;
+  private volumeNormalizationEnabled = false;
 
   private currentSinkId: string = 'default';
 
@@ -70,6 +80,18 @@ class AudioService {
     // 从本地存储加载 EQ 开关状态（首次安装默认关闭 EQ，直出原声）
     const bypassState = localStorage.getItem('eqBypass');
     this.bypass = bypassState !== null ? JSON.parse(bypassState) : true;
+
+    // 恢复切歌淡入淡出与响度平滑设置并同步给原生端
+    try {
+      const savedSettings = JSON.parse(localStorage.getItem('appSettings') || '{}');
+      this.setAudioEnhancement({
+        crossfadeEnabled: Boolean(savedSettings?.crossfadeEnabled),
+        crossfadeDurationSec: Number(savedSettings?.crossfadeDurationSec) || 1.5,
+        volumeNormalizationEnabled: Boolean(savedSettings?.volumeNormalizationEnabled)
+      });
+    } catch {
+      // ignore
+    }
 
     // 页面加载时立即强制重置操作锁
     this.forceResetOperationLock();
@@ -825,6 +847,16 @@ class AudioService {
 
             soundInstance.on('play', () => {
               if (this.currentSound === soundInstance) {
+                if (!isAndroid()) {
+                  const targetVol = this.volumeNormalizationEnabled ? 0.86 : 1.0;
+                  if (this.crossfadeEnabled && this.crossfadeDurationSec > 0) {
+                    const fadeMs = Math.round(this.crossfadeDurationSec * 1000);
+                    soundInstance.volume(0.02);
+                    soundInstance.fade(0.02, targetVol, fadeMs);
+                  } else {
+                    soundInstance.volume(targetVol);
+                  }
+                }
                 this.updateMediaSessionState(true);
                 this.emit('play');
               }
@@ -862,6 +894,27 @@ class AudioService {
       // 无论成功或失败都解除操作锁
       this.releaseOperationLock();
     });
+  }
+
+  public setAudioEnhancement(config: {
+    crossfadeEnabled: boolean;
+    crossfadeDurationSec: number;
+    volumeNormalizationEnabled: boolean;
+  }) {
+    this.crossfadeEnabled = Boolean(config.crossfadeEnabled);
+    this.crossfadeDurationSec = Math.max(0, Math.min(3, Number(config.crossfadeDurationSec) || 0));
+    this.volumeNormalizationEnabled = Boolean(config.volumeNormalizationEnabled);
+
+    if (isAndroid()) {
+      syncNativeAudioEnhancement({
+        crossfadeEnabled: this.crossfadeEnabled,
+        crossfadeDurationSec: this.crossfadeDurationSec,
+        volumeNormalizationEnabled: this.volumeNormalizationEnabled
+      });
+    } else if (this.currentSound) {
+      const target = this.volumeNormalizationEnabled ? 0.86 : 1.0;
+      this.currentSound.volume(target);
+    }
   }
 
   private playNativeAndroid(

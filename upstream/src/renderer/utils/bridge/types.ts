@@ -37,6 +37,7 @@ export interface AndroidBridgeInterface {
   audioGetState(): string;
   audioGetActiveTrack?(): string;
   audioSyncQueue(queueJson: string): void;
+  audioSetAudioEnhancement?(configJson: string): void;
   // Hardware Equalizer (Android only; iOS supportsEq=false)
   eqSetEnabled(enabled: boolean): void | boolean;
   eqSetBandGain(freqHz: number, gainDb: number): void | boolean;
@@ -56,6 +57,7 @@ export interface AndroidBridgeInterface {
   showToast(msg: string): void;
   triggerHaptic?(style: string): void;
   isAudioCached?(songId: string, quality: string): boolean;
+  getOfflinePlayableIds?(): string;
   exitApp?(): void;
   getAudioCacheSize?(): number;
   clearAudioCache?(): boolean;

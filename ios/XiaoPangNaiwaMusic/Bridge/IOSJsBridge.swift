@@ -17,6 +17,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
     private let onShowToast: (String) -> Void
     private let onPickTextFile: (@escaping ([String: Any]?) -> Void) -> Void
     private let onPickLocalAudioSources: (@escaping ([String: Any]) -> Void) -> Void
+    private let onShareOrSaveImage: (String, Data, @escaping ([String: Any]) -> Void) -> Void
     private let callbackDispatcher: (String, Bool, String) -> Void
 
     private let asyncQueue = DispatchQueue(label: "com.xiaopang.naiwamusic.ios.bridge", attributes: .concurrent)
@@ -33,6 +34,9 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         onShowToast: @escaping (String) -> Void,
         onPickTextFile: @escaping (@escaping ([String: Any]?) -> Void) -> Void,
         onPickLocalAudioSources: @escaping (@escaping ([String: Any]) -> Void) -> Void,
+        onShareOrSaveImage: @escaping (String, Data, @escaping ([String: Any]) -> Void) -> Void = { _, _, cb in
+            cb(["success": false, "error": "Unsupported"])
+        },
         callbackDispatcher: @escaping (String, Bool, String) -> Void
     ) {
         self.prefs = prefs
@@ -46,6 +50,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         self.onShowToast = onShowToast
         self.onPickTextFile = onPickTextFile
         self.onPickLocalAudioSources = onPickLocalAudioSources
+        self.onShareOrSaveImage = onShareOrSaveImage
         self.callbackDispatcher = callbackDispatcher
         super.init()
     }
@@ -139,6 +144,9 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             audioSyncQueue: function(queueJson) {
               post('audioSyncQueue', { json: queueJson });
             },
+            audioSetAudioEnhancement: function(configJson) {
+              post('audioSetAudioEnhancement', { json: configJson });
+            },
             // iOS AVPlayer 未接入 AVAudioEngine + AVAudioUnitEQ，能力标志 supportsEq=false，前端应隐藏或置灰入口
             eqSetEnabled: function(_enabled) { return false; },
             eqSetBandGain: function(_freqHz, _gainDb) { return false; },
@@ -212,6 +220,13 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             if let json = payload["json"] as? String,
                let obj = parseJsonDict(json) {
                 audioManager.syncQueue(payload: obj)
+            }
+        case "audioSetAudioEnhancement":
+            if let json = payload["json"] as? String,
+               let obj = parseJsonDict(json) {
+                let fadeMs = (obj["crossfadeMs"] as? Double) ?? Double((obj["crossfadeMs"] as? Int) ?? 0)
+                let norm = (obj["volumeNormalization"] as? Bool) ?? false
+                audioManager.setAudioEnhancement(crossfadeMs: fadeMs, volumeNormalization: norm)
             }
         case "setStatusBarStyle":
             let isDark = (payload["isDark"] as? Bool) ?? false
@@ -303,6 +318,29 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
                 let content = (payload["content"] as? String) ?? ""
                 let res = self.storageManager.saveTextFile(filename: fn, content: content)
                 self.callbackDispatcher(callbackId, true, self.jsonString(res))
+            case "save-image-file":
+                let fn = (payload["filename"] as? String) ?? "xiaopang-listening-report.png"
+                let rawDataUrl = (payload["dataUrl"] as? String) ?? ""
+                let base64Part: String
+                if let range = rawDataUrl.range(of: "base64,") {
+                    base64Part = String(rawDataUrl[range.upperBound...])
+                } else {
+                    base64Part = rawDataUrl
+                }
+                guard let pngData = Data(base64Encoded: base64Part, options: .ignoreUnknownCharacters),
+                      !pngData.isEmpty,
+                      pngData.count <= 12 * 1024 * 1024 else {
+                    self.callbackDispatcher(callbackId, true, self.jsonString(["success": false, "error": "无效的图片数据"]))
+                    return
+                }
+                DispatchQueue.main.async {
+                    self.onShareOrSaveImage(fn, pngData) { result in
+                        self.callbackDispatcher(callbackId, true, self.jsonString(result))
+                    }
+                }
+            case "get-offline-playable-ids":
+                let offline = self.storageManager.getOfflinePlayableIds()
+                self.callbackDispatcher(callbackId, true, self.jsonString(offline))
             case "get-downloads-path":
                 self.callbackDispatcher(callbackId, true, self.jsonQuote(self.storageManager.getDownloadDir().path))
             case "get-listening-stats":

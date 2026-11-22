@@ -119,6 +119,20 @@ export class NativeHowl {
     }
 
     try {
+      let crossfadeMs = 0;
+      let volumeNormalization = false;
+      try {
+        const rawSettings = JSON.parse(localStorage.getItem('appSettings') || '{}');
+        if (rawSettings?.crossfadeEnabled) {
+          crossfadeMs = Math.max(
+            0,
+            Math.min(3000, Math.round((Number(rawSettings.crossfadeDurationSec) || 1.5) * 1000))
+          );
+        }
+        volumeNormalization = Boolean(rawSettings?.volumeNormalizationEnabled);
+      } catch {
+        // ignore
+      }
       window.AlgerAndroid?.audioLoad(
         JSON.stringify({
           instanceId: this.instanceId,
@@ -132,7 +146,9 @@ export class NativeHowl {
           autoplay,
           seekTime: this._initialSeekTime,
           volume: this._volume,
-          rate: this._rate
+          rate: this._rate,
+          crossfadeMs,
+          volumeNormalization
         })
       );
       if (this._initialSeekTime > 0) {

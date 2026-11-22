@@ -84,6 +84,30 @@ object AudioCacheManager {
         }.getOrDefault(false)
     }
 
+    /**
+     * 聚合 SimpleCache 中所有实际已有缓存数据块的歌曲 ID（解析 song_<songId>_<quality> 键）
+     */
+    fun getCachedSongIds(context: Context): Set<String> {
+        val cache = getCache(context) ?: return emptySet()
+        return runCatching {
+            val ids = LinkedHashSet<String>()
+            val keys = cache.keys.toList()
+            for (key in keys) {
+                if (!key.startsWith("song_")) continue
+                val spans = cache.getCachedSpans(key)
+                val hasData = spans.isNotEmpty() && spans.any { it.isCached && it.length > 0L }
+                if (!hasData) continue
+                val rest = key.removePrefix("song_")
+                val lastUnderscore = rest.lastIndexOf('_')
+                val songId = if (lastUnderscore > 0) rest.substring(0, lastUnderscore) else rest
+                if (songId.isNotBlank()) {
+                    ids.add(songId)
+                }
+            }
+            ids
+        }.getOrDefault(emptySet())
+    }
+
     fun getCacheSizeBytes(context: Context): Long {
         val active = simpleCache
         if (active != null) {

@@ -11,14 +11,24 @@
             <i :class="listenerBadge.icon" class="text-amber-200"></i>
             {{ listenerBadge.title }}
           </span>
-          <button
-            type="button"
-            class="flex h-8 w-8 items-center justify-center rounded-full bg-white/15 text-white/90 active:scale-90 transition-all"
-            title="刷新统计"
-            @click="handleRefresh"
-          >
-            <i class="ri-refresh-line text-base" :class="{ 'animate-spin': loading }"></i>
-          </button>
+          <div class="flex items-center gap-1.5">
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 h-8 px-3 rounded-full bg-white/20 hover:bg-white/30 text-white text-xs font-bold backdrop-blur-md active:scale-95 transition-all"
+              @click="openReportModal('week')"
+            >
+              <i class="ri-image-2-line text-sm"></i>
+              <span>生成报告卡</span>
+            </button>
+            <button
+              type="button"
+              class="flex h-8 w-8 items-center justify-center rounded-full bg-white/15 text-white/90 active:scale-90 transition-all"
+              title="刷新统计"
+              @click="handleRefresh"
+            >
+              <i class="ri-refresh-line text-base" :class="{ 'animate-spin': loading }"></i>
+            </button>
+          </div>
         </div>
 
         <div class="mt-4">
@@ -272,6 +282,72 @@
         重置数据
       </button>
     </div>
+
+    <!-- ===== 7. 听歌统计报告卡片生成弹窗 ===== -->
+    <n-modal
+      v-model:show="showReportModal"
+      preset="card"
+      style="width: 92vw; max-width: 440px"
+      title="生成听歌报告卡片"
+      :bordered="false"
+    >
+      <div class="space-y-3.5">
+        <div class="flex items-center justify-center gap-2">
+          <button
+            type="button"
+            class="px-4 py-1.5 rounded-full text-xs font-bold transition-all"
+            :class="
+              reportPeriod === 'week'
+                ? 'bg-amber-500 text-white shadow-sm'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+            "
+            @click="switchReportPeriod('week')"
+          >
+            本周报告（近 7 天）
+          </button>
+          <button
+            type="button"
+            class="px-4 py-1.5 rounded-full text-xs font-bold transition-all"
+            :class="
+              reportPeriod === 'month'
+                ? 'bg-amber-500 text-white shadow-sm'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+            "
+            @click="switchReportPeriod('month')"
+          >
+            本月报告（近 30 天）
+          </button>
+        </div>
+
+        <div
+          class="relative w-full rounded-2xl overflow-hidden bg-slate-900 border border-slate-700/60 flex items-center justify-center min-h-[300px] max-h-[60vh]"
+        >
+          <img
+            v-if="reportPreviewUrl"
+            :src="reportPreviewUrl"
+            alt="听歌统计报告卡片"
+            class="w-full h-auto max-h-[60vh] object-contain"
+          />
+          <n-spin v-else size="medium" />
+        </div>
+
+        <div class="flex items-center gap-2.5">
+          <button
+            type="button"
+            :disabled="!reportPreviewUrl || savingReport"
+            class="flex-1 py-2.5 px-4 rounded-full text-sm font-extrabold text-white active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-1.5 shadow-md"
+            style="background: linear-gradient(135deg, #ffc21c 0%, #eb8f00 100%)"
+            @click="handleSaveReportCard"
+          >
+            <i
+              :class="savingReport ? 'ri-loader-4-line animate-spin' : 'ri-download-2-line'"
+              class="text-base"
+            ></i>
+            <span>{{ savingReport ? '正在保存...' : isNativeShell ? '保存到相册 / 分享' : '保存报告图片' }}</span>
+          </button>
+        </div>
+      </div>
+    </n-modal>
   </div>
 </template>
 
@@ -288,11 +364,87 @@ import {
 } from '@/store/modules/listeningStats';
 import { usePlayerStore } from '@/store/modules/player';
 import { getImgUrl } from '@/utils';
+import { isAndroid, saveImageViaNativeBridge, triggerHaptic } from '@/utils/androidBridge';
+import {
+  buildListeningReportSummary,
+  renderListeningReportCanvas,
+  type ReportPeriod
+} from '@/utils/listeningReportCard';
 
 const statsStore = useListeningStatsStore();
 const playerStore = usePlayerStore();
 const dialog = useDialog();
 const message = useMessage();
+const isNativeShell = computed(() => isAndroid());
+
+const showReportModal = ref(false);
+const reportPeriod = ref<ReportPeriod>('week');
+const reportPreviewUrl = ref('');
+const savingReport = ref(false);
+
+const regenerateReportImage = () => {
+  try {
+    const summary = buildListeningReportSummary(stats.value, reportPeriod.value);
+    const canvas = renderListeningReportCanvas(summary);
+    reportPreviewUrl.value = canvas.toDataURL('image/png');
+  } catch (err) {
+    console.error('[ListeningReport] render failed:', err);
+    message.error('生成听歌报告卡片失败');
+  }
+};
+
+const openReportModal = async (period: ReportPeriod = 'week') => {
+  triggerHaptic('light');
+  reportPeriod.value = period;
+  showReportModal.value = true;
+  reportPreviewUrl.value = '';
+  await statsStore.refreshStats();
+  regenerateReportImage();
+};
+
+const switchReportPeriod = (period: ReportPeriod) => {
+  if (reportPeriod.value === period) return;
+  triggerHaptic('selection');
+  reportPeriod.value = period;
+  regenerateReportImage();
+};
+
+const handleSaveReportCard = async () => {
+  if (!reportPreviewUrl.value || savingReport.value) return;
+  savingReport.value = true;
+  try {
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+    const filename = `xiaopang-listening-report-${reportPeriod.value}-${stamp}.png`;
+
+    if (isAndroid()) {
+      const res = await saveImageViaNativeBridge(filename, reportPreviewUrl.value);
+      if (res.success) {
+        triggerHaptic('success');
+        message.success(
+          window.__ALGER_PLATFORM__ === 'ios'
+            ? '已调起系统分享/保存面板'
+            : `听歌报告已保存至相册（${res.path || filename}）`
+        );
+        return;
+      }
+      message.error(res.error || '保存图片失败');
+      return;
+    }
+
+    // Web / Desktop 触发 PNG 下载
+    const a = document.createElement('a');
+    a.href = reportPreviewUrl.value;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    triggerHaptic('success');
+    message.success(`已保存 ${filename}`);
+  } finally {
+    savingReport.value = false;
+  }
+};
 
 const {
   stats,

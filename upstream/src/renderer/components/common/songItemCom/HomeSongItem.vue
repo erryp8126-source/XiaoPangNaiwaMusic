@@ -43,12 +43,27 @@
 
     <!-- Song Info -->
     <div class="song-info flex flex-col overflow-hidden flex-1 min-w-0">
-      <n-ellipsis
-        class="song-name text-[14.5px] md:text-base font-bold transition-colors duration-200"
-        :class="isPlaying ? 'text-primary' : 'text-slate-800 dark:text-slate-100 group-hover:text-primary'"
-      >
-        {{ item.name }}
-      </n-ellipsis>
+      <div class="flex items-center gap-1.5 min-w-0">
+        <n-ellipsis
+          class="song-name text-[14.5px] md:text-base font-bold transition-colors duration-200"
+          :class="isPlaying ? 'text-primary' : 'text-slate-800 dark:text-slate-100 group-hover:text-primary'"
+        >
+          {{ item.name }}
+        </n-ellipsis>
+        <span
+          v-if="offlineBadge"
+          class="px-1.5 py-[1px] rounded text-[10px] font-bold leading-tight flex-shrink-0"
+          :class="
+            offlineBadge === 'downloaded'
+              ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/25'
+              : offlineBadge === 'cached'
+                ? 'bg-sky-500/15 text-sky-600 dark:text-sky-300 border border-sky-500/25'
+                : 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/25'
+          "
+        >
+          {{ offlineBadge === 'downloaded' ? '已下载' : offlineBadge === 'cached' ? '已缓存' : '本地' }}
+        </span>
+      </div>
       <n-ellipsis
         class="artist-name text-xs md:text-sm text-slate-500 dark:text-slate-400 mt-0.5"
       >
@@ -128,6 +143,7 @@ const {
   isPlaying,
   isFavorite,
   isDislike,
+  offlineBadge,
   artists,
   showDropdown,
   dropdownX,

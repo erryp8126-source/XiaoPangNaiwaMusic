@@ -134,6 +134,15 @@ class AndroidJsBridge(
                         val res = downloadManager.saveTextFile(fn, content)
                         callbackDispatcher(callbackId, true, gson.toJson(res))
                     }
+                    "save-image-file" -> {
+                        val fn = payload.get("filename")?.asString ?: "xiaopang-listening-report.png"
+                        val dataUrl = payload.get("dataUrl")?.asString ?: ""
+                        val res = downloadManager.saveImageToGallery(fn, dataUrl)
+                        callbackDispatcher(callbackId, true, gson.toJson(res))
+                    }
+                    "get-offline-playable-ids" -> {
+                        callbackDispatcher(callbackId, true, buildOfflinePlayableIdsJson())
+                    }
                     "get-downloads-path" -> {
                         callbackDispatcher(
                             callbackId,
@@ -333,6 +342,16 @@ class AndroidJsBridge(
         MusicPlaybackService.instance?.syncQueue(obj)
     }
 
+    @JavascriptInterface
+    fun audioSetAudioEnhancement(configJson: String) {
+        val obj = runCatching { JsonParser.parseString(configJson).asJsonObject }.getOrNull() ?: return
+        val crossfadeMs = obj.get("crossfadeMs")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+        val volumeNormalization = obj.get("volumeNormalization")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+        MusicPlaybackService.latestCrossfadeMs = crossfadeMs.coerceIn(0L, 3000L)
+        MusicPlaybackService.latestVolumeNormalization = volumeNormalization
+        MusicPlaybackService.instance?.setAudioEnhancement(crossfadeMs, volumeNormalization)
+    }
+
     // ==================== 硬件均衡器 ====================
 
     @JavascriptInterface
@@ -464,6 +483,24 @@ class AndroidJsBridge(
         if (songId.isBlank()) return false
         val normalizedQuality = quality.ifBlank { "higher" }
         return AudioCacheManager.isCached(activity, "song_${songId}_${normalizedQuality}")
+    }
+
+    @JavascriptInterface
+    fun getOfflinePlayableIds(): String {
+        return buildOfflinePlayableIdsJson()
+    }
+
+    private fun buildOfflinePlayableIdsJson(): String {
+        val cachedIds = AudioCacheManager.getCachedSongIds(activity).toList()
+        val downloadedIds = downloadManager.getDownloadedSongIds().toList()
+        val localPaths = localScanner.getScannedPaths().toList()
+        return gson.toJson(
+            mapOf(
+                "cachedIds" to cachedIds,
+                "downloadedIds" to downloadedIds,
+                "localIds" to localPaths
+            )
+        )
     }
 
     @JavascriptInterface

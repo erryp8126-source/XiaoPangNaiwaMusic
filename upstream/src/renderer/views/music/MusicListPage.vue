@@ -201,7 +201,29 @@
             </div>
 
             <!-- Right Tools -->
-            <div class="flex items-center gap-3">
+            <div class="flex items-center gap-2 md:gap-3">
+              <!-- 仅看离线可播筛选开关 -->
+              <button
+                type="button"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-all active:scale-95 whitespace-nowrap"
+                :class="
+                  onlyOfflinePlayable
+                    ? 'bg-emerald-500 text-white border-emerald-500 shadow-sm shadow-emerald-500/30'
+                    : 'bg-white/85 dark:bg-slate-800/85 text-slate-600 dark:text-slate-300 border-sky-100 dark:border-white/10'
+                "
+                @click="toggleOnlyOffline"
+              >
+                <i class="ri-download-cloud-2-line text-sm"></i>
+                <span>仅看离线可播</span>
+                <span
+                  v-if="offlinePlayableCount > 0"
+                  class="px-1.5 py-0.2 rounded-full text-[10px]"
+                  :class="onlyOfflinePlayable ? 'bg-white/25 text-white' : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300'"
+                >
+                  {{ offlinePlayableCount }}
+                </span>
+              </button>
+
               <!-- Search within list -->
               <div class="relative group hidden sm:block">
                 <n-input
@@ -243,11 +265,28 @@
         <!-- List Content -->
         <section class="song-list-section page-padding-x mt-6">
           <div
-            v-if="filteredSongs.length === 0 && searchKeyword"
-            class="empty-state py-20 text-center text-neutral-400"
+            v-if="filteredSongs.length === 0 && (searchKeyword || onlyOfflinePlayable)"
+            class="empty-state py-16 text-center text-neutral-400"
           >
-            <i class="ri-search-line text-4xl mb-4 opacity-20" />
-            <p>{{ t('comp.musicList.noSearchResults') }}</p>
+            <i
+              :class="onlyOfflinePlayable ? 'ri-wifi-off-line' : 'ri-search-line'"
+              class="text-4xl mb-3 opacity-30 block"
+            />
+            <p class="text-sm">
+              {{
+                onlyOfflinePlayable
+                  ? '当前列表暂无已下载或已缓存的离线可播曲目'
+                  : t('comp.musicList.noSearchResults')
+              }}
+            </p>
+            <button
+              v-if="onlyOfflinePlayable"
+              type="button"
+              class="mt-3 px-4 py-1.5 rounded-full text-xs font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-300"
+              @click="onlyOfflinePlayable = false"
+            >
+              显示全部歌曲
+            </button>
           </div>
 
           <div v-else class="song-list-container">
@@ -321,9 +360,11 @@ import SongItem from '@/components/common/SongItem.vue';
 import { useDownload } from '@/hooks/useDownload';
 import { useScrollTitle } from '@/hooks/useScrollTitle';
 import { useMusicStore, usePlayerStore, useRecommendStore, useUserStore } from '@/store';
+import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';
 import { usePlayHistoryStore } from '@/store/modules/playHistory';
 import { SongResult } from '@/types/music';
 import { calculateAnimationDelay, getImgUrl, isElectron, isMobile } from '@/utils';
+import { triggerHaptic } from '@/utils/androidBridge';
 import { getLoginErrorMessage, hasPermission } from '@/utils/auth';
 
 defineOptions({
@@ -338,6 +379,17 @@ const recommendStore = useRecommendStore();
 const userStore = useUserStore();
 const message = useMessage();
 const playHistoryStore = usePlayHistoryStore();
+const offlineStore = useOfflineAvailabilityStore();
+offlineStore.ensureInitialized();
+
+const onlyOfflinePlayable = ref(false);
+const toggleOnlyOffline = () => {
+  triggerHaptic('selection');
+  onlyOfflinePlayable.value = !onlyOfflinePlayable.value;
+  if (onlyOfflinePlayable.value) {
+    void offlineStore.refresh();
+  }
+};
 
 const loading = ref(false);
 
@@ -463,9 +515,18 @@ const getCoverImgUrl = computed(() => {
 });
 
 // 全量歌曲列表（用于"播放全部"等操作）
-const allFilteredSongs = computed(() => {
+const baseVisibleSongs = computed(() => {
   const sourceList = isDailyRecommend.value ? songList.value : displayedSongs.value;
   return sourceList.filter((s) => !playerStore.dislikeList.includes(s.id));
+});
+
+const offlinePlayableCount = computed(() => {
+  return baseVisibleSongs.value.filter((s) => offlineStore.isOfflinePlayable(s)).length;
+});
+
+const allFilteredSongs = computed(() => {
+  if (!onlyOfflinePlayable.value) return baseVisibleSongs.value;
+  return baseVisibleSongs.value.filter((s) => offlineStore.isOfflinePlayable(s));
 });
 
 // 实际渲染到 DOM 的歌曲（搜索时显示全部匹配，非搜索时按 renderLimit 分页渲染）

@@ -37,6 +37,9 @@
   "enableGpuAcceleration": true,
   "enableDiskCache": true,
   "enableDynamicBackground": true,
+  "crossfadeEnabled": false,
+  "crossfadeDurationSec": 1.5,
+  "volumeNormalizationEnabled": false,
   "diskCacheDir": "",
   "diskCacheMaxSizeMB": 4096,
   "diskCacheCleanupPolicy": "lru"

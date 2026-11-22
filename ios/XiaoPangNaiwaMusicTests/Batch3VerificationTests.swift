@@ -336,4 +336,51 @@ final class Batch3VerificationTests: XCTestCase {
             bridge.triggerNativeHaptic(style: style)
         }
     }
+
+    /// 验证 6（Phase 2）：iOS 离线可播 ID 集合聚合（下载索引 songId + 确定性 dl_* + 本地导入 local_*）与音量平滑配置
+    func testIosPhase2OfflinePlayableIdsAndAudioEnhancement() throws {
+        let manager = LocalMusicAndDownloadManager(
+            portProvider: { 30488 },
+            tokenProvider: { "tok" }
+        ) { _, _ in }
+
+        let dlFilename = "phase2_offline_verify_\(Int(Date().timeIntervalSince1970)).mp3"
+        let expectedDest = manager.getDownloadDir().appendingPathComponent(dlFilename)
+        createdFilesToCleanup.append(expectedDest)
+
+        let (session, task) = manager.registerDownloadTaskForTesting(
+            songId: "99887766",
+            filename: dlFilename,
+            songInfo: ["id": 99887766, "name": "Offline Verify Track"]
+        )
+        let tempFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("p2_tmp_\(UUID().uuidString).mp3")
+        try Data(repeating: 0x33, count: 1024).write(to: tempFile)
+        createdFilesToCleanup.append(tempFile)
+
+        manager.urlSession(session, downloadTask: task, didFinishDownloadingTo: tempFile)
+        task.cancel()
+
+        let offline = manager.getOfflinePlayableIds()
+        let downloadedIds = offline["downloadedIds"] ?? []
+        XCTAssertTrue(downloadedIds.contains("99887766"), "Offline downloadedIds must include original NetEase songId")
+        XCTAssertTrue(downloadedIds.contains(where: { $0.hasPrefix("dl_") }), "Offline downloadedIds must include deterministic dl_* ID")
+
+        // 验证 AudioPlayerManager 音量平滑系数切换与恢复
+        let prefs = AppPrefs()
+        let ncm = NeteaseApiClient(prefs: prefs)
+        let unblock = MusicUnblockEngine()
+        let audio = AudioPlayerManager(ncmClient: ncm, unblockEngine: unblock, skipSystemAudioSetup: true)
+        let exp = expectation(description: "audio enhancement applied")
+        audio.setAudioEnhancement(crossfadeMs: 1500, volumeNormalization: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            XCTAssertEqual(audio.effectiveTargetVolume(), 0.86, accuracy: 0.01)
+            audio.setAudioEnhancement(crossfadeMs: 0, volumeNormalization: false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                XCTAssertEqual(audio.effectiveTargetVolume(), 1.0, accuracy: 0.01)
+                exp.fulfill()
+            }
+        }
+        wait(for: [exp], timeout: 2.0)
+    }
 }

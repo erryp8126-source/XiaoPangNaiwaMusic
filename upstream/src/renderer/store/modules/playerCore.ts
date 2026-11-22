@@ -13,7 +13,7 @@ import { SongSourceConfigManager } from '@/services/SongSourceConfigManager';
 import type { AudioOutputDevice } from '@/types/audio';
 import type { Platform, SongResult } from '@/types/music';
 import { getImgUrl } from '@/utils';
-import { isAndroid, isAndroidAudioCached } from '@/utils/androidBridge';
+import { getNativeCapabilities, isAndroid, isAndroidAudioCached } from '@/utils/androidBridge';
 import { getImageLinearBackground } from '@/utils/linearColor';
 import { buildPlaybackMeta, inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
 import { showBottomToast } from '@/utils/shortcutToast';
@@ -476,6 +476,15 @@ export const usePlayerCoreStore = defineStore(
             ...updatedPlayMusic.playbackMeta,
             fallbackFrom: undefined
           };
+        }
+
+        // 播放成功后，若当前平台支持原生边听边缓存，即时刷新离线可播缓存徽标
+        if (isAndroid() && getNativeCapabilities().supportsAudioCache && !isLocalUrl && updatedPlayMusic.id) {
+          import('./offlineAvailability')
+            .then(({ useOfflineAvailabilityStore }) => {
+              useOfflineAvailabilityStore().markCached(updatedPlayMusic.id);
+            })
+            .catch(() => {});
         }
 
         playMusic.value = updatedPlayMusic;

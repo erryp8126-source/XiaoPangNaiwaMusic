@@ -19,6 +19,7 @@ export type {
 
 export {
   dispatchAndroidBackHandlers,
+  fetchNativeOfflinePlayableIds,
   getAndroidApiBaseUrl,
   getAndroidLocalAuthToken,
   getAndroidLocalServerUrl,
@@ -32,7 +33,10 @@ export {
   onAndroidEvent,
   registerAndroidBackHandler,
   saveAndroidServerConfig,
-  triggerHaptic
+  saveImageViaNativeBridge,
+  syncNativeAudioEnhancement,
+  triggerHaptic,
+  type OfflinePlayableIdGroups
 } from './bridge/core';
 
 export { getNativeIpc } from './bridge/ipcAdapter';

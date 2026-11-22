@@ -92,6 +92,12 @@
             <div class="text-xs text-white/85 truncate max-w-full">
               <template v-if="cloudSyncStore.lastSyncAt">
                 上次同步：{{ formatTime(cloudSyncStore.lastSyncAt) }}
+                <span
+                  v-if="cloudSyncStore.lastSyncedRevision > 0"
+                  class="ml-1 px-1.5 py-0.5 rounded bg-white/15 font-mono text-[10px]"
+                >
+                  v{{ cloudSyncStore.lastSyncedRevision }}
+                </span>
               </template>
               <template v-else>已就绪，点击右侧立即同步</template>
             </div>
@@ -508,6 +514,100 @@
         </div>
       </div>
     </div>
+
+    <!-- ==================== 6. 多端并发更新冲突三选一弹窗 ==================== -->
+    <n-modal
+      :show="Boolean(cloudSyncStore.pendingConflict)"
+      preset="card"
+      :bordered="false"
+      :mask-closable="false"
+      class="max-w-[460px] w-[92vw] rounded-3xl"
+      title="检测到云端版本冲突"
+      @close="cloudSyncStore.dismissPendingConflict"
+    >
+      <div v-if="cloudSyncStore.pendingConflict" class="space-y-4">
+        <p class="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+          云端数据已被其他设备更新，同时本机也存在尚未上传的修改。为避免误覆盖丢失歌曲，请选择处理方式：
+        </p>
+
+        <div class="grid grid-cols-2 gap-2.5">
+          <div
+            class="rounded-2xl p-3 bg-slate-50 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700/80 space-y-1.5"
+          >
+            <div class="flex items-center justify-between gap-1">
+              <span class="text-xs font-extrabold text-slate-800 dark:text-slate-100">本机数据</span>
+              <span
+                class="px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 font-mono text-[10px] font-bold"
+              >
+                v{{ cloudSyncStore.pendingConflict.localSummary.revision }}
+              </span>
+            </div>
+            <div class="text-[11px] text-slate-500 dark:text-slate-400">
+              设备：{{ cloudSyncStore.pendingConflict.localSummary.deviceName }}
+            </div>
+            <div class="text-[11px] text-slate-500 dark:text-slate-400">
+              喜欢 {{ cloudSyncStore.pendingConflict.localSummary.favoritesCount }} 首 · 历史
+              {{ cloudSyncStore.pendingConflict.localSummary.songsCount }} 首
+            </div>
+            <div class="text-[11px] text-slate-400">
+              {{ formatConflictTime(cloudSyncStore.pendingConflict.localSummary.updatedAt) }}
+            </div>
+          </div>
+
+          <div
+            class="rounded-2xl p-3 bg-sky-50/70 dark:bg-sky-900/20 border border-sky-200/80 dark:border-sky-500/30 space-y-1.5"
+          >
+            <div class="flex items-center justify-between gap-1">
+              <span class="text-xs font-extrabold text-sky-900 dark:text-sky-100">云端数据</span>
+              <span
+                class="px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-500/25 text-sky-700 dark:text-sky-300 font-mono text-[10px] font-bold"
+              >
+                v{{ cloudSyncStore.pendingConflict.remoteSummary.revision }}
+              </span>
+            </div>
+            <div class="text-[11px] text-slate-500 dark:text-slate-400">
+              设备：{{ cloudSyncStore.pendingConflict.remoteSummary.deviceName }}
+            </div>
+            <div class="text-[11px] text-slate-500 dark:text-slate-400">
+              喜欢 {{ cloudSyncStore.pendingConflict.remoteSummary.favoritesCount }} 首 · 历史
+              {{ cloudSyncStore.pendingConflict.remoteSummary.songsCount }} 首
+            </div>
+            <div class="text-[11px] text-slate-400">
+              {{ formatConflictTime(cloudSyncStore.pendingConflict.remoteSummary.updatedAt) }}
+            </div>
+          </div>
+        </div>
+
+        <div class="space-y-2 pt-1">
+          <button
+            type="button"
+            :disabled="cloudSyncStore.syncing"
+            class="w-full py-2.5 px-4 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-white font-extrabold text-xs shadow-md transition-all active:scale-[0.98] disabled:opacity-50"
+            @click="handleResolveConflict('smart-merge')"
+          >
+            智能合并（推荐）· 保留双方全部喜欢与历史，配置取较新版本
+          </button>
+          <div class="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              :disabled="cloudSyncStore.syncing"
+              class="py-2.5 px-3 rounded-2xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 font-bold text-xs transition-colors disabled:opacity-50"
+              @click="handleResolveConflict('use-remote')"
+            >
+              以云端为准
+            </button>
+            <button
+              type="button"
+              :disabled="cloudSyncStore.syncing"
+              class="py-2.5 px-3 rounded-2xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-500/15 dark:hover:bg-rose-500/25 text-rose-600 dark:text-rose-300 font-bold text-xs transition-colors disabled:opacity-50"
+              @click="handleResolveConflict('overwrite-remote')"
+            >
+              覆盖云端
+            </button>
+          </div>
+        </div>
+      </div>
+    </n-modal>
   </div>
 </template>
 
@@ -516,7 +616,11 @@ import { useMessage } from 'naive-ui';
 import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
-import { type SyncProvider, useCloudSyncStore } from '@/store/modules/cloudSync';
+import {
+  type ConflictResolutionStrategy,
+  type SyncProvider,
+  useCloudSyncStore
+} from '@/store/modules/cloudSync';
 import { useFavoriteStore } from '@/store/modules/favorite';
 import {
   formatDurationCompact,
@@ -582,6 +686,9 @@ const handleOneTapGenerate = async () => {
     message.success(`同步口令 ${res.syncCode} 已生成并同步成功！请复制保存好`, {
       duration: 5000
     });
+  } else if (res.conflict) {
+    showSyncCode.value = true;
+    message.warning(res.message);
   } else {
     message.error(res.message);
   }
@@ -598,6 +705,10 @@ const handleRestoreByCode = async () => {
     inputSyncCode.value = '';
     showSyncCode.value = true;
     message.success(res.message);
+  } else if (res.conflict) {
+    inputSyncCode.value = '';
+    showSyncCode.value = true;
+    message.warning(res.message);
   } else {
     message.error(res.message);
   }
@@ -650,7 +761,21 @@ const handleSaveAndSync = async (provider: SyncProvider) => {
 const handleSyncNow = async () => {
   const res = await cloudSyncStore.syncNow(false);
   if (res.ok) message.success(res.message);
+  else if (res.conflict) message.warning(res.message);
   else message.error(res.message);
+};
+
+const handleResolveConflict = async (strategy: ConflictResolutionStrategy) => {
+  const res = await cloudSyncStore.resolvePendingConflict(strategy);
+  if (res.ok) message.success(res.message);
+  else message.error(res.message);
+};
+
+const formatConflictTime = (ts: number): string => {
+  if (!ts) return '未知时间';
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getMonth() + 1}-${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 };
 
 const handleExportJsonFile = async () => {

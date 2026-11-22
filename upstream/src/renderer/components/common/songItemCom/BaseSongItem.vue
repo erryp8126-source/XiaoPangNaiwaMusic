@@ -61,6 +61,7 @@ const {
   isPlaying,
   isFavorite,
   isDislike,
+  offlineBadge,
   artists,
   showDropdown,
   dropdownX,
@@ -114,6 +115,7 @@ defineExpose({
   isPlaying,
   isFavorite,
   isDislike,
+  offlineBadge,
   artists,
   isHovering
 });

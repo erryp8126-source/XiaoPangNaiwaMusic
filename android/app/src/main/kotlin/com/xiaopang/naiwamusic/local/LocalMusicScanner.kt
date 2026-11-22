@@ -249,6 +249,10 @@ class LocalMusicScanner(
         } else null
     }
 
+    fun getScannedPaths(): Set<String> {
+        return LinkedHashSet(scannedCache.keys)
+    }
+
     fun checkFileExists(path: String): Boolean {
         if (path.isBlank()) return false
         if (path.startsWith("content://")) {

@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import { usePlayerStore, useRecommendStore } from '@/store';
+import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';
 import type { SongResult } from '@/types/music';
 import { getImgUrl } from '@/utils';
 import { triggerHaptic } from '@/utils/androidBridge';
@@ -16,9 +17,13 @@ export function useSongItem(props: { item: SongResult; canRemove?: boolean }) {
   const { t } = useI18n();
   const playerStore = usePlayerStore();
   const recommendStore = useRecommendStore();
+  const offlineStore = useOfflineAvailabilityStore();
   const message = useMessage();
   const { downloadMusic, downloadLyric } = useDownload();
   const { navigateToArtist } = useArtist();
+  offlineStore.ensureInitialized();
+
+  const offlineBadge = computed(() => offlineStore.getOfflineBadge(props.item));
 
   // 状态变量
   const showDropdown = ref(false);
@@ -260,6 +265,7 @@ export function useSongItem(props: { item: SongResult; canRemove?: boolean }) {
     isPlaying,
     isFavorite,
     isDislike,
+    offlineBadge,
     artists,
     showDropdown,
     dropdownX,

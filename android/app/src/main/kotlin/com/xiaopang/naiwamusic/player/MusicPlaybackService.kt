@@ -12,6 +12,7 @@ import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.audiofx.Equalizer
+import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -104,6 +105,12 @@ class MusicPlaybackService : Service() {
 
         val latestEqGainsDb = java.util.concurrent.ConcurrentHashMap<Int, Float>()
 
+        @Volatile
+        var latestCrossfadeMs: Long = 0L
+
+        @Volatile
+        var latestVolumeNormalization: Boolean = false
+
         private val pendingActions = mutableListOf<(MusicPlaybackService) -> Unit>()
         private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -160,6 +167,14 @@ class MusicPlaybackService : Service() {
     private var equalizer: Equalizer? = null
     private var eqEnabled: Boolean = false
     private val eqGainsDb = LinkedHashMap<Int, Float>()
+
+    // 切歌淡入淡出与响度平滑
+    private var loudnessEnhancer: LoudnessEnhancer? = null
+    private var desiredUserVolume: Float = 1.0f
+    private var crossfadeDurationMs: Long = 0L
+    private var volumeNormalizationEnabled: Boolean = false
+    private var volumeFadeJob: Job? = null
+    private var pendingFadeInOnReady: Boolean = false
 
     @Volatile
     private var currentInstanceId: Int = 0
@@ -360,10 +375,12 @@ class MusicPlaybackService : Service() {
             currentCoverUrl
         )
         cancelNativeAutoAdvance()
+        cancelVolumeFade()
         seekConfirmRunnable?.let { uiHandler.removeCallbacks(it) }
         uiHandler.removeCallbacks(progressTicker)
         releaseTransitionWakeLock()
         releaseEqualizer()
+        releaseLoudnessEnhancer()
         if (::mediaSession.isInitialized) {
             mediaSession.release()
         }
@@ -447,6 +464,16 @@ class MusicPlaybackService : Service() {
                         if (!hasNotifiedLoaded) {
                             hasNotifiedLoaded = true
                             initHardwareEqualizer(exoPlayer.audioSessionId)
+                            initLoudnessEnhancer(exoPlayer.audioSessionId)
+                            if (pendingFadeInOnReady && !userPaused) {
+                                pendingFadeInOnReady = false
+                                val fadeMs = crossfadeDurationMs.coerceIn(0L, 3000L)
+                                if (fadeMs > 0L) {
+                                    animateVolumeTo(effectiveTargetVolume(), fadeMs, fromVolume = 0.02f)
+                                } else {
+                                    exoPlayer.volume = effectiveTargetVolume()
+                                }
+                            }
                             emitAudioEvent("loaded")
                         } else {
                             // Seek 后缓冲完成，立即同步真实位置给前端歌词和进度条
@@ -1430,12 +1457,23 @@ class MusicPlaybackService : Service() {
                     nativeQueueIndex = matchedIdx
                 }
             }
-            val volume = payload.get("volume")?.asFloat ?: 1.0f
+            val volume = payload.get("volume")?.asFloat ?: desiredUserVolume
             val rate = payload.get("rate")?.asFloat ?: 1.0f
             val initialSeekSec = payload.get("seekTime")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0
             val expectedDurSec = payload.get("durationSec")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0
+            payload.get("crossfadeMs")?.takeIf { !it.isJsonNull }?.asLong?.let {
+                latestCrossfadeMs = it.coerceIn(0L, 3000L)
+            }
+            payload.get("volumeNormalization")?.takeIf { !it.isJsonNull }?.asBoolean?.let {
+                latestVolumeNormalization = it
+            }
+            crossfadeDurationMs = latestCrossfadeMs
+            volumeNormalizationEnabled = latestVolumeNormalization
+            desiredUserVolume = volume.coerceIn(0f, 1f)
+            applyLoudnessNormalization()
 
             hasNotifiedLoaded = false
+            cancelVolumeFade()
 
             val currentItem = NativeQueueItem(
                 id = currentSongId,
@@ -1456,7 +1494,13 @@ class MusicPlaybackService : Service() {
                 exoPlayer.setMediaItem(mediaItem)
             }
             syncExoPlayerRepeatMode()
-            exoPlayer.volume = volume.coerceIn(0f, 1f)
+            if (autoplay && crossfadeDurationMs > 0L) {
+                pendingFadeInOnReady = true
+                exoPlayer.volume = 0.02f
+            } else {
+                pendingFadeInOnReady = false
+                exoPlayer.volume = effectiveTargetVolume()
+            }
             exoPlayer.playbackParameters = PlaybackParameters(rate.coerceIn(0.25f, 4f))
             exoPlayer.playWhenReady = autoplay
             exoPlayer.prepare()
@@ -1471,13 +1515,22 @@ class MusicPlaybackService : Service() {
     fun play() {
         uiHandler.post {
             userPaused = false
+            cancelVolumeFade()
             if (::exoPlayer.isInitialized) {
                 if (exoPlayer.playbackState == Player.STATE_ENDED) {
                     exoPlayer.seekTo(0L)
                 } else if (exoPlayer.playbackState == Player.STATE_IDLE && exoPlayer.mediaItemCount > 0) {
                     exoPlayer.prepare()
                 }
-                exoPlayer.play()
+                val targetVol = effectiveTargetVolume()
+                if (crossfadeDurationMs > 0L) {
+                    exoPlayer.volume = 0.05f
+                    exoPlayer.play()
+                    animateVolumeTo(targetVol, minOf(crossfadeDurationMs, 360L), fromVolume = 0.05f)
+                } else {
+                    exoPlayer.volume = targetVol
+                    exoPlayer.play()
+                }
                 scheduleGaplessNextTrack(forceRefresh = false)
                 snapshotPlayerState()
                 ensureForegroundNotification()
@@ -1490,12 +1543,27 @@ class MusicPlaybackService : Service() {
         uiHandler.post {
             userPaused = true
             isTransitioningTrack = false
+            pendingFadeInOnReady = false
             cancelNativeAutoAdvance()
+            cancelVolumeFade()
             releaseTransitionWakeLock()
             if (::exoPlayer.isInitialized) {
-                exoPlayer.pause()
-                snapshotPlayerState()
-                updateNotification()
+                val targetVol = effectiveTargetVolume()
+                if (crossfadeDurationMs > 0L && exoPlayer.isPlaying) {
+                    animateVolumeTo(0.02f, 220L) {
+                        if (userPaused && ::exoPlayer.isInitialized) {
+                            exoPlayer.pause()
+                            exoPlayer.volume = effectiveTargetVolume()
+                            snapshotPlayerState()
+                            updateNotification()
+                        }
+                    }
+                } else {
+                    exoPlayer.pause()
+                    exoPlayer.volume = targetVol
+                    snapshotPlayerState()
+                    updateNotification()
+                }
             }
         }
     }
@@ -1504,11 +1572,14 @@ class MusicPlaybackService : Service() {
         uiHandler.post {
             userPaused = true
             isTransitioningTrack = false
+            pendingFadeInOnReady = false
             cancelNativeAutoAdvance()
+            cancelVolumeFade()
             uiHandler.removeCallbacks(progressTicker)
             releaseTransitionWakeLock()
             if (::exoPlayer.isInitialized) {
                 exoPlayer.stop()
+                exoPlayer.volume = effectiveTargetVolume()
                 snapshotPlayerState()
             }
             updateNotification()
@@ -1554,8 +1625,75 @@ class MusicPlaybackService : Service() {
 
     fun setVolume(volume: Float) {
         uiHandler.post {
+            desiredUserVolume = volume.coerceIn(0f, 1f)
+            cancelVolumeFade()
             if (::exoPlayer.isInitialized) {
-                exoPlayer.volume = volume.coerceIn(0f, 1f)
+                exoPlayer.volume = effectiveTargetVolume()
+            }
+        }
+    }
+
+    fun setAudioEnhancement(crossfadeMs: Long, volumeNormalization: Boolean) {
+        val clampedFade = crossfadeMs.coerceIn(0L, 3000L)
+        latestCrossfadeMs = clampedFade
+        latestVolumeNormalization = volumeNormalization
+        uiHandler.post {
+            crossfadeDurationMs = clampedFade
+            volumeNormalizationEnabled = volumeNormalization
+            applyLoudnessNormalization()
+            if (::exoPlayer.isInitialized && volumeFadeJob?.isActive != true) {
+                exoPlayer.volume = effectiveTargetVolume()
+            }
+        }
+    }
+
+    private fun effectiveTargetVolume(): Float {
+        // 开启响度平滑时留出约 1.3dB 软余量，配合温和 LoudnessEnhancer 防止不同音源忽大忽小或削波破音
+        val normFactor = if (volumeNormalizationEnabled) 0.86f else 1.0f
+        return (desiredUserVolume * normFactor).coerceIn(0f, 1f)
+    }
+
+    private fun cancelVolumeFade() {
+        volumeFadeJob?.cancel()
+        volumeFadeJob = null
+    }
+
+    private fun animateVolumeTo(
+        target: Float,
+        durationMs: Long,
+        fromVolume: Float? = null,
+        onComplete: (() -> Unit)? = null
+    ) {
+        cancelVolumeFade()
+        if (!::exoPlayer.isInitialized) {
+            onComplete?.invoke()
+            return
+        }
+        val clampedTarget = target.coerceIn(0f, 1f)
+        if (durationMs <= 20L) {
+            exoPlayer.volume = clampedTarget
+            onComplete?.invoke()
+            return
+        }
+        val startVol = (fromVolume ?: exoPlayer.volume).coerceIn(0f, 1f)
+        val steps = (durationMs / 25L).coerceIn(4L, 120L).toInt()
+        val stepDelayMs = (durationMs / steps).coerceAtLeast(16L)
+        volumeFadeJob = serviceScope.launch(Dispatchers.Main) {
+            try {
+                for (i in 1..steps) {
+                    delay(stepDelayMs)
+                    if (!::exoPlayer.isInitialized) return@launch
+                    val t = i.toFloat() / steps.toFloat()
+                    // 平滑缓动曲线 (smoothstep)，听感更自然无突兀阶梯
+                    val eased = t * t * (3f - 2f * t)
+                    exoPlayer.volume = (startVol + (clampedTarget - startVol) * eased).coerceIn(0f, 1f)
+                }
+                if (::exoPlayer.isInitialized) {
+                    exoPlayer.volume = clampedTarget
+                }
+                onComplete?.invoke()
+            } catch (_: kotlinx.coroutines.CancellationException) {
+                // 被新切歌/新播放意图打断时安静退出
             }
         }
     }
@@ -1682,6 +1820,40 @@ class MusicPlaybackService : Service() {
     private fun releaseEqualizer() {
         runCatching { equalizer?.release() }
         equalizer = null
+    }
+
+    private fun initLoudnessEnhancer(audioSessionId: Int) {
+        if (audioSessionId == C.AUDIO_SESSION_ID_UNSET || audioSessionId == 0) return
+        volumeNormalizationEnabled = latestVolumeNormalization
+        releaseLoudnessEnhancer()
+        runCatching {
+            val enhancer = LoudnessEnhancer(audioSessionId)
+            loudnessEnhancer = enhancer
+            applyLoudnessNormalization()
+        }.onFailure {
+            Log.w(TAG, "LoudnessEnhancer init failed (using soft headroom fallback): ${it.message}")
+        }
+    }
+
+    private fun applyLoudnessNormalization() {
+        val enhancer = loudnessEnhancer ?: return
+        runCatching {
+            if (volumeNormalizationEnabled) {
+                // 温和 +220mB（+2.2dB）自动补益配合 0.86 软增益上限，提升偏小音源同时避免破音
+                enhancer.setTargetGain(220)
+                enhancer.enabled = true
+            } else {
+                enhancer.setTargetGain(0)
+                enhancer.enabled = false
+            }
+        }.onFailure {
+            Log.w(TAG, "applyLoudnessNormalization failed: ${it.message}")
+        }
+    }
+
+    private fun releaseLoudnessEnhancer() {
+        runCatching { loudnessEnhancer?.release() }
+        loudnessEnhancer = null
     }
 
     // ==================== URI 解析、封面加载与前台通知 ====================

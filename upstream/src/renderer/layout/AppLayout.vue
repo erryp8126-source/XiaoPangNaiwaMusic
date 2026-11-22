@@ -12,6 +12,8 @@
         <div class="main">
           <!-- 搜索栏 -->
           <search-bar class="search-bar" />
+          <!-- 离线轻提示条 -->
+          <offline-banner />
           <!-- 主页面路由 -->
           <div
             class="main-content"
@@ -59,6 +61,7 @@
 import { computed, defineAsyncComponent, onMounted, provide, ref } from 'vue';
 import { useRoute } from 'vue-router';
 
+import OfflineBanner from '@/components/common/OfflineBanner.vue';
 import PlayBottom from '@/components/common/PlayBottom.vue';
 import UpdateModal from '@/components/common/UpdateModal.vue';
 import SleepTimerTop from '@/components/player/SleepTimerTop.vue';

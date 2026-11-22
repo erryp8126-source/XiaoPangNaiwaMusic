@@ -3,9 +3,17 @@ import { computed, ref } from 'vue';
 
 import { BUILTIN_QUICK_SYNC_CONFIG, hasBuiltinQuickSync } from '@/config/quickSyncConfig';
 import { useFavoriteStore } from '@/store/modules/favorite';
-import { type ListeningStatsData, useListeningStatsStore } from '@/store/modules/listeningStats';
+import { useListeningStatsStore } from '@/store/modules/listeningStats';
 import { usePlayHistoryStore } from '@/store/modules/playHistory';
+import { useSettingsStore } from '@/store/modules/settings';
 import { invokeAndroidAsync, isAndroid } from '@/utils/androidBridge';
+import {
+  type CloudSyncSnapshot,
+  computeSyncSnapshotDigest,
+  detectSyncConflict,
+  smartMergeCloudSnapshots,
+  type SyncCustomPlaylist
+} from '@/utils/cloudSyncMerge';
 import {
   decryptSyncPayload,
   deriveSyncId,
@@ -15,7 +23,9 @@ import {
   validateSyncCode
 } from '@/utils/syncCrypto';
 
+export type { CloudSyncSnapshot };
 export type SyncProvider = 'quick' | 'webdav' | 'github';
+export type ConflictResolutionStrategy = 'smart-merge' | 'use-remote' | 'overwrite-remote';
 
 export interface CloudSyncConfig {
   provider: SyncProvider;
@@ -42,25 +52,34 @@ export interface CloudSyncConfig {
   };
 }
 
-export interface CloudSyncSnapshot {
-  schema: 'xiaopang-music-sync-v1';
-  updatedAt: number;
-  deviceName: string;
-  playHistory?: {
-    musicHistory?: any[];
-    playlistHistory?: any[];
-    albumHistory?: any[];
-    podcastHistory?: any[];
-    podcastRadioHistory?: any[];
+export interface PendingSyncConflict {
+  provider: SyncProvider;
+  localSnapshot: CloudSyncSnapshot;
+  remoteSnapshot: CloudSyncSnapshot;
+  remoteUpdatedAt: number;
+  reason: string;
+  localSummary: {
+    revision: number;
+    updatedAt: number;
+    deviceName: string;
+    songsCount: number;
+    favoritesCount: number;
+    playlistsCount: number;
   };
-  favoriteList?: Array<number | string>;
-  dislikeList?: Array<number | string>;
-  listeningStats?: ListeningStatsData;
+  remoteSummary: {
+    revision: number;
+    updatedAt: number;
+    deviceName: string;
+    songsCount: number;
+    favoritesCount: number;
+    playlistsCount: number;
+  };
 }
 
 export interface CloudSyncResult {
   ok: boolean;
   message: string;
+  conflict?: boolean;
   syncCode?: string;
   songsCount?: number;
   favoritesCount?: number;
@@ -69,8 +88,23 @@ export interface CloudSyncResult {
 
 const CONFIG_STORAGE_KEY = 'xiaopang_cloud_sync_config_v1';
 const META_STORAGE_KEY = 'xiaopang_cloud_sync_meta_v1';
+const DEVICE_ID_STORAGE_KEY = 'xiaopang_cloud_sync_device_id_v1';
+const CUSTOM_PLAYLISTS_STORAGE_KEY = 'xiaopang_custom_playlists_v1';
 const GIST_FILENAME = 'xiaopang-music-sync-v1.json';
 const QUICK_MAX_PAYLOAD_BYTES = 480 * 1024;
+const SYNCABLE_PREF_KEYS = [
+  'musicQuality',
+  'enableMusicUnblock',
+  'enabledMusicSources',
+  'enableDynamicBackground',
+  'crossfadeEnabled',
+  'crossfadeDurationSec',
+  'volumeNormalizationEnabled',
+  'autoPlay',
+  'autoTheme',
+  'manualTheme',
+  'language'
+] as const;
 
 const DEFAULT_CONFIG: CloudSyncConfig = {
   provider: 'quick',
@@ -118,14 +152,71 @@ function loadConfig(): CloudSyncConfig {
   }
 }
 
-function loadMeta(): { lastSyncAt: number; lastSyncMsg: string; lastSyncProvider: string } {
+interface SyncBaselineMeta {
+  lastSyncAt: number;
+  lastSyncMsg: string;
+  lastSyncProvider: string;
+  lastSyncedRevision: number;
+  lastRemoteUpdatedAt: number;
+  lastSyncedLocalDigest: string;
+}
+
+function loadMeta(): SyncBaselineMeta {
   try {
     const raw = localStorage.getItem(META_STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        lastSyncAt: Number(parsed.lastSyncAt) || 0,
+        lastSyncMsg: String(parsed.lastSyncMsg || ''),
+        lastSyncProvider: String(parsed.lastSyncProvider || ''),
+        lastSyncedRevision: Number(parsed.lastSyncedRevision) || 0,
+        lastRemoteUpdatedAt: Number(parsed.lastRemoteUpdatedAt) || 0,
+        lastSyncedLocalDigest: String(parsed.lastSyncedLocalDigest || '')
+      };
+    }
   } catch {
     // ignore
   }
-  return { lastSyncAt: 0, lastSyncMsg: '', lastSyncProvider: '' };
+  return {
+    lastSyncAt: 0,
+    lastSyncMsg: '',
+    lastSyncProvider: '',
+    lastSyncedRevision: 0,
+    lastRemoteUpdatedAt: 0,
+    lastSyncedLocalDigest: ''
+  };
+}
+
+function getOrCreateDeviceId(): string {
+  try {
+    const existing = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    if (existing && existing.length >= 8) return existing;
+    const generated = `dev_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    localStorage.setItem(DEVICE_ID_STORAGE_KEY, generated);
+    return generated;
+  } catch {
+    return 'dev_local';
+  }
+}
+
+function loadLocalCustomPlaylists(): SyncCustomPlaylist[] {
+  try {
+    const raw = localStorage.getItem(CUSTOM_PLAYLISTS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalCustomPlaylists(list: SyncCustomPlaylist[]): void {
+  try {
+    localStorage.setItem(CUSTOM_PLAYLISTS_STORAGE_KEY, JSON.stringify(list));
+  } catch {
+    // ignore
+  }
 }
 
 function toBase64Utf8(str: string): string {
@@ -248,9 +339,14 @@ function detectDeviceName(): string {
 export const useCloudSyncStore = defineStore('cloudSync', () => {
   const config = ref<CloudSyncConfig>(loadConfig());
   const meta = loadMeta();
+  const currentDeviceId = getOrCreateDeviceId();
   const lastSyncAt = ref<number>(meta.lastSyncAt || 0);
   const lastSyncMsg = ref<string>(meta.lastSyncMsg || '');
   const lastSyncProvider = ref<string>(meta.lastSyncProvider || '');
+  const lastSyncedRevision = ref<number>(meta.lastSyncedRevision || 0);
+  const lastRemoteUpdatedAt = ref<number>(meta.lastRemoteUpdatedAt || 0);
+  const lastSyncedLocalDigest = ref<string>(meta.lastSyncedLocalDigest || '');
+  const pendingConflict = ref<PendingSyncConflict | null>(null);
   const syncing = ref(false);
   const testing = ref(false);
 
@@ -323,17 +419,35 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
     }
   };
 
-  const saveMeta = (msg: string, providerLabel: string) => {
+  const saveMeta = (
+    msg: string,
+    providerLabel: string,
+    baseline?: { revision?: number; remoteUpdatedAt?: number; localDigest?: string }
+  ) => {
     lastSyncAt.value = Date.now();
     lastSyncMsg.value = msg;
     lastSyncProvider.value = providerLabel;
+    if (baseline) {
+      if (typeof baseline.revision === 'number') {
+        lastSyncedRevision.value = baseline.revision;
+      }
+      if (typeof baseline.remoteUpdatedAt === 'number' && baseline.remoteUpdatedAt > 0) {
+        lastRemoteUpdatedAt.value = baseline.remoteUpdatedAt;
+      }
+      if (typeof baseline.localDigest === 'string') {
+        lastSyncedLocalDigest.value = baseline.localDigest;
+      }
+    }
     try {
       localStorage.setItem(
         META_STORAGE_KEY,
         JSON.stringify({
           lastSyncAt: lastSyncAt.value,
           lastSyncMsg: lastSyncMsg.value,
-          lastSyncProvider: lastSyncProvider.value
+          lastSyncProvider: lastSyncProvider.value,
+          lastSyncedRevision: lastSyncedRevision.value,
+          lastRemoteUpdatedAt: lastRemoteUpdatedAt.value,
+          lastSyncedLocalDigest: lastSyncedLocalDigest.value
         })
       );
     } catch {
@@ -342,21 +456,38 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
   };
 
   /**
-   * 打包本地所有个人数据快照
+   * 打包本地所有个人数据快照（含单调递增 revision 与 clientUpdatedAt）
    */
   const buildLocalSnapshot = async (maxSongsOverride?: number): Promise<CloudSyncSnapshot> => {
     const playHistoryStore = usePlayHistoryStore();
     const favoriteStore = useFavoriteStore();
     const listeningStatsStore = useListeningStatsStore();
+    const settingsStore = useSettingsStore();
 
     if (config.value.syncListeningStats) {
       await listeningStatsStore.refreshStats();
     }
 
+    const now = Date.now();
+    const prefData: Record<string, any> = {};
+    for (const key of SYNCABLE_PREF_KEYS) {
+      if (settingsStore.setData && settingsStore.setData[key] !== undefined) {
+        prefData[key] = structuredCloneCompat(settingsStore.setData[key]);
+      }
+    }
+
     const snapshot: CloudSyncSnapshot = {
       schema: 'xiaopang-music-sync-v1',
-      updatedAt: Date.now(),
-      deviceName: detectDeviceName()
+      revision: Math.max(0, lastSyncedRevision.value),
+      clientUpdatedAt: now,
+      updatedAt: now,
+      deviceId: currentDeviceId,
+      deviceName: detectDeviceName(),
+      customPlaylists: loadLocalCustomPlaylists(),
+      preferences: {
+        updatedAt: now,
+        data: prefData
+      }
     };
 
     if (config.value.syncHistory) {
@@ -378,7 +509,7 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
   };
 
   /**
-   * 将远端/备份快照合并到本地
+   * 将远端/合并快照应用到本地各 Store 与配置项
    */
   const applyRemoteSnapshot = async (
     remote: Partial<CloudSyncSnapshot> | null,
@@ -387,6 +518,7 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
     const playHistoryStore = usePlayHistoryStore();
     const favoriteStore = useFavoriteStore();
     const listeningStatsStore = useListeningStatsStore();
+    const settingsStore = useSettingsStore();
 
     if (remote && typeof remote === 'object') {
       if (config.value.syncHistory && remote.playHistory) {
@@ -395,8 +527,22 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
       if (config.value.syncFavorites && (remote.favoriteList || remote.dislikeList)) {
         favoriteStore.mergeRemoteFavorites(remote.favoriteList, remote.dislikeList, mode);
       }
+      if (Array.isArray(remote.customPlaylists)) {
+        saveLocalCustomPlaylists(remote.customPlaylists);
+      }
       if (config.value.syncListeningStats && remote.listeningStats) {
         await listeningStatsStore.mergeRemoteStats(remote.listeningStats);
+      }
+      if (remote.preferences?.data && typeof remote.preferences.data === 'object') {
+        const nextPrefs: Record<string, any> = {};
+        for (const key of SYNCABLE_PREF_KEYS) {
+          if (remote.preferences.data[key] !== undefined) {
+            nextPrefs[key] = structuredCloneCompat(remote.preferences.data[key]);
+          }
+        }
+        if (Object.keys(nextPrefs).length > 0) {
+          settingsStore.setSetData(nextPrefs);
+        }
       }
     }
 
@@ -409,6 +555,102 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
       favoritesCount: favoriteStore.favoriteList.length,
       totalSeconds: listeningStatsStore.stats.totalSeconds
     };
+  };
+
+  const buildSnapshotSummary = (snap: Partial<CloudSyncSnapshot>, fallbackUpdatedAt = 0) => ({
+    revision: Math.max(0, Number(snap.revision) || 0),
+    updatedAt: Number(snap.clientUpdatedAt || snap.updatedAt || fallbackUpdatedAt) || 0,
+    deviceName: snap.deviceName || '其他设备',
+    songsCount: snap.playHistory?.musicHistory?.length || 0,
+    favoritesCount: snap.favoriteList?.length || 0,
+    playlistsCount: snap.customPlaylists?.length || 0
+  });
+
+  type SyncDecision =
+    | { status: 'conflict' }
+    | {
+        status: 'use-remote-done';
+        counts: { songsCount: number; favoritesCount: number; totalSeconds: number };
+        revision: number;
+        remoteUpdatedAt: number;
+        localDigest: string;
+      }
+    | {
+        status: 'upload';
+        snapshotToUpload: CloudSyncSnapshot;
+        counts: { songsCount: number; favoritesCount: number; totalSeconds: number };
+      };
+
+  /**
+   * 统一执行版本冲突检测与合并决策（三端协议共用）
+   */
+  const evaluateAndPrepareSyncWrite = async (
+    provider: SyncProvider,
+    remoteSnapshot: CloudSyncSnapshot | null,
+    remoteUpdatedAt: number,
+    silent: boolean,
+    strategy?: ConflictResolutionStrategy
+  ): Promise<SyncDecision> => {
+    const localSnapshot = await buildLocalSnapshot();
+
+    if (remoteSnapshot && !strategy) {
+      const detection = detectSyncConflict({
+        localSnapshot,
+        remoteSnapshot,
+        remoteUpdatedAt,
+        lastRemoteUpdatedAt: lastRemoteUpdatedAt.value,
+        lastSyncedRevision: lastSyncedRevision.value,
+        lastSyncedLocalDigest: lastSyncedLocalDigest.value,
+        currentDeviceId
+      });
+
+      if (detection.hasConflict && !silent) {
+        pendingConflict.value = {
+          provider,
+          localSnapshot,
+          remoteSnapshot,
+          remoteUpdatedAt,
+          reason: detection.reason,
+          localSummary: buildSnapshotSummary(localSnapshot, localSnapshot.clientUpdatedAt),
+          remoteSummary: buildSnapshotSummary(remoteSnapshot, remoteUpdatedAt)
+        };
+        return { status: 'conflict' };
+      }
+    }
+
+    if (strategy === 'use-remote' && remoteSnapshot) {
+      const counts = await applyRemoteSnapshot(remoteSnapshot, 'replace');
+      const alignedLocal = await buildLocalSnapshot();
+      return {
+        status: 'use-remote-done',
+        counts,
+        revision: Math.max(Number(remoteSnapshot.revision) || 0, 1),
+        remoteUpdatedAt: remoteUpdatedAt || remoteSnapshot.clientUpdatedAt || remoteSnapshot.updatedAt || Date.now(),
+        localDigest: computeSyncSnapshotDigest(alignedLocal)
+      };
+    }
+
+    if (strategy === 'overwrite-remote') {
+      const now = Date.now();
+      const nextRev = Math.max(localSnapshot.revision, Number(remoteSnapshot?.revision) || 0) + 1;
+      const snapshotToUpload: CloudSyncSnapshot = {
+        ...localSnapshot,
+        revision: nextRev,
+        clientUpdatedAt: now,
+        updatedAt: now
+      };
+      const counts = {
+        songsCount: localSnapshot.playHistory?.musicHistory?.length || 0,
+        favoritesCount: localSnapshot.favoriteList?.length || 0,
+        totalSeconds: localSnapshot.listeningStats?.totalSeconds || 0
+      };
+      return { status: 'upload', snapshotToUpload, counts };
+    }
+
+    // 默认或用户选择「智能合并（推荐）」：按 ID 去重并集 + 较新配置保留 + revision 递增
+    const mergedSnapshot = smartMergeCloudSnapshots(localSnapshot, remoteSnapshot);
+    const counts = await applyRemoteSnapshot(mergedSnapshot, 'replace');
+    return { status: 'upload', snapshotToUpload: mergedSnapshot, counts };
   };
 
   // ==================== 方案 1：专属同步口令（Supabase 端到端加密云同步） ====================
@@ -459,7 +701,10 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
     }
   };
 
-  const syncQuickCode = async (): Promise<CloudSyncResult> => {
+  const syncQuickCode = async (
+    silent = false,
+    strategy?: ConflictResolutionStrategy
+  ): Promise<CloudSyncResult> => {
     if (!hasQuickSyncEndpoint.value) {
       return {
         ok: false,
@@ -482,7 +727,7 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
     const headers = getSupabaseHeaders();
     const baseUrl = effectiveSupabaseUrl.value;
 
-    // 1. 拉取远端密文
+    // 1. 拉取远端密文与服务端 updated_at
     const getRes = await nativeAwareRequest({
       url: `${baseUrl}/rest/v1/rpc/get_sync_blob`,
       method: 'POST',
@@ -516,19 +761,68 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
       }
     }
 
-    // 2. 双向智能合并远端与本地
-    const counts = await applyRemoteSnapshot(remoteSnapshot, 'merge');
+    const remoteUpdatedAt =
+      Number(getBody?.updated_at) ||
+      Number(remoteSnapshot?.clientUpdatedAt) ||
+      Number(remoteSnapshot?.updatedAt) ||
+      0;
 
-    // 3. 端到端加密并回传最新快照（如超 480KB 自动按条数精简历史以适配 512KB 上限）
-    let mergedSnapshot = await buildLocalSnapshot();
-    let encryptedEnvelope = await encryptSyncPayload(JSON.stringify(mergedSnapshot), normalizedCode);
-    if (new TextEncoder().encode(encryptedEnvelope).length > QUICK_MAX_PAYLOAD_BYTES) {
-      mergedSnapshot = await buildLocalSnapshot(260);
-      encryptedEnvelope = await encryptSyncPayload(JSON.stringify(mergedSnapshot), normalizedCode);
+    // 2. 冲突检测与合并决策（多端并发更新时弹出三选一）
+    const decision = await evaluateAndPrepareSyncWrite(
+      'quick',
+      remoteSnapshot,
+      remoteUpdatedAt,
+      silent,
+      strategy
+    );
+
+    if (decision.status === 'conflict') {
+      return {
+        ok: false,
+        conflict: true,
+        syncCode: normalizedCode,
+        message: '检测到云端与本机存在并发修改，请在弹窗中选择合并策略'
+      };
     }
-    if (new TextEncoder().encode(encryptedEnvelope).length > QUICK_MAX_PAYLOAD_BYTES) {
-      mergedSnapshot = await buildLocalSnapshot(120);
-      encryptedEnvelope = await encryptSyncPayload(JSON.stringify(mergedSnapshot), normalizedCode);
+
+    if (decision.status === 'use-remote-done') {
+      const msg = `已以云端版本为准恢复（历史 ${decision.counts.songsCount} 首 · 喜欢 ${decision.counts.favoritesCount} 首）`;
+      saveMeta(msg, '同步口令云', {
+        revision: decision.revision,
+        remoteUpdatedAt: decision.remoteUpdatedAt,
+        localDigest: decision.localDigest
+      });
+      return {
+        ok: true,
+        message: msg,
+        syncCode: normalizedCode,
+        ...decision.counts
+      };
+    }
+
+    // 3. 端到端加密并回传最新快照（如超 480KB 自动按条数精简历史以适配 512KB 上限，保持 revision 不变）
+    let snapshotToUpload: CloudSyncSnapshot = decision.snapshotToUpload;
+    let encryptedEnvelope = await encryptSyncPayload(
+      JSON.stringify(snapshotToUpload),
+      normalizedCode
+    );
+    for (const limit of [260, 120]) {
+      if (new TextEncoder().encode(encryptedEnvelope).length <= QUICK_MAX_PAYLOAD_BYTES) {
+        break;
+      }
+      if (snapshotToUpload.playHistory?.musicHistory) {
+        snapshotToUpload = {
+          ...snapshotToUpload,
+          playHistory: {
+            ...snapshotToUpload.playHistory,
+            musicHistory: snapshotToUpload.playHistory.musicHistory.slice(0, limit)
+          }
+        };
+        encryptedEnvelope = await encryptSyncPayload(
+          JSON.stringify(snapshotToUpload),
+          normalizedCode
+        );
+      }
     }
 
     const putRes = await nativeAwareRequest({
@@ -551,14 +845,26 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
       return { ok: false, message: `云端写入被拒绝（${putBody.error || '未知错误'}）` };
     }
 
-    const actionTip = remoteSnapshot ? '云端双向合并成功' : '已安全备份到云端';
-    const msg = `${actionTip}（历史 ${counts.songsCount} 首 · 喜欢 ${counts.favoritesCount} 首）`;
-    saveMeta(msg, '同步口令云');
+    const syncedLocalDigest = computeSyncSnapshotDigest(await buildLocalSnapshot());
+    const uploadedRemoteAt =
+      Number(putBody?.updated_at) || snapshotToUpload.clientUpdatedAt || Date.now();
+    const actionTip =
+      strategy === 'overwrite-remote'
+        ? '已以本机版本覆盖云端'
+        : remoteSnapshot
+          ? '云端智能合并成功'
+          : '已安全备份到云端';
+    const msg = `${actionTip}（v${snapshotToUpload.revision} · 历史 ${decision.counts.songsCount} 首 · 喜欢 ${decision.counts.favoritesCount} 首）`;
+    saveMeta(msg, '同步口令云', {
+      revision: snapshotToUpload.revision,
+      remoteUpdatedAt: uploadedRemoteAt,
+      localDigest: syncedLocalDigest
+    });
     return {
       ok: true,
       message: msg,
       syncCode: normalizedCode,
-      ...counts
+      ...decision.counts
     };
   };
 
@@ -569,11 +875,19 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
     const code = rawCode?.trim() ? normalizeSyncCode(rawCode) : generateFriendlySyncCode();
     const check = validateSyncCode(code);
     if (!check.valid) {
-      return { ok: false, message: check.reason || '同步口令至少需要 6 位字符' };
+      return { ok: false, message: check.reason || '同步口令至少需要 10 位字符' };
     }
+    const codeChanged = config.value.quick.syncCode !== code;
     config.value.provider = 'quick';
     config.value.quick.syncCode = code;
     saveConfig();
+
+    if (codeChanged) {
+      lastSyncedRevision.value = 0;
+      lastRemoteUpdatedAt.value = 0;
+      lastSyncedLocalDigest.value = '';
+      pendingConflict.value = null;
+    }
 
     const res = await syncNow(false);
     return { ...res, syncCode: code };
@@ -581,6 +895,10 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
 
   const disconnectQuickSync = () => {
     config.value.quick.syncCode = '';
+    lastSyncedRevision.value = 0;
+    lastRemoteUpdatedAt.value = 0;
+    lastSyncedLocalDigest.value = '';
+    pendingConflict.value = null;
     saveConfig();
   };
 
@@ -638,7 +956,10 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
     }
   };
 
-  const syncWebdav = async (): Promise<CloudSyncResult> => {
+  const syncWebdav = async (
+    silent = false,
+    strategy?: ConflictResolutionStrategy
+  ): Promise<CloudSyncResult> => {
     const w = config.value.webdav;
     if (!isWebdavConfigured.value) {
       return { ok: false, message: '请先填写完整的 WebDAV 配置' };
@@ -685,8 +1006,40 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
       return { ok: false, message: `读取云端文件失败（HTTP ${getRes.statusCode}）` };
     }
 
-    const counts = await applyRemoteSnapshot(remoteSnapshot, 'merge');
-    const mergedSnapshot = await buildLocalSnapshot();
+    const parsedLastMod = Date.parse(getRes.headers['last-modified'] || '');
+    const remoteUpdatedAt =
+      (Number.isFinite(parsedLastMod) ? parsedLastMod : 0) ||
+      Number(remoteSnapshot?.clientUpdatedAt) ||
+      Number(remoteSnapshot?.updatedAt) ||
+      0;
+
+    const decision = await evaluateAndPrepareSyncWrite(
+      'webdav',
+      remoteSnapshot,
+      remoteUpdatedAt,
+      silent,
+      strategy
+    );
+
+    if (decision.status === 'conflict') {
+      return {
+        ok: false,
+        conflict: true,
+        message: '检测到 WebDAV 云端与本机存在并发修改，请在弹窗中选择合并策略'
+      };
+    }
+
+    if (decision.status === 'use-remote-done') {
+      const msg = `已以 WebDAV 云端版本为准恢复（历史 ${decision.counts.songsCount} 首 · 喜欢 ${decision.counts.favoritesCount} 首）`;
+      saveMeta(msg, 'WebDAV', {
+        revision: decision.revision,
+        remoteUpdatedAt: decision.remoteUpdatedAt,
+        localDigest: decision.localDigest
+      });
+      return { ok: true, message: msg, ...decision.counts };
+    }
+
+    const snapshotToUpload = decision.snapshotToUpload;
     const putRes = await nativeAwareRequest({
       url: fileUrl,
       method: 'PUT',
@@ -694,7 +1047,7 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
         ...authHeaders,
         'Content-Type': 'application/json; charset=utf-8'
       },
-      body: JSON.stringify(mergedSnapshot),
+      body: JSON.stringify(snapshotToUpload),
       timeout: 25000
     });
 
@@ -702,9 +1055,19 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
       return { ok: false, message: `上传到 WebDAV 失败（HTTP ${putRes.statusCode}）` };
     }
 
-    const msg = `WebDAV 同步完成（历史 ${counts.songsCount} 首 · 喜欢 ${counts.favoritesCount} 首）`;
-    saveMeta(msg, 'WebDAV');
-    return { ok: true, message: msg, ...counts };
+    const syncedLocalDigest = computeSyncSnapshotDigest(await buildLocalSnapshot());
+    const uploadedLastMod = Date.parse(putRes.headers['last-modified'] || '');
+    const uploadedRemoteAt =
+      (Number.isFinite(uploadedLastMod) ? uploadedLastMod : 0) ||
+      snapshotToUpload.clientUpdatedAt ||
+      Date.now();
+    const msg = `WebDAV 同步完成（v${snapshotToUpload.revision} · 历史 ${decision.counts.songsCount} 首 · 喜欢 ${decision.counts.favoritesCount} 首）`;
+    saveMeta(msg, 'WebDAV', {
+      revision: snapshotToUpload.revision,
+      remoteUpdatedAt: uploadedRemoteAt,
+      localDigest: syncedLocalDigest
+    });
+    return { ok: true, message: msg, ...decision.counts };
   };
 
   // ==================== 极客方案 B：GitHub 私有 Gist ====================
@@ -743,7 +1106,10 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
     }
   };
 
-  const syncGithubGist = async (): Promise<CloudSyncResult> => {
+  const syncGithubGist = async (
+    silent = false,
+    strategy?: ConflictResolutionStrategy
+  ): Promise<CloudSyncResult> => {
     if (!isGithubConfigured.value) {
       return { ok: false, message: '请先填写 GitHub Token' };
     }
@@ -817,9 +1183,46 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
       }
     }
 
-    const counts = await applyRemoteSnapshot(remoteSnapshot, 'merge');
-    const mergedSnapshot = await buildLocalSnapshot();
-    const contentStr = JSON.stringify(mergedSnapshot);
+    const parsedGistUpdatedAt = Date.parse(gistObj?.updated_at || '');
+    const remoteUpdatedAt =
+      (Number.isFinite(parsedGistUpdatedAt) ? parsedGistUpdatedAt : 0) ||
+      Number(remoteSnapshot?.clientUpdatedAt) ||
+      Number(remoteSnapshot?.updatedAt) ||
+      0;
+
+    const decision = await evaluateAndPrepareSyncWrite(
+      'github',
+      remoteSnapshot,
+      remoteUpdatedAt,
+      silent,
+      strategy
+    );
+
+    if (decision.status === 'conflict') {
+      return {
+        ok: false,
+        conflict: true,
+        message: '检测到 GitHub 云端与本机存在并发修改，请在弹窗中选择合并策略'
+      };
+    }
+
+    if (decision.status === 'use-remote-done') {
+      if (gistId && config.value.github.gistId !== gistId) {
+        config.value.github.gistId = gistId;
+        saveConfig();
+      }
+      const msg = `已以 GitHub 云端版本为准恢复（历史 ${decision.counts.songsCount} 首 · 喜欢 ${decision.counts.favoritesCount} 首）`;
+      saveMeta(msg, 'GitHub Gist', {
+        revision: decision.revision,
+        remoteUpdatedAt: decision.remoteUpdatedAt,
+        localDigest: decision.localDigest
+      });
+      return { ok: true, message: msg, ...decision.counts };
+    }
+
+    const snapshotToUpload = decision.snapshotToUpload;
+    const contentStr = JSON.stringify(snapshotToUpload);
+    let updatedGistResp: any = null;
 
     if (gistId && gistObj) {
       const patchRes = await nativeAwareRequest({
@@ -839,6 +1242,7 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
       if (patchRes.statusCode !== 200) {
         return { ok: false, message: `更新 GitHub Gist 失败（HTTP ${patchRes.statusCode}）` };
       }
+      updatedGistResp = parseJsonBody(patchRes.body);
     } else {
       const createRes = await nativeAwareRequest({
         url: 'https://api.github.com/gists',
@@ -859,9 +1263,9 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
       if (createRes.statusCode !== 201 && createRes.statusCode !== 200) {
         return { ok: false, message: `创建私有 Gist 失败（HTTP ${createRes.statusCode}）` };
       }
-      const created = parseJsonBody(createRes.body);
-      if (created?.id) {
-        gistId = String(created.id);
+      updatedGistResp = parseJsonBody(createRes.body);
+      if (updatedGistResp?.id) {
+        gistId = String(updatedGistResp.id);
       }
     }
 
@@ -870,14 +1274,27 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
       saveConfig();
     }
 
-    const msg = `GitHub 私有云同步完成（历史 ${counts.songsCount} 首 · 喜欢 ${counts.favoritesCount} 首）`;
-    saveMeta(msg, 'GitHub Gist');
-    return { ok: true, message: msg, ...counts };
+    const syncedLocalDigest = computeSyncSnapshotDigest(await buildLocalSnapshot());
+    const uploadedGistTs = Date.parse(updatedGistResp?.updated_at || '');
+    const uploadedRemoteAt =
+      (Number.isFinite(uploadedGistTs) ? uploadedGistTs : 0) ||
+      snapshotToUpload.clientUpdatedAt ||
+      Date.now();
+    const msg = `GitHub 私有云同步完成（v${snapshotToUpload.revision} · 历史 ${decision.counts.songsCount} 首 · 喜欢 ${decision.counts.favoritesCount} 首）`;
+    saveMeta(msg, 'GitHub Gist', {
+      revision: snapshotToUpload.revision,
+      remoteUpdatedAt: uploadedRemoteAt,
+      localDigest: syncedLocalDigest
+    });
+    return { ok: true, message: msg, ...decision.counts };
   };
 
   // ==================== 统一同步入口 & 本地备份 ====================
 
-  const syncNow = async (silent = false): Promise<CloudSyncResult> => {
+  const syncNow = async (
+    silent = false,
+    strategy?: ConflictResolutionStrategy
+  ): Promise<CloudSyncResult> => {
     if (syncing.value) {
       return { ok: false, message: '正在同步中，请稍候...' };
     }
@@ -887,9 +1304,9 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
 
     syncing.value = true;
     try {
-      if (config.value.provider === 'quick') return await syncQuickCode();
-      if (config.value.provider === 'github') return await syncGithubGist();
-      return await syncWebdav();
+      if (config.value.provider === 'quick') return await syncQuickCode(silent, strategy);
+      if (config.value.provider === 'github') return await syncGithubGist(silent, strategy);
+      return await syncWebdav(silent, strategy);
     } catch (err: any) {
       const errMsg = String(err?.message || err || '同步异常');
       if (!silent) {
@@ -909,6 +1326,22 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
     } finally {
       syncing.value = false;
     }
+  };
+
+  const resolvePendingConflict = async (
+    strategy: ConflictResolutionStrategy
+  ): Promise<CloudSyncResult> => {
+    const conflict = pendingConflict.value;
+    pendingConflict.value = null;
+    if (conflict && conflict.provider !== config.value.provider) {
+      config.value.provider = conflict.provider;
+      saveConfig();
+    }
+    return syncNow(false, strategy);
+  };
+
+  const dismissPendingConflict = () => {
+    pendingConflict.value = null;
   };
 
   const testConnection = async (): Promise<CloudSyncResult> => {
@@ -971,6 +1404,8 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
     lastSyncAt,
     lastSyncMsg,
     lastSyncProvider,
+    lastSyncedRevision,
+    pendingConflict,
     syncing,
     testing,
     hasQuickSyncEndpoint,
@@ -986,6 +1421,8 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
     enableQuickSyncWithCode,
     disconnectQuickSync,
     syncNow,
+    resolvePendingConflict,
+    dismissPendingConflict,
     exportBackupJsonString,
     importBackupJsonString,
     runAutoSyncOnLaunch,

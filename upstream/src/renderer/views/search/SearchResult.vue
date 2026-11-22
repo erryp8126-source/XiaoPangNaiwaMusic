@@ -98,6 +98,21 @@
 
             <!-- Right Tools -->
             <div class="flex items-center gap-3">
+              <!-- 仅看离线可播开关 -->
+              <button
+                type="button"
+                class="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold border transition-all active:scale-95 whitespace-nowrap"
+                :class="
+                  onlyOfflinePlayable
+                    ? 'bg-emerald-500 text-white border-emerald-500 shadow-sm shadow-emerald-500/30'
+                    : 'bg-neutral-100 dark:bg-neutral-900 text-neutral-600 dark:text-neutral-300 border-neutral-200 dark:border-neutral-800'
+                "
+                @click="toggleOnlyOffline"
+              >
+                <i class="ri-download-cloud-2-line text-sm"></i>
+                <span>仅看离线可播</span>
+              </button>
+
               <!-- Layout Toggle -->
               <button
                 v-if="!isMobile"
@@ -127,7 +142,14 @@
               <!-- Music List Style (Songs) -->
               <div v-if="searchType === SEARCH_TYPE.MUSIC" class="song-results-list">
                 <div
-                  v-for="(item, index) in searchDetail?.songs"
+                  v-if="onlyOfflinePlayable && filteredSearchSongs.length === 0"
+                  class="flex flex-col items-center justify-center py-16 text-neutral-400"
+                >
+                  <i class="ri-wifi-off-line text-4xl mb-3 opacity-30"></i>
+                  <p class="text-sm">当前搜索结果暂无离线可播歌曲</p>
+                </div>
+                <div
+                  v-for="(item, index) in filteredSearchSongs"
                   :key="item.id"
                   class="mb-2 animate-item"
                   :style="{ animationDelay: calculateAnimationDelay(index % 30, 0.04) }"
@@ -247,10 +269,12 @@ import SongItem from '@/components/common/SongItem.vue';
 import { SEARCH_TYPE, SEARCH_TYPES } from '@/const/bar-const';
 import { useDownload } from '@/hooks/useDownload';
 import { useScrollTitle } from '@/hooks/useScrollTitle';
+import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';
 import { usePlayerStore } from '@/store/modules/player';
 import { useSearchStore } from '@/store/modules/search';
 import type { SongResult } from '@/types/music';
 import { calculateAnimationDelay, isElectron, isMobile } from '@/utils';
+import { triggerHaptic } from '@/utils/androidBridge';
 
 defineOptions({
   name: 'SearchResult'
@@ -261,6 +285,17 @@ const route = useRoute();
 const router = useRouter();
 const playerStore = usePlayerStore();
 const searchStore = useSearchStore();
+const offlineStore = useOfflineAvailabilityStore();
+offlineStore.ensureInitialized();
+
+const onlyOfflinePlayable = ref(false);
+const toggleOnlyOffline = () => {
+  triggerHaptic('selection');
+  onlyOfflinePlayable.value = !onlyOfflinePlayable.value;
+  if (onlyOfflinePlayable.value) {
+    void offlineStore.refresh();
+  }
+};
 
 const formatSong = (item: any) => {
   if (!item) return null;
@@ -278,6 +313,12 @@ const formatSong = (item: any) => {
 const searchDetail = ref<any>();
 const searchType = computed(() => searchStore.searchType as number);
 const searchDetailLoading = ref(false);
+
+const filteredSearchSongs = computed(() => {
+  const songs = searchDetail.value?.songs || [];
+  if (!onlyOfflinePlayable.value) return songs;
+  return songs.filter((item: any) => offlineStore.isOfflinePlayable(item));
+});
 
 const ITEMS_PER_PAGE = 30;
 const page = ref(0);

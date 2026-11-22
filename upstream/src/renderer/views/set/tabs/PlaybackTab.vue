@@ -111,6 +111,28 @@
       </setting-item>
 
       <setting-item
+        title="切歌淡入淡出 (Crossfade)"
+        description="切歌与暂停/恢复播放时平滑过渡音量，减少突兀切音感"
+      >
+        <s-select
+          v-model="crossfadeMode"
+          :options="crossfadeOptions"
+          width="w-40 max-md:w-full"
+        />
+      </setting-item>
+
+      <setting-item
+        inline
+        title="音量平滑（响度均衡）"
+        description="自动平衡官方源与备用音源间的响度差异，防止切歌时声音忽大忽小或破音"
+      >
+        <n-switch v-model:value="volumeNormalizationEnabled">
+          <template #checked>{{ t('common.on') }}</template>
+          <template #unchecked>{{ t('common.off') }}</template>
+        </n-switch>
+      </setting-item>
+
+      <setting-item
         inline
         :title="t('settings.playback.autoPlay')"
         :description="t('settings.playback.autoPlayDesc')"
@@ -265,6 +287,35 @@ const dynamicBackgroundEnabled = computed({
   get: () => setData.value.enableDynamicBackground !== false,
   set: (val: boolean) => {
     setData.value = { ...setData.value, enableDynamicBackground: val };
+  }
+});
+
+const crossfadeOptions = [
+  { label: '关闭', value: '0' },
+  { label: '1.5 秒（柔和）', value: '1.5' },
+  { label: '3 秒（丝滑）', value: '3' }
+];
+
+const crossfadeMode = computed({
+  get: () => {
+    if (!setData.value.crossfadeEnabled) return '0';
+    const sec = Number(setData.value.crossfadeDurationSec) || 1.5;
+    return sec >= 2.5 ? '3' : '1.5';
+  },
+  set: (val: string) => {
+    const sec = Number(val) || 0;
+    setData.value = {
+      ...setData.value,
+      crossfadeEnabled: sec > 0,
+      crossfadeDurationSec: sec > 0 ? sec : 1.5
+    };
+  }
+});
+
+const volumeNormalizationEnabled = computed({
+  get: () => Boolean(setData.value.volumeNormalizationEnabled),
+  set: (val: boolean) => {
+    setData.value = { ...setData.value, volumeNormalizationEnabled: val };
   }
 });
 </script>

@@ -313,6 +313,7 @@ final class LocalMusicAndDownloadManager: NSObject, URLSessionDownloadDelegate {
                 try FileManager.default.removeItem(at: destUrl)
             }
             try FileManager.default.moveItem(at: location, to: destUrl)
+            recordDownloadedSongIndex(filename: destUrl.lastPathComponent, songId: ctx.songId)
             let size = ((try? FileManager.default.attributesOfItem(atPath: destUrl.path)[.size]) as? NSNumber)?.int64Value ?? 0
             emitEvent("music-download-progress", [
                 "filename": ctx.finalFilename,
@@ -424,7 +425,11 @@ final class LocalMusicAndDownloadManager: NSObject, URLSessionDownloadDelegate {
         let downloadRoot = getDownloadDir().standardizedFileURL.resolvingSymlinksInPath().path
         guard targetPath.hasPrefix(downloadRoot + "/") else { return false }
         guard FileManager.default.fileExists(atPath: targetPath) else { return false }
-        return (try? FileManager.default.removeItem(atPath: targetPath)) != nil
+        let removed = (try? FileManager.default.removeItem(atPath: targetPath)) != nil
+        if removed {
+            removeDownloadedSongIndex(filename: URL(fileURLWithPath: targetPath).lastPathComponent)
+        }
+        return removed
     }
 
     func clearDownloaded() -> Bool {
@@ -435,7 +440,99 @@ final class LocalMusicAndDownloadManager: NSObject, URLSessionDownloadDelegate {
         for f in files {
             try? FileManager.default.removeItem(at: f)
         }
+        try? FileManager.default.removeItem(at: getDownloadIndexFile())
         return true
+    }
+
+    /// 聚合 iOS Documents 下已下载曲目（含原始 songId 与确定性 dl_* ID）和已导入本地曲目 ID
+    func getOfflinePlayableIds() -> [String: [String]] {
+        var downloadedIdSet = Set<String>()
+        var localIdSet = Set<String>()
+
+        let downloadDir = getDownloadDir()
+        tasksLock.lock()
+        let indexMap = loadDownloadIndexMap()
+        tasksLock.unlock()
+        if let files = try? FileManager.default.contentsOfDirectory(
+            at: downloadDir,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: .skipsHiddenFiles
+        ) {
+            var existingFilenames = Set<String>()
+            for file in files where Self.audioExtensions.contains(file.pathExtension.lowercased()) {
+                existingFilenames.insert(file.lastPathComponent)
+                downloadedIdSet.insert(deterministicTrackId(prefix: "dl", path: file.path))
+                if let mappedSongId = indexMap[file.lastPathComponent], !mappedSongId.isEmpty {
+                    downloadedIdSet.insert(mappedSongId)
+                }
+            }
+            if existingFilenames.count < indexMap.count {
+                tasksLock.lock()
+                let latestMap = loadDownloadIndexMap()
+                let pruned = latestMap.filter { existingFilenames.contains($0.key) }
+                if pruned.count != latestMap.count {
+                    saveDownloadIndexMap(pruned)
+                }
+                tasksLock.unlock()
+            }
+        }
+
+        let localDir = getLocalMusicDir()
+        if let enumerator = FileManager.default.enumerator(
+            at: localDir,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: .skipsHiddenFiles
+        ) {
+            for case let file as URL in enumerator {
+                let isRegular = (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) ?? false
+                if isRegular && Self.audioExtensions.contains(file.pathExtension.lowercased()) {
+                    localIdSet.insert(deterministicTrackId(prefix: "local", path: file.path))
+                }
+            }
+        }
+
+        return [
+            "cachedIds": [],
+            "downloadedIds": Array(downloadedIdSet),
+            "localIds": Array(localIdSet)
+        ]
+    }
+
+    private func getDownloadIndexFile() -> URL {
+        return getDownloadDir().appendingPathComponent(".xiaopang_downloads_index.json")
+    }
+
+    private func loadDownloadIndexMap() -> [String: String] {
+        guard let data = try? Data(contentsOf: getDownloadIndexFile()),
+              let dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: String] else {
+            return [:]
+        }
+        return dict
+    }
+
+    private func saveDownloadIndexMap(_ map: [String: String]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: map) else { return }
+        try? data.write(to: getDownloadIndexFile(), options: .atomic)
+    }
+
+    private func recordDownloadedSongIndex(filename: String, songId: String) {
+        let trimmedId = songId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !filename.isEmpty, !trimmedId.isEmpty else { return }
+        tasksLock.lock()
+        var map = loadDownloadIndexMap()
+        map[filename] = trimmedId
+        saveDownloadIndexMap(map)
+        tasksLock.unlock()
+    }
+
+    private func removeDownloadedSongIndex(filename: String) {
+        guard !filename.isEmpty else { return }
+        tasksLock.lock()
+        var map = loadDownloadIndexMap()
+        if map.removeValue(forKey: filename) != nil {
+            saveDownloadIndexMap(map)
+        }
+        tasksLock.unlock()
     }
 
     func saveLyricFile(filename: String, lrcContent: String) -> [String: Any] {
