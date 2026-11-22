@@ -677,18 +677,45 @@ test("builtin music sources & de-branding: no obfuscated black-box script, defau
   assert.equal(upstreamPkg.build?.publish?.[0]?.repo, "XiaoPangNaiwaMusic");
   assert.equal(upstreamPkg.overrides?.["basic-ftp"], "^6.2.6");
 
-  for (const relPath of [
+  for (const removedLegacyFile of [
     "upstream/src/renderer/api/donation.ts",
     "upstream/src/renderer/components/Coffee.vue",
     "upstream/src/renderer/components/TrafficWarningDrawer.vue",
     "upstream/src/renderer/components/common/DonationList.vue",
+    "upstream/src/renderer/views/set/tabs/DonationTab.vue",
+    "upstream/src/renderer/assets/alipay.png",
+    "upstream/src/renderer/assets/wechat.png",
+  ]) {
+    assert.equal(
+      fs.existsSync(path.join(repoRoot, removedLegacyFile)),
+      false,
+      `${removedLegacyFile} must be removed`
+    );
+  }
+
+  for (const relPath of [
     "upstream/src/renderer/components/common/MobileUpdateModal.vue",
     "upstream/src/shared/appUpdate.ts",
+    "upstream/src/renderer/layout/components/SearchBar.vue",
   ]) {
     const text = fs.readFileSync(path.join(repoRoot, relPath), "utf-8");
     assert.doesNotMatch(text, /donate\.alger\.fun/i, `${relPath} must not contain donate.alger.fun`);
     assert.doesNotMatch(text, /algerkong\/AlgerMusicPlayer/i, `${relPath} must not point to upstream repo`);
   }
+
+  const searchBar = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/layout/components/SearchBar.vue"),
+    "utf-8"
+  );
+  assert.doesNotMatch(searchBar, /<coffee|Coffee\.vue|alipay\.png|wechat\.png/i);
+  assert.match(searchBar, /@click="toGithub"/);
+
+  const playerCoreSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/playerCore.ts"),
+    "utf-8"
+  );
+  assert.match(playerCoreSrc, /document\.title\s*=\s*'小庞奶娃音乐 - '\s*\+\s*title/);
+  assert.doesNotMatch(playerCoreSrc, /document\.title\s*=\s*'AlgerMusic - '/);
 
   const androidUnblock = fs.readFileSync(
     path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/MusicUnblockEngine.kt"),

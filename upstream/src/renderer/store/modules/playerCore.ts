@@ -379,7 +379,7 @@ export const usePlayerCoreStore = defineStore(
           ''
         )}`;
       }
-      document.title = 'AlgerMusic - ' + title;
+      document.title = '小庞奶娃音乐 - ' + title;
 
       try {
         // 添加到历史记录
