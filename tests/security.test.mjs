@@ -2077,3 +2077,39 @@ test("security hardening: zero v-html XSS vectors, Android WebView locked down, 
   assert.match(cloudSyncTs, /persistCloudSyncConfigSecurely/);
   assert.doesNotMatch(cloudSyncTs, /localStorage\.setItem\(CONFIG_STORAGE_KEY,\s*JSON\.stringify\(config\.value\)\)/);
 });
+
+test("network recovery: Android/iOS native listeners and frontend interceptor clear stale OfflineBanner", () => {
+  const mainActivityKt = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/MainActivity.kt"),
+    "utf-8"
+  );
+  assert.match(mainActivityKt, /registerDefaultNetworkCallback/);
+  assert.match(mainActivityKt, /NET_CAPABILITY_INTERNET/);
+  assert.match(mainActivityKt, /setNetworkAvailable/);
+  assert.match(mainActivityKt, /network-status-changed/);
+  assert.match(mainActivityKt, /unregisterNetworkCallback/);
+
+  const mainViewControllerSwift = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/MainViewController.swift"),
+    "utf-8"
+  );
+  assert.match(mainViewControllerSwift, /NWPathMonitor/);
+  assert.match(mainViewControllerSwift, /path\.status\s*==\s*\.satisfied/);
+  assert.match(mainViewControllerSwift, /network-status-changed/);
+  assert.match(mainViewControllerSwift, /pathMonitor\?\.cancel\(\)/);
+
+  const offlineAvailabilityTs = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/offlineAvailability.ts"),
+    "utf-8"
+  );
+  assert.match(offlineAvailabilityTs, /network-status-changed/);
+  assert.match(offlineAvailabilityTs, /visibilitychange/);
+  assert.match(offlineAvailabilityTs, /addEventListener\(['"]focus['"]/);
+  assert.match(offlineAvailabilityTs, /markOnline/);
+
+  const requestTs = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/utils/request.ts"),
+    "utf-8"
+  );
+  assert.match(requestTs, /useOfflineAvailabilityStore\(\)\.markOnline\(\)/);
+});

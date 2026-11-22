@@ -1,4 +1,5 @@
 import AVFoundation
+import Network
 import UIKit
 import WebKit
 import UniformTypeIdentifiers
@@ -16,11 +17,20 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     private var isDarkStatusBar: Bool = false
     private var activeDocumentPicker: ActiveDocumentPicker?
     private var audioRouteObserver: NSObjectProtocol?
+    private var pathMonitor: NWPathMonitor?
+    private let pathMonitorQueue = DispatchQueue(label: "com.xiaopang.naiwamusic.network.monitor")
+    private var isNetworkOnline: Bool = true
+    private var foregroundNetworkObserver: NSObjectProtocol?
 
     deinit {
         if let observer = audioRouteObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        if let observer = foregroundNetworkObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        pathMonitor?.cancel()
+        pathMonitor = nil
     }
 
     init(services: AppServices) {
@@ -124,6 +134,33 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         ) { [weak self] _ in
             self?.syncAudioOutputExternalState()
         }
+
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let online = (path.status == .satisfied)
+            DispatchQueue.main.async {
+                self?.isNetworkOnline = online
+                self?.syncNetworkStatusToJs(online: online)
+            }
+        }
+        monitor.start(queue: pathMonitorQueue)
+        pathMonitor = monitor
+
+        foregroundNetworkObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            let online = self.pathMonitor.map { $0.currentPath.status == .satisfied } ?? self.isNetworkOnline
+            self.isNetworkOnline = online
+            self.syncNetworkStatusToJs(online: online)
+        }
+    }
+
+    private func syncNetworkStatusToJs(online: Bool) {
+        guard webView != nil else { return }
+        pushEventToJs(channel: "network-status-changed", payloadJson: "{\"online\":\(online ? "true" : "false")}")
     }
 
     private func syncAudioOutputExternalState() {
@@ -191,6 +228,9 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         injectSafeAreaCssVars()
         syncAudioOutputExternalState()
+        let online = pathMonitor.map { $0.currentPath.status == .satisfied } ?? isNetworkOnline
+        isNetworkOnline = online
+        syncNetworkStatusToJs(online: online)
     }
 
     func webView(

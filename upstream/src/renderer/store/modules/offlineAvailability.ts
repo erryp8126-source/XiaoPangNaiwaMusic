@@ -19,6 +19,27 @@ export const useOfflineAvailabilityStore = defineStore('offlineAvailability', ()
 
   let listenersBound = false;
 
+  const setOnlineStatus = (online: boolean) => {
+    isOnline.value = Boolean(online);
+  };
+
+  const markOnline = () => {
+    if (!isOnline.value) {
+      isOnline.value = true;
+    }
+  };
+
+  const syncBrowserOnlineStatus = () => {
+    if (typeof navigator === 'undefined') return;
+    if (!isAndroid()) {
+      isOnline.value = navigator.onLine !== false;
+      return;
+    }
+    if (navigator.onLine === true) {
+      isOnline.value = true;
+    }
+  };
+
   const bindEnvironmentListeners = () => {
     if (listenersBound || typeof window === 'undefined') return;
     listenersBound = true;
@@ -29,8 +50,24 @@ export const useOfflineAvailabilityStore = defineStore('offlineAvailability', ()
     window.addEventListener('offline', () => {
       isOnline.value = false;
     });
+    window.addEventListener('focus', syncBrowserOnlineStatus);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          syncBrowserOnlineStatus();
+        }
+      });
+    }
 
     if (isAndroid()) {
+      onAndroidEvent('network-status-changed', (_, payload: any) => {
+        if (typeof payload?.online === 'boolean') {
+          setOnlineStatus(payload.online);
+        } else if (typeof payload === 'boolean') {
+          setOnlineStatus(payload);
+        }
+      });
+
       onAndroidEvent('music-download-complete', (_, payload: any) => {
         if (payload?.success) {
           const songId = payload?.songInfo?.id ?? payload?.id;
@@ -44,6 +81,8 @@ export const useOfflineAvailabilityStore = defineStore('offlineAvailability', ()
       });
     }
   };
+
+  bindEnvironmentListeners();
 
   const refresh = async (): Promise<void> => {
     bindEnvironmentListeners();
@@ -155,6 +194,8 @@ export const useOfflineAvailabilityStore = defineStore('offlineAvailability', ()
     initialized,
     refresh,
     ensureInitialized,
+    setOnlineStatus,
+    markOnline,
     markCached,
     markDownloaded,
     getOfflineBadge,

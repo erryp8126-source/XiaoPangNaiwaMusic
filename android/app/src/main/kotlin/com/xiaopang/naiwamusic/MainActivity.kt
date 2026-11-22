@@ -5,6 +5,9 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -51,6 +54,8 @@ class MainActivity : AppCompatActivity() {
 
     private var pendingAudioPermissionCallback: ((Boolean) -> Unit)? = null
     private var pendingFilePickCallback: ((JsonObject?) -> Unit)? = null
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -146,6 +151,7 @@ class MainActivity : AppCompatActivity() {
         handleWidgetIntent(intent)
         setupInsetsInjection()
         setupWebView(app)
+        setupNetworkMonitoring()
         setupBackNavigation()
         requestInitialNotificationPermission()
 
@@ -207,6 +213,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             MusicPlaybackService.isAppInForeground = true
         }
+        syncNetworkStatusToWebView()
     }
 
     override fun onPause() {
@@ -215,6 +222,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        runCatching {
+            networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
+        }
+        networkCallback = null
         if (MusicPlaybackService.instance == null) {
             floatingLyricManager.hide()
         }
@@ -331,6 +342,7 @@ class MainActivity : AppCompatActivity() {
                 super.onPageFinished(view, url)
                 isWebViewReady = true
                 injectSafeAreaCssVars()
+                syncNetworkStatusToWebView()
             }
         }
 
@@ -354,6 +366,55 @@ class MainActivity : AppCompatActivity() {
         }
 
         webView.loadUrl("https://appassets.androidplatform.net/assets/www/index.html?v=$curVersionCode")
+    }
+
+    private fun isSystemNetworkOnline(): Boolean {
+        return runCatching {
+            val cm = connectivityManager ?: getSystemService(ConnectivityManager::class.java)
+            val active = cm?.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(active) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        }.getOrDefault(true)
+    }
+
+    private fun syncNetworkStatusToWebView(online: Boolean = isSystemNetworkOnline()) {
+        runOnUiThread {
+            if (isDestroyed) return@runOnUiThread
+            runCatching { webView.setNetworkAvailable(online) }
+            if (isWebViewReady) {
+                val payload = JSONObject().put("online", online).toString()
+                pushEventToJs("network-status-changed", payload)
+            }
+        }
+    }
+
+    private fun setupNetworkMonitoring() {
+        connectivityManager = runCatching {
+            getSystemService(ConnectivityManager::class.java)
+        }.getOrNull()
+        val cm = connectivityManager ?: return
+        syncNetworkStatusToWebView()
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                val hasInternet = runCatching {
+                    cm.getNetworkCapabilities(network)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                }.getOrNull()
+                syncNetworkStatusToWebView(hasInternet ?: true)
+            }
+
+            override fun onLost(network: Network) {
+                syncNetworkStatusToWebView(isSystemNetworkOnline())
+            }
+
+            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                val online = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                syncNetworkStatusToWebView(online)
+            }
+        }
+        runCatching {
+            cm.registerDefaultNetworkCallback(callback)
+            networkCallback = callback
+        }
     }
 
     private fun setupBackNavigation() {

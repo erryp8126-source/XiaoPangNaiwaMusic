@@ -1,5 +1,6 @@
 import axios, { InternalAxiosRequestConfig } from 'axios';
 
+import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';
 import { useUserStore } from '@/store/modules/user';
 import { getAndroidApiBaseUrl, getAndroidLocalAuthToken, isAndroid } from '@/utils/androidBridge';
 
@@ -113,6 +114,20 @@ const NO_RETRY_URLS = ['暂时没有'];
 // 响应拦截器
 request.interceptors.response.use(
   (response) => {
+    try {
+      const reqUrl = String(response?.config?.url || '');
+      const bodyCode = response?.data?.code;
+      if (
+        !reqUrl.includes('__alger_health') &&
+        bodyCode !== 502 &&
+        bodyCode !== 503 &&
+        bodyCode !== 504
+      ) {
+        useOfflineAvailabilityStore().markOnline();
+      }
+    } catch {
+      // ignore if Pinia is not active yet
+    }
     return response;
   },
   async (error) => {
