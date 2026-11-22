@@ -1729,3 +1729,82 @@ test("immersive launch invariants: vinyl view, anti-conflict bottom bar, native 
   assert.match(audioService, /isAutoplayBlockedError/);
   assert.match(audioService, /autoplay_blocked/);
 });
+
+test("playlist index sync runtime & invariants: next -> prev always returns to initial track across empty, shuffled, and drifted queues", async () => {
+  const syncModUrl = pathToFileURL(
+    path.join(repoRoot, "upstream/src/renderer/utils/playlistIndexSync.ts")
+  ).href;
+  const { syncPlaylistIndexWithCurrentTrack, resolveSeededFirstSong } = await import(syncModUrl);
+
+  const trackA = { id: 101, name: "Initial Track A", source: "netease" };
+  const trackB = { id: 202, name: "Rec Track B", source: "netease" };
+  const trackC = { id: 303, name: "Rec Track C", source: "netease" };
+  const trackX = { id: 999, name: "Unlisted Track X", source: "netease" };
+
+  // 场景 1：首次启动队列为空、已有初始曲目 A -> 先保留 A 在 playList[0]，再追加推荐 B/C -> 下一首(B) -> 上一首(A)
+  let queue = [];
+  let idx = 0;
+  if (queue.length === 0 && trackA.id) {
+    queue = [{ ...trackA }];
+    idx = 0;
+  }
+  queue = [...queue, trackB, trackC];
+  let aligned = syncPlaylistIndexWithCurrentTrack(queue, idx, trackA);
+  assert.equal(aligned.playList[0].id, trackA.id);
+  assert.equal(aligned.playListIndex, 0);
+  const nextIdx1 = (aligned.playListIndex + 1) % aligned.playList.length;
+  const currentAfterNext1 = aligned.playList[nextIdx1];
+  assert.equal(currentAfterNext1.id, trackB.id);
+  aligned = syncPlaylistIndexWithCurrentTrack(aligned.playList, nextIdx1, currentAfterNext1);
+  const prevIdx1 = (aligned.playListIndex - 1 + aligned.playList.length) % aligned.playList.length;
+  assert.equal(aligned.playList[prevIdx1].id, trackA.id, "Next then Prev must strictly return to initial track A");
+
+  // 场景 2：随机模式洗牌后冷启动首曲与 playList[playListIndex] 对齐
+  const normalized = [trackA, trackB, trackC];
+  const shuffled = [trackC, trackA, trackB];
+  const seeded = resolveSeededFirstSong(shuffled, 0, normalized);
+  assert.equal(seeded.firstSong.id, trackC.id);
+  assert.equal(seeded.playList[seeded.playListIndex].id, seeded.firstSong.id);
+  const nextIdx2 = (seeded.playListIndex + 1) % seeded.playList.length;
+  const prevIdx2 = (nextIdx2 - 1 + seeded.playList.length) % seeded.playList.length;
+  assert.equal(seeded.playList[prevIdx2].id, seeded.firstSong.id);
+
+  // 场景 3：playListIndex 漂移（正在播 trackC，但 playListIndex 卡在 0）-> 校准到真实索引 2 -> 下一首(0) -> 上一首(2: trackC)
+  const drifted = syncPlaylistIndexWithCurrentTrack([trackA, trackB, trackC], 0, trackC);
+  assert.equal(drifted.mutated, false);
+  assert.equal(drifted.playListIndex, 2);
+  const nextIdx3 = (drifted.playListIndex + 1) % drifted.playList.length;
+  assert.equal(drifted.playList[nextIdx3].id, trackA.id);
+  const backAligned3 = syncPlaylistIndexWithCurrentTrack(drifted.playList, nextIdx3, drifted.playList[nextIdx3]);
+  const prevIdx3 = (backAligned3.playListIndex - 1 + backAligned3.playList.length) % backAligned3.playList.length;
+  assert.equal(backAligned3.playList[prevIdx3].id, trackC.id);
+
+  // 场景 4：当前曲目 trackX 不在队列中 -> 插入到当前索引位 -> 下一首 -> 上一首严格回到 trackX
+  const inserted = syncPlaylistIndexWithCurrentTrack([trackA, trackB], 1, trackX);
+  assert.equal(inserted.mutated, true);
+  assert.equal(inserted.playListIndex, 1);
+  assert.equal(inserted.playList[1].id, trackX.id);
+  assert.equal(inserted.playList.length, 3);
+  const nextIdx4 = (inserted.playListIndex + 1) % inserted.playList.length;
+  assert.equal(inserted.playList[nextIdx4].id, trackB.id);
+  const prevIdx4 = (nextIdx4 - 1 + inserted.playList.length) % inserted.playList.length;
+  assert.equal(inserted.playList[prevIdx4].id, trackX.id);
+
+  // 静态源码契约校验：playlist.ts 与 playerCore.ts 接线顺序正确
+  const playlistSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/playlist.ts"),
+    "utf-8"
+  );
+  assert.match(
+    playlistSrc,
+    /if\s*\(playList\.value\.length\s*===\s*0\)\s*\{[\s\S]{0,180}playList\.value\s*=\s*\[\{\s*\.\.\.playerCore\.playMusic\s*\}\];[\s\S]{0,120}appendRecommendedSongsIfNeeded\(/,
+    "_nextPlay must preserve initial playMusic at playList[0] BEFORE calling appendRecommendedSongsIfNeeded"
+  );
+  assert.match(playlistSrc, /alignQueueIndexWithCurrentTrack\(playerCore\.playMusic\)/);
+
+  const playerCoreSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/playerCore.ts"),
+    "utf-8"
+  );
+  assert.match(playerCoreSrc, /resolveSeededFirstSong\(/);
+});

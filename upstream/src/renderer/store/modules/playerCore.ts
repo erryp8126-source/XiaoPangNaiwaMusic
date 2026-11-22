@@ -32,6 +32,7 @@ import {
   shouldRetrySingleTrack
 } from '@/utils/playbackDiagnostics';
 import { buildPlaybackMeta, inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
+import { resolveSeededFirstSong } from '@/utils/playlistIndexSync';
 import { showBottomToast } from '@/utils/shortcutToast';
 
 import { usePlayHistoryStore } from './playHistory';
@@ -993,7 +994,16 @@ export const usePlayerCoreStore = defineStore(
           }
 
           playlistStore.setPlayList(normalized, false, false);
-          const firstSong = normalized[0];
+          const seeded = resolveSeededFirstSong(
+            playlistStore.playList,
+            playlistStore.playListIndex,
+            normalized
+          );
+          if (seeded.mutated) {
+            playlistStore.playList = seeded.playList;
+          }
+          playlistStore.playListIndex = seeded.playListIndex;
+          const firstSong = seeded.firstSong;
 
           if (shouldAutoPlay) {
             await handlePlayMusic({ ...firstSong, isFirstPlay: true }, true);

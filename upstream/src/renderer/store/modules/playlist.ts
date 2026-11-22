@@ -16,6 +16,7 @@ import {
   shouldRetrySingleTrack
 } from '@/utils/playbackDiagnostics';
 import { performShuffle, preloadCoverImage } from '@/utils/playerUtils';
+import { syncPlaylistIndexWithCurrentTrack } from '@/utils/playlistIndexSync';
 
 import { useIntelligenceModeStore } from './intelligenceMode';
 import { usePlayerCoreStore } from './playerCore';
@@ -533,6 +534,30 @@ export const usePlaylistStore = defineStore(
     };
 
     /**
+     * 校准 playListIndex 与 playerCore.playMusic 的真实对应关系；
+     * 若当前曲目不在队列中则插入到当前索引位，保证「下一首 → 上一首」严格回到原曲
+     */
+    const alignQueueIndexWithCurrentTrack = (currentTrack?: SongResult | null) => {
+      const aligned = syncPlaylistIndexWithCurrentTrack(
+        playList.value,
+        playListIndex.value,
+        currentTrack
+      );
+      if (aligned.mutated) {
+        playList.value = aligned.playList;
+        if (
+          originalPlayList.value.length > 0 &&
+          currentTrack?.id !== undefined &&
+          currentTrack?.id !== null &&
+          !originalPlayList.value.some((item) => String(item.id) === String(currentTrack.id))
+        ) {
+          originalPlayList.value = [{ ...currentTrack }, ...originalPlayList.value];
+        }
+      }
+      playListIndex.value = aligned.playListIndex;
+    };
+
+    /**
      * 下一首
      * @param singleTrackRetryCount 单曲重试次数（同一首歌的重试）
      */
@@ -541,13 +566,13 @@ export const usePlaylistStore = defineStore(
         const playerCore = usePlayerCoreStore();
         const sleepTimerStore = useSleepTimerStore();
 
-        // 若播放列表为空，自动补充推荐歌曲或把当前曲目纳入列表，避免播放完直接静音停止
+        // 若播放列表为空，先保留当前曲目在 playList[0]，再向后追加推荐歌曲，避免初始曲目被丢弃
         if (playList.value.length === 0) {
-          await appendRecommendedSongsIfNeeded(playerCore.playMusic?.id);
-          if (playList.value.length === 0 && playerCore.playMusic?.id) {
+          if (playerCore.playMusic?.id) {
             playList.value = [{ ...playerCore.playMusic }];
             playListIndex.value = 0;
           }
+          await appendRecommendedSongsIfNeeded(playerCore.playMusic?.id);
           if (playList.value.length === 0) {
             return;
           }
@@ -560,6 +585,11 @@ export const usePlaylistStore = defineStore(
           consecutiveFailCount.value = 0; // 重置计数器
           playerCore.setIsPlay(false);
           return;
+        }
+
+        // 正常切歌（非单曲重试）前，先以当前正在播放的曲目校准真实索引
+        if (singleTrackRetryCount === 0) {
+          alignQueueIndexWithCurrentTrack(playerCore.playMusic);
         }
 
         // 仅当用户主动开启「列表播完定时关闭」时，播到最后一首才停止；
@@ -673,11 +703,19 @@ export const usePlaylistStore = defineStore(
      */
     const _prevPlay = async () => {
       try {
+        const playerCore = usePlayerCoreStore();
         if (playList.value.length === 0) {
-          return;
+          if (playerCore.playMusic?.id) {
+            playList.value = [{ ...playerCore.playMusic }];
+            playListIndex.value = 0;
+          } else {
+            return;
+          }
         }
 
-        const playerCore = usePlayerCoreStore();
+        // 切换上一首前，先根据当前正在播放的曲目校准真实索引（缺失则插入当前索引位）
+        alignQueueIndexWithCurrentTrack(playerCore.playMusic);
+
         const currentIndex = playListIndex.value;
         const nowPlayListIndex =
           (playListIndex.value - 1 + playList.value.length) % playList.value.length;
