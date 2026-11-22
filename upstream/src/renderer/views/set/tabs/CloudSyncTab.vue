@@ -593,6 +593,14 @@
             show-password-on="click"
             placeholder="GitHub PAT（仅勾选 gist 权限）"
           />
+          <p class="text-[11px] leading-relaxed text-amber-700/90 dark:text-amber-300/85 bg-amber-50/70 dark:bg-amber-500/10 border border-amber-200/70 dark:border-amber-400/20 rounded-xl px-3 py-2">
+            <i class="ri-shield-keyhole-line mr-1"></i>
+            {{
+              isNativeShell
+                ? '已启用系统硬件加密存储：同步口令、WebDAV 密码与 GitHub PAT 仅加密保存在 Android Keystore / iOS Keychain，绝不写入明文 localStorage。'
+                : '安全提示：Web/PWA 端 GitHub PAT、WebDAV 密码与同步口令默认仅存当次页面内存（刷新后需重新输入，不落 localStorage）；建议使用 Fine-grained 且仅勾选 Gists 权限的短期 Token。'
+            }}
+          </p>
           <n-input
             v-model:value="config.github.gistId"
             placeholder="私有 Gist ID（留空首次自动创建，换机自动发现）"
@@ -754,6 +762,7 @@ const playHistoryStore = usePlayHistoryStore();
 const favoriteStore = useFavoriteStore();
 const listeningStatsStore = useListeningStatsStore();
 const userStore = useUserStore();
+const isNativeShell = isAndroid();
 
 const config = cloudSyncStore.config;
 const inputSyncCode = ref('');

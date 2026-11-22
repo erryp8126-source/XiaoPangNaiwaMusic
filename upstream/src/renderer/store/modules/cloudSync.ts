@@ -6,7 +6,18 @@ import { useFavoriteStore } from '@/store/modules/favorite';
 import { useListeningStatsStore } from '@/store/modules/listeningStats';
 import { usePlayHistoryStore } from '@/store/modules/playHistory';
 import { useSettingsStore } from '@/store/modules/settings';
-import { invokeAndroidAsync, isAndroid } from '@/utils/androidBridge';
+import {
+  invokeAndroidAsync,
+  isAndroid,
+  nativeSecureGetSecret,
+  nativeSecureRemoveSecret,
+  nativeSecureSetSecret
+} from '@/utils/androidBridge';
+import {
+  hydrateAndMigrateCloudSyncConfig,
+  persistCloudSyncConfigSecurely,
+  type SecretStoreAdapter
+} from '@/utils/cloudSyncSecrets';
 import {
   type CloudSyncSnapshot,
   computeSyncConflictDiff,
@@ -146,18 +157,24 @@ function structuredCloneCompat<T>(obj: T): T {
   return JSON.parse(JSON.stringify(obj));
 }
 
+const nativeSecretStore: SecretStoreAdapter = {
+  getSecret: nativeSecureGetSecret,
+  setSecret: nativeSecureSetSecret,
+  removeSecret: nativeSecureRemoveSecret
+};
+
 function loadConfig(): CloudSyncConfig {
   try {
     const raw = localStorage.getItem(CONFIG_STORAGE_KEY);
-    if (!raw) return structuredCloneCompat(DEFAULT_CONFIG);
-    const parsed = JSON.parse(raw);
-    return {
-      ...DEFAULT_CONFIG,
-      ...parsed,
-      quick: { ...DEFAULT_CONFIG.quick, ...(parsed.quick || {}) },
-      webdav: { ...DEFAULT_CONFIG.webdav, ...(parsed.webdav || {}) },
-      github: { ...DEFAULT_CONFIG.github, ...(parsed.github || {}) }
-    };
+    return hydrateAndMigrateCloudSyncConfig<CloudSyncConfig>({
+      rawStoredJson: raw,
+      defaultConfig: DEFAULT_CONFIG,
+      isNativeEnv: isAndroid(),
+      secretStore: nativeSecretStore,
+      writeStorage: (sanitizedJson) => {
+        localStorage.setItem(CONFIG_STORAGE_KEY, sanitizedJson);
+      }
+    });
   } catch {
     return structuredCloneCompat(DEFAULT_CONFIG);
   }
@@ -489,11 +506,14 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
         github: { ...DEFAULT_CONFIG.github, ...next.github }
       };
     }
-    try {
-      localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config.value));
-    } catch {
-      // ignore
-    }
+    persistCloudSyncConfigSecurely<CloudSyncConfig>({
+      config: config.value,
+      isNativeEnv: isAndroid(),
+      secretStore: nativeSecretStore,
+      writeStorage: (sanitizedJson) => {
+        localStorage.setItem(CONFIG_STORAGE_KEY, sanitizedJson);
+      }
+    });
   };
 
   const saveMeta = (

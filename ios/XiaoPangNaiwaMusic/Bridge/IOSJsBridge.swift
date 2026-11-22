@@ -12,6 +12,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
     private let httpServer: LocalHttpServer
     private let audioManager: AudioPlayerManager
     private let storageManager: LocalMusicAndDownloadManager
+    private let secureStore = SecureKeychainStore()
 
     private let onStatusBarStyle: (Bool) -> Void
     private let onOpenExternalUrl: (String) -> Void
@@ -70,6 +71,13 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         let statusJson = String(data: statusData, encoding: .utf8) ?? "{}"
         let activeTrackJson = audioManager.getActiveTrackJson()
         let initialExternalAudio = isAudioOutputExternal() ? "true" : "false"
+        let preloadedSecrets = secureStore.preloadKnownSecrets([
+            "cloud_sync_github_token",
+            "cloud_sync_webdav_password",
+            "cloud_sync_quick_code"
+        ])
+        let secretsData = (try? JSONSerialization.data(withJSONObject: preloadedSecrets)) ?? Data("{}".utf8)
+        let secretsJson = String(data: secretsData, encoding: .utf8) ?? "{}"
 
         let js = """
         (function() {
@@ -87,6 +95,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
           var _audioState = { instanceId: 0, position: 0, duration: 0, playing: false };
           var _activeTrack = \(activeTrackJson);
           var _audioOutputExternal = \(initialExternalAudio);
+          var _secureSecrets = \(secretsJson);
 
           function post(method, payload) {
             try {
@@ -175,6 +184,29 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             },
             isAudioOutputExternal: function() {
               return Boolean(_audioOutputExternal);
+            },
+            secureSetSecret: function(key, value) {
+              var k = String(key || '');
+              var v = String(value || '');
+              if (!k) return false;
+              if (v) {
+                _secureSecrets[k] = v;
+              } else {
+                delete _secureSecrets[k];
+              }
+              post('secureSetSecret', { key: k, value: v });
+              return true;
+            },
+            secureGetSecret: function(key) {
+              var k = String(key || '');
+              return k && Object.prototype.hasOwnProperty.call(_secureSecrets, k) ? String(_secureSecrets[k] || '') : '';
+            },
+            secureRemoveSecret: function(key) {
+              var k = String(key || '');
+              if (!k) return false;
+              delete _secureSecrets[k];
+              post('secureRemoveSecret', { key: k });
+              return true;
             }
           };
 
@@ -251,6 +283,13 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         case "triggerHaptic":
             let style = (payload["style"] as? String) ?? "light"
             triggerNativeHaptic(style: style)
+        case "secureSetSecret":
+            let key = (payload["key"] as? String) ?? ""
+            let value = (payload["value"] as? String) ?? ""
+            _ = secureStore.setSecret(key: key, value: value)
+        case "secureRemoveSecret":
+            let key = (payload["key"] as? String) ?? ""
+            _ = secureStore.removeSecret(key: key)
         default:
             break
         }
@@ -372,6 +411,19 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
                 self.callbackDispatcher(callbackId, true, self.jsonString(offline))
             case "is-audio-output-external":
                 self.callbackDispatcher(callbackId, true, self.isAudioOutputExternal() ? "true" : "false")
+            case "secure-set-secret":
+                let sKey = (payload["key"] as? String) ?? ""
+                let sVal = (payload["value"] as? String) ?? ""
+                let ok = self.secureStore.setSecret(key: sKey, value: sVal)
+                self.callbackDispatcher(callbackId, true, ok ? "true" : "false")
+            case "secure-get-secret":
+                let sKey = (payload["key"] as? String) ?? ""
+                let sVal = self.secureStore.getSecret(key: sKey)
+                self.callbackDispatcher(callbackId, true, self.jsonQuote(sVal))
+            case "secure-remove-secret":
+                let sKey = (payload["key"] as? String) ?? ""
+                let ok = self.secureStore.removeSecret(key: sKey)
+                self.callbackDispatcher(callbackId, true, ok ? "true" : "false")
             case "get-downloads-path":
                 self.callbackDispatcher(callbackId, true, self.jsonQuote(self.storageManager.getDownloadDir().path))
             case "get-listening-stats":

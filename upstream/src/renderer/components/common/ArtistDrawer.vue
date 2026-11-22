@@ -79,7 +79,7 @@
         <n-tab-pane name="about" :tab="t('artist.description')">
           <div class="artist-description">
             <n-scrollbar style="max-height: 60vh">
-              <div class="description-content" v-html="artistInfo?.briefDesc"></div>
+              <div class="description-content whitespace-pre-line">{{ artistInfo?.briefDesc }}</div>
             </n-scrollbar>
           </div>
         </n-tab-pane>

@@ -50,10 +50,21 @@
           <div
             class="mx-6 mb-6 max-h-80 overflow-y-auto rounded-2xl bg-gray-50 dark:bg-gray-800/50"
           >
-            <div
-              class="p-5 text-sm text-gray-600 dark:text-gray-300 leading-relaxed"
-              v-html="parsedReleaseNotes"
-            ></div>
+            <div class="p-5 text-sm text-gray-600 dark:text-gray-300 leading-relaxed space-y-2">
+              <template v-for="(block, idx) in releaseNoteBlocks" :key="idx">
+                <h4
+                  v-if="block.type === 'heading'"
+                  class="font-bold text-gray-900 dark:text-white pt-1"
+                >
+                  {{ block.text }}
+                </h4>
+                <div v-else-if="block.type === 'bullet'" class="flex items-start gap-2">
+                  <span class="text-green-500 mt-0.5">•</span>
+                  <span class="flex-1 break-words">{{ block.text }}</span>
+                </div>
+                <p v-else class="break-words">{{ block.text }}</p>
+              </template>
+            </div>
           </div>
 
           <!-- 操作按钮 -->
@@ -84,10 +95,10 @@
 </template>
 
 <script setup lang="ts">
-import { marked } from 'marked';
 import { computed, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
+import { parseSafeReleaseNotes } from '@/utils/safeReleaseNotes';
 import { checkUpdate, getProxyNodes, UpdateResult } from '@/utils/update';
 
 import config from '../../../../package.json';
@@ -96,12 +107,6 @@ const { t } = useI18n();
 
 // 缓存键：记录用户点击"稍后提醒"的时间
 const REMIND_LATER_KEY = 'update_remind_later_timestamp';
-
-// 配置 marked
-marked.setOptions({
-  breaks: true,
-  gfm: true
-});
 
 const showModal = ref(false);
 
@@ -112,16 +117,10 @@ const updateInfo = ref<UpdateResult>({
   releaseInfo: null
 });
 
-// 解析 Markdown
-const parsedReleaseNotes = computed(() => {
-  if (!updateInfo.value.releaseInfo?.body) return '';
-  try {
-    return marked.parse(updateInfo.value.releaseInfo.body);
-  } catch (error) {
-    console.error('Error parsing markdown:', error);
-    return updateInfo.value.releaseInfo.body;
-  }
-});
+// 安全解析结构化更新日志（纯文本渲染，禁止注入 HTML）
+const releaseNoteBlocks = computed(() =>
+  parseSafeReleaseNotes(updateInfo.value.releaseInfo?.body)
+);
 
 // 检查是否应该显示更新提醒
 const shouldShowReminder = (): boolean => {

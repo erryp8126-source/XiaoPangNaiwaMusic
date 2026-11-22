@@ -440,4 +440,68 @@ final class Batch3VerificationTests: XCTestCase {
         XCTAssertEqual(dict?["afterTrue"] as? Bool, true)
         XCTAssertEqual(dict?["afterFalse"] as? Bool, false)
     }
+
+    /// 验证 8：iOS Keychain 敏感凭据安全读写与删除（JS 桥接 + SecureKeychainStore）
+    func testIosSecureSecretStoreAndBridgeRoundTrip() {
+        let store = SecureKeychainStore()
+        let testKey = "cloud_sync_github_token"
+        _ = store.removeSecret(key: testKey)
+        XCTAssertEqual(store.getSecret(key: testKey), "")
+        XCTAssertTrue(store.setSecret(key: testKey, value: "ghp_unit_test_secret_123"))
+        XCTAssertEqual(store.getSecret(key: testKey), "ghp_unit_test_secret_123")
+        XCTAssertTrue(store.removeSecret(key: testKey))
+        XCTAssertEqual(store.getSecret(key: testKey), "")
+
+        let prefs = AppPrefs()
+        let ncm = NeteaseApiClient(prefs: prefs)
+        let unblock = MusicUnblockEngine()
+        let httpServer = LocalHttpServer(ncmClient: ncm, unblockEngine: unblock)
+        let audio = AudioPlayerManager(ncmClient: ncm, unblockEngine: unblock, skipSystemAudioSetup: true)
+        let storage = LocalMusicAndDownloadManager(portProvider: { 30488 }, tokenProvider: { "tok" }) { _, _ in }
+
+        let bridge = IOSJsBridge(
+            prefs: prefs,
+            ncmClient: ncm,
+            unblockEngine: unblock,
+            httpServer: httpServer,
+            audioManager: audio,
+            storageManager: storage,
+            onStatusBarStyle: { _ in },
+            onOpenExternalUrl: { _ in },
+            onShowToast: { _ in },
+            onPickTextFile: { cb in cb(nil) },
+            onPickLocalAudioSources: { cb in cb(["canceled": true, "filePaths": []]) },
+            callbackDispatcher: { _, _, _ in }
+        )
+
+        let ctx = JSContext()!
+        ctx.evaluateScript("""
+        var window = this;
+        var __postedSecretMsgs = [];
+        window.webkit = {
+          messageHandlers: {
+            AlgerIOS: {
+              postMessage: function(msg) { __postedSecretMsgs.push(msg); }
+            }
+          }
+        };
+        """)
+        ctx.evaluateScript(bridge.makeInjectionScript().source)
+
+        let res = ctx.evaluateScript("""
+        (function() {
+          var s1 = window.AlgerAndroid.secureSetSecret('cloud_sync_github_token', 'ghp_abc_999');
+          var g1 = window.AlgerAndroid.secureGetSecret('cloud_sync_github_token');
+          var r1 = window.AlgerAndroid.secureRemoveSecret('cloud_sync_github_token');
+          var g2 = window.AlgerAndroid.secureGetSecret('cloud_sync_github_token');
+          return JSON.stringify({ s1: s1, g1: g1, r1: r1, g2: g2, msgs: __postedSecretMsgs.length });
+        })();
+        """)?.toString() ?? "{}"
+        let dict = (try? JSONSerialization.jsonObject(with: Data(res.utf8))) as? [String: Any]
+        XCTAssertEqual(dict?["s1"] as? Bool, true)
+        XCTAssertEqual(dict?["g1"] as? String, "ghp_abc_999")
+        XCTAssertEqual(dict?["r1"] as? Bool, true)
+        XCTAssertEqual(dict?["g2"] as? String, "")
+        XCTAssertEqual(dict?["msgs"] as? Int, 2)
+    }
 }

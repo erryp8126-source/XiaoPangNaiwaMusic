@@ -41,10 +41,21 @@
         class="mb-6 overflow-hidden rounded-2xl bg-neutral-50 dark:bg-neutral-800/50"
       >
         <n-scrollbar style="max-height: 300px">
-          <div
-            class="update-body p-5 text-sm leading-relaxed text-neutral-600 dark:text-neutral-300"
-            v-html="parsedReleaseNotes"
-          />
+          <div class="update-body p-5 text-sm leading-relaxed text-neutral-600 dark:text-neutral-300 space-y-2">
+            <template v-for="(block, idx) in releaseNoteBlocks" :key="idx">
+              <h4
+                v-if="block.type === 'heading'"
+                class="font-bold text-neutral-900 dark:text-white pt-1"
+              >
+                {{ block.text }}
+              </h4>
+              <div v-else-if="block.type === 'bullet'" class="flex items-start gap-2">
+                <span class="text-primary mt-0.5">•</span>
+                <span class="flex-1 break-words">{{ block.text }}</span>
+              </div>
+              <p v-else class="break-words">{{ block.text }}</p>
+            </template>
+          </div>
         </n-scrollbar>
       </div>
 
@@ -102,19 +113,17 @@
 </template>
 
 <script setup lang="ts">
-import { marked } from 'marked';
 import { computed, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import { useSettingsStore } from '@/store/modules/settings';
+import { parseSafeReleaseNotes } from '@/utils/safeReleaseNotes';
 
 import {
   APP_UPDATE_STATUS,
   type AppUpdateState,
   createDefaultAppUpdateState
 } from '../../../shared/appUpdate';
-
-marked.setOptions({ breaks: true, gfm: true });
 
 const { t } = useI18n();
 const message = useMessage();
@@ -145,17 +154,9 @@ const updateVersionText = computed(() => updateState.value.availableVersion || '
 const progressPercent = computed(() => Math.round(updateState.value.downloadProgress));
 const errorText = computed(() => updateState.value.errorMessage || t('comp.update.downloadFailed'));
 
-const parsedReleaseNotes = computed(() => {
-  const releaseNotes = updateState.value.releaseNotes;
-  if (!releaseNotes) return '';
-
-  try {
-    return marked.parse(releaseNotes) as string;
-  } catch (error) {
-    console.error('Markdown 解析失败:', error);
-    return releaseNotes;
-  }
-});
+const releaseNoteBlocks = computed(() =>
+  parseSafeReleaseNotes(updateState.value.releaseNotes)
+);
 
 const progressText = computed(() => {
   if (isDownloaded.value) {

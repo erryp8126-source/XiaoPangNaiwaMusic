@@ -1880,3 +1880,200 @@ test("global overlay z-index invariants: all <n-modal>, <n-drawer>, ResponsiveMo
   assert.match(mobileCss, /\.n-drawer-container[\s\S]{0,100}z-index:\s*12000\s*!important/);
   assert.match(mobileCss, /\.n-message-container\s*\{[\s\S]{0,60}z-index:\s*100020\s*!important/);
 });
+
+test("security hardening: zero v-html XSS vectors, Android WebView locked down, and Keystore/Keychain secret isolation", async () => {
+  // 1. 全库清零 v-html（包含歌曲名、艺人简介、更新说明等所有 Vue 组件）
+  const rendererDir = path.join(repoRoot, "upstream/src/renderer");
+  const allFiles = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (/\.(vue|ts|tsx|js)$/.test(entry.name)) allFiles.push(full);
+    }
+  };
+  walk(rendererDir);
+  for (const file of allFiles) {
+    const src = fs.readFileSync(file, "utf-8");
+    const rel = path.relative(repoRoot, file);
+    assert.doesNotMatch(src, /\bv-html\s*=/, `${rel} must not contain dangerous v-html directive`);
+    if (file.endsWith(".vue")) {
+      assert.doesNotMatch(src, /\bv-html\b/, `${rel} must not contain v-html anywhere`);
+    }
+  }
+
+  // 验证恶意 XSS payload 在安全发布说明解析器中不会生成任何可执行 HTML / 危险协议
+  const safeNotesUrl = pathToFileURL(
+    path.join(repoRoot, "upstream/src/renderer/utils/safeReleaseNotes.ts")
+  ).href;
+  const { parseSafeReleaseNotes, sanitizeInlineReleaseText } = await import(safeNotesUrl);
+
+  const maliciousMarkdown = [
+    "# v1.0.0 <img src=x onerror=alert(1)>",
+    "- 新增功能 <script>window.AlgerAndroid.exitApp()</script> 完成",
+    "- [点我领奖](javascript:alert(document.cookie))",
+    "<iframe src=\"https://evil.example\"></iframe>普通更新文本"
+  ].join("\n");
+
+  const blocks = parseSafeReleaseNotes(maliciousMarkdown);
+  assert.equal(blocks.length, 4);
+  const joined = blocks.map((b) => b.text).join("\n");
+  assert.doesNotMatch(joined, /<script|<iframe|<img|onerror=|javascript:/i);
+  assert.match(joined, /v1\.0\.0/);
+  assert.match(joined, /新增功能/);
+  assert.match(joined, /点我领奖/);
+  assert.equal(
+    sanitizeInlineReleaseText("<img src=x onerror=alert(1)>Safe Song"),
+    "Safe Song"
+  );
+
+  // 2. Android WebView 权限收紧：关闭 file/content 访问，禁止 MIXED_CONTENT_ALWAYS_ALLOW
+  const mainActivity = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/MainActivity.kt"),
+    "utf-8"
+  );
+  assert.match(mainActivity, /allowFileAccess\s*=\s*false/);
+  assert.match(mainActivity, /allowContentAccess\s*=\s*false/);
+  assert.doesNotMatch(mainActivity, /MIXED_CONTENT_ALWAYS_ALLOW/);
+  assert.match(mainActivity, /MIXED_CONTENT_COMPATIBILITY_MODE/);
+
+  // 3. 原生 Keystore (Android) / Keychain (iOS) 敏感凭据存储桥接与前端隔离迁移
+  const secureStoreKt = path.join(
+    repoRoot,
+    "android/app/src/main/kotlin/com/xiaopang/naiwamusic/config/SecureCredentialStore.kt"
+  );
+  assert.equal(fs.existsSync(secureStoreKt), true, "SecureCredentialStore.kt must exist");
+  const secureStoreKtSrc = fs.readFileSync(secureStoreKt, "utf-8");
+  assert.match(secureStoreKtSrc, /AndroidKeyStore/);
+  assert.match(secureStoreKtSrc, /AES\/GCM\/NoPadding/);
+
+  const androidBridgeKt = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/bridge/AndroidJsBridge.kt"),
+    "utf-8"
+  );
+  assert.match(androidBridgeKt, /@JavascriptInterface\s+fun\s+secureSetSecret\(/);
+  assert.match(androidBridgeKt, /@JavascriptInterface\s+fun\s+secureGetSecret\(/);
+  assert.match(androidBridgeKt, /@JavascriptInterface\s+fun\s+secureRemoveSecret\(/);
+
+  const appPrefsSwift = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Config/AppPrefs.swift"),
+    "utf-8"
+  );
+  assert.match(appPrefsSwift, /import Security/);
+  assert.match(appPrefsSwift, /SecItemAdd/);
+  assert.match(appPrefsSwift, /SecItemCopyMatching/);
+
+  const iosBridgeSwift = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Bridge/IOSJsBridge.swift"),
+    "utf-8"
+  );
+  assert.match(iosBridgeSwift, /secureSetSecret:\s*function\(/);
+  assert.match(iosBridgeSwift, /secureGetSecret:\s*function\(/);
+  assert.match(iosBridgeSwift, /secureRemoveSecret:\s*function\(/);
+
+  const secretsModUrl = pathToFileURL(
+    path.join(repoRoot, "upstream/src/renderer/utils/cloudSyncSecrets.ts")
+  ).href;
+  const {
+    SECRET_KEY_GITHUB_TOKEN,
+    SECRET_KEY_WEBDAV_PASSWORD,
+    SECRET_KEY_QUICK_SYNC_CODE,
+    sanitizeCloudSyncConfigForStorage,
+    hydrateAndMigrateCloudSyncConfig,
+    persistCloudSyncConfigSecurely
+  } = await import(secretsModUrl);
+
+  const memNative = new Map();
+  const mockNativeStore = {
+    getSecret: (k) => memNative.get(k) || "",
+    setSecret: (k, v) => {
+      memNative.set(k, v);
+      return true;
+    },
+    removeSecret: (k) => {
+      memNative.delete(k);
+      return true;
+    }
+  };
+  const defaultCfg = {
+    provider: "quick",
+    quick: { syncCode: "", customSupabaseUrl: "", customSupabaseAnonKey: "" },
+    webdav: { serverUrl: "", username: "u", password: "", folderPath: "/", fileName: "sync.json" },
+    github: { token: "", gistId: "g1" }
+  };
+
+  // 3a. 保存时敏感凭据绝不落明文到 localStorage JSON
+  let persistedLocalJson = "";
+  const activeCfg = {
+    ...defaultCfg,
+    quick: { ...defaultCfg.quick, syncCode: "ABCD-1234-EFGH" },
+    webdav: { ...defaultCfg.webdav, password: "dav_secret_password" },
+    github: { ...defaultCfg.github, token: "ghp_super_secret_token" }
+  };
+  persistCloudSyncConfigSecurely({
+    config: activeCfg,
+    isNativeEnv: true,
+    secretStore: mockNativeStore,
+    writeStorage: (json) => {
+      persistedLocalJson = json;
+    }
+  });
+  assert.equal(persistedLocalJson.includes("ghp_super_secret_token"), false);
+  assert.equal(persistedLocalJson.includes("dav_secret_password"), false);
+  assert.equal(persistedLocalJson.includes("ABCD-1234-EFGH"), false);
+  assert.equal(memNative.get(SECRET_KEY_GITHUB_TOKEN), "ghp_super_secret_token");
+  assert.equal(memNative.get(SECRET_KEY_WEBDAV_PASSWORD), "dav_secret_password");
+  assert.equal(memNative.get(SECRET_KEY_QUICK_SYNC_CODE), "ABCD-1234-EFGH");
+
+  // 3b. 启动时兼容迁移旧 localStorage 明文并立刻清除 localStorage 明文
+  const memNativeMigrated = new Map();
+  const mockMigrationStore = {
+    getSecret: (k) => memNativeMigrated.get(k) || "",
+    setSecret: (k, v) => {
+      memNativeMigrated.set(k, v);
+      return true;
+    },
+    removeSecret: (k) => memNativeMigrated.delete(k)
+  };
+  let rewrittenJson = "";
+  const hydrated = hydrateAndMigrateCloudSyncConfig({
+    rawStoredJson: JSON.stringify(activeCfg),
+    defaultConfig: defaultCfg,
+    isNativeEnv: true,
+    secretStore: mockMigrationStore,
+    writeStorage: (json) => {
+      rewrittenJson = json;
+    }
+  });
+  assert.equal(hydrated.github.token, "ghp_super_secret_token");
+  assert.equal(hydrated.webdav.password, "dav_secret_password");
+  assert.equal(hydrated.quick.syncCode, "ABCD-1234-EFGH");
+  assert.equal(memNativeMigrated.get(SECRET_KEY_GITHUB_TOKEN), "ghp_super_secret_token");
+  assert.equal(rewrittenJson.includes("ghp_super_secret_token"), false, "Legacy token must be wiped from localStorage");
+  assert.equal(rewrittenJson.includes("dav_secret_password"), false, "Legacy password must be wiped from localStorage");
+  assert.equal(rewrittenJson.includes("ABCD-EFGH-1234") || rewrittenJson.includes("ABCD-1234-EFGH"), false);
+
+  // 3c. Web/PWA 模式同样绝不把 github.token / webdav.password 写入 localStorage
+  let webLocalJson = "";
+  persistCloudSyncConfigSecurely({
+    config: activeCfg,
+    isNativeEnv: false,
+    secretStore: mockNativeStore,
+    writeStorage: (json) => {
+      webLocalJson = json;
+    }
+  });
+  const stripped = sanitizeCloudSyncConfigForStorage(activeCfg);
+  assert.equal(stripped.github.token, "");
+  assert.equal(stripped.webdav.password, "");
+  assert.equal(webLocalJson.includes("ghp_super_secret_token"), false);
+  assert.equal(webLocalJson.includes("dav_secret_password"), false);
+
+  const cloudSyncTs = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/cloudSync.ts"),
+    "utf-8"
+  );
+  assert.match(cloudSyncTs, /hydrateAndMigrateCloudSyncConfig/);
+  assert.match(cloudSyncTs, /persistCloudSyncConfigSecurely/);
+  assert.doesNotMatch(cloudSyncTs, /localStorage\.setItem\(CONFIG_STORAGE_KEY,\s*JSON\.stringify\(config\.value\)\)/);
+});

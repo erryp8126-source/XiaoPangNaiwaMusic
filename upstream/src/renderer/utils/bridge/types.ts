@@ -66,6 +66,9 @@ export interface AndroidBridgeInterface {
   resetListeningStats?(): boolean;
   mergeListeningStats?(statsJson: string): string;
   consumePendingWidgetAction?(): string;
+  secureSetSecret?(key: string, value: string): boolean;
+  secureGetSecret?(key: string): string;
+  secureRemoveSecret?(key: string): boolean;
 }
 
 export type NativeEventListener = (event: any, data: any) => void;

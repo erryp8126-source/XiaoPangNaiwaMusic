@@ -75,7 +75,7 @@
       <transition name="fade">
         <div v-if="showFullLyrics && !isLandscape" class="fullscreen-lyrics" :class="config.theme">
           <div class="fullscreen-header">
-            <div class="song-title" v-html="playMusic.name"></div>
+            <div class="song-title">{{ playMusic.name }}</div>
             <div class="artist-name">
               <span v-for="(item, index) in artistList" :key="index">
                 {{ item.name }}{{ index < artistList.length - 1 ? ' / ' : '' }}
@@ -164,7 +164,7 @@
             <div class="song-info song-info-modern">
               <div class="song-meta-col">
                 <div class="song-title-container">
-                  <h1 class="song-title" v-html="playMusic.name"></h1>
+                  <h1 class="song-title">{{ playMusic.name }}</h1>
                 </div>
                 <p class="song-artist">
                   <span
@@ -285,7 +285,7 @@
           <!-- 歌曲信息放置在顶部 -->
           <div class="landscape-song-info">
             <div class="flex flex-col flex-1">
-              <h1 class="song-title" v-html="playMusic.name"></h1>
+              <h1 class="song-title">{{ playMusic.name }}</h1>
               <p class="song-artist">
                 <span
                   v-for="(item, index) in artistList"

@@ -15,6 +15,7 @@ import android.webkit.JavascriptInterface
 import android.widget.Toast
 import com.xiaopang.naiwamusic.NaiwaApp
 import com.xiaopang.naiwamusic.MainActivity
+import com.xiaopang.naiwamusic.config.SecureCredentialStore
 import com.xiaopang.naiwamusic.download.NativeDownloadManager
 import com.xiaopang.naiwamusic.local.LocalMusicScanner
 import com.xiaopang.naiwamusic.lyric.FloatingLyricManager
@@ -73,6 +74,7 @@ class AndroidJsBridge(
     private val gson = Gson()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val secureStore by lazy { SecureCredentialStore(activity.applicationContext) }
 
     // ==================== 服务器配置与平台能力 ====================
 
@@ -566,6 +568,23 @@ class AndroidJsBridge(
     @JavascriptInterface
     fun consumePendingWidgetAction(): String {
         return activity.consumePendingWidgetActionJson()
+    }
+
+    // ==================== 硬件 Keystore 加密凭据存储 ====================
+
+    @JavascriptInterface
+    fun secureSetSecret(key: String, value: String): Boolean {
+        return secureStore.setSecret(key, value)
+    }
+
+    @JavascriptInterface
+    fun secureGetSecret(key: String): String {
+        return secureStore.getSecret(key)
+    }
+
+    @JavascriptInterface
+    fun secureRemoveSecret(key: String): Boolean {
+        return secureStore.removeSecret(key)
     }
 
     @JavascriptInterface

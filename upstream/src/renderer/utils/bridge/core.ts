@@ -32,6 +32,42 @@ export function isExternalAudioOutputConnected(): boolean {
   }
 }
 
+export function nativeSecureSetSecret(key: string, value: string): boolean {
+  if (typeof window === 'undefined' || !key) return false;
+  try {
+    if (typeof window.AlgerAndroid?.secureSetSecret === 'function') {
+      return Boolean(window.AlgerAndroid.secureSetSecret(key, value));
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export function nativeSecureGetSecret(key: string): string {
+  if (typeof window === 'undefined' || !key) return '';
+  try {
+    if (typeof window.AlgerAndroid?.secureGetSecret === 'function') {
+      return String(window.AlgerAndroid.secureGetSecret(key) || '');
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
+
+export function nativeSecureRemoveSecret(key: string): boolean {
+  if (typeof window === 'undefined' || !key) return false;
+  try {
+    if (typeof window.AlgerAndroid?.secureRemoveSecret === 'function') {
+      return Boolean(window.AlgerAndroid.secureRemoveSecret(key));
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 查询 Android 原生 SimpleCache 是否已缓存指定曲目与音质
  */
