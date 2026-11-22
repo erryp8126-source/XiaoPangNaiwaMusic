@@ -51,7 +51,7 @@
     "jsencrypt": "^3.5.4",
     "music-metadata": "^12.8.0",
     "netease-cloud-music-api-alger": "^4.30.0",
-    "node-fetch": "^2.7.0",
+    "node-fetch": "^3.3.2",
     "node-id3": "^0.2.9",
     "node-machine-id": "^1.1.12",
     "pinia-plugin-persistedstate": "^4.7.1",
