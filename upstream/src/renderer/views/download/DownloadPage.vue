@@ -295,7 +295,7 @@
     />
 
     <!-- 下载设置抽屉 -->
-    <n-drawer v-model:show="showSettingsDrawer" :width="400" placement="right">
+    <n-drawer v-model:show="showSettingsDrawer" :width="400" placement="right" :z-index="12000">
       <n-drawer-content :title="t('download.settingsPanel.title')" closable>
         <div class="download-settings-content space-y-8 py-4">
           <!-- Path Section -->
@@ -454,8 +454,9 @@
 
 <script setup lang="ts">
 import { useMessage } from 'naive-ui';
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onDeactivated, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { useRoute } from 'vue-router';
 
 import { getMusicDetail } from '@/api/music';
 import { usePlayerStore } from '@/store/modules/player';
@@ -467,6 +468,7 @@ import { buildPlaybackMeta } from '@/utils/playbackMeta';
 const nativeIpc = getNativeIpc();
 
 const { t } = useI18n();
+const route = useRoute();
 const playerStore = usePlayerStore();
 const message = useMessage();
 
@@ -1105,6 +1107,17 @@ watch(
     }
   }
 );
+
+watch(
+  () => route.fullPath,
+  () => {
+    showSettingsDrawer.value = false;
+  }
+);
+
+onDeactivated(() => {
+  showSettingsDrawer.value = false;
+});
 
 // 初始化
 onMounted(() => {

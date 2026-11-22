@@ -42,7 +42,14 @@
       </nav>
 
       <!-- 首页低频入口二级抽屉（新碟 / 播客 / MV / 排行榜 / 心动模式 / 播放设置） -->
-      <n-drawer v-model:show="showMoreHomeDrawer" placement="bottom" height="auto">
+      <n-drawer
+        v-model:show="showMoreHomeDrawer"
+        placement="bottom"
+        height="auto"
+        :z-index="12000"
+        :mask-closable="true"
+        :style="{ background: 'transparent', boxShadow: 'none' }"
+      >
         <div
           class="p-5 pb-8 bg-white dark:bg-[#131b28] rounded-t-[26px] space-y-4"
           :style="{ paddingBottom: `calc(24px + var(--safe-area-inset-bottom, 0px))` }"
@@ -308,9 +315,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onActivated, onMounted, ref } from 'vue';
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 
 import { getHotSinger, getPersonalFM, getPersonalizedPlaylist } from '@/api/home';
 import { fmTrash } from '@/api/music';
@@ -322,9 +329,11 @@ import {
   useUserStore
 } from '@/store';
 import { getImgUrl } from '@/utils';
+import { registerAndroidBackHandler } from '@/utils/androidBridge';
 import { getImageBackground } from '@/utils/linearColor';
 
 const { t } = useI18n();
+const route = useRoute();
 const router = useRouter();
 const recommendStore = useRecommendStore();
 const intelligenceModeStore = useIntelligenceModeStore();
@@ -719,12 +728,37 @@ const toggleIntelligenceMode = () => {
 
 // ==================== Lifecycle ====================
 
+let unregisterMoreDrawerBack: (() => void) | null = null;
+
+watch(
+  () => route.fullPath,
+  () => {
+    showMoreHomeDrawer.value = false;
+  }
+);
+
 onMounted(() => {
   fetchHeroData();
+  unregisterMoreDrawerBack = registerAndroidBackHandler(() => {
+    if (showMoreHomeDrawer.value) {
+      showMoreHomeDrawer.value = false;
+      return true;
+    }
+    return false;
+  }, 90);
 });
 
 onActivated(() => {
   recommendStore.refreshIfStale();
+});
+
+onDeactivated(() => {
+  showMoreHomeDrawer.value = false;
+});
+
+onUnmounted(() => {
+  unregisterMoreDrawerBack?.();
+  unregisterMoreDrawerBack = null;
 });
 </script>
 

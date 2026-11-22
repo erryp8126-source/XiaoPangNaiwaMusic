@@ -170,7 +170,7 @@
     </n-scrollbar>
 
     <!-- 文件夹管理抽屉 -->
-    <n-drawer v-model:show="showFolderManager" :width="400" placement="right">
+    <n-drawer v-model:show="showFolderManager" :width="400" placement="right" :z-index="12000">
       <n-drawer-content :title="t('localMusic.removeFolder')" closable>
         <div class="space-y-3 py-4">
           <div
@@ -214,8 +214,9 @@
 
 <script setup lang="ts">
 import { createDiscreteApi } from 'naive-ui';
-import { computed, onMounted, ref } from 'vue';
+import { computed, onDeactivated, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { useRoute } from 'vue-router';
 
 import SongItem from '@/components/common/SongItem.vue';
 import { useLocalMusicStore } from '@/store/modules/localMusic';
@@ -226,6 +227,7 @@ import { filterByKeyword, toSongResult } from '@/utils/localMusicUtils';
 
 // ==================== Stores ====================
 const { t } = useI18n();
+const route = useRoute();
 const { message } = createDiscreteApi(['message']);
 const localMusicStore = useLocalMusicStore();
 const playerStore = usePlayerStore();
@@ -336,6 +338,17 @@ async function handlePlayAll(): Promise<void> {
 }
 
 // ==================== Lifecycle ====================
+watch(
+  () => route.fullPath,
+  () => {
+    showFolderManager.value = false;
+  }
+);
+
+onDeactivated(() => {
+  showFolderManager.value = false;
+});
+
 onMounted(async () => {
   // 进入页面时从 IndexedDB 缓存加载音乐列表
   await localMusicStore.loadFromCache();

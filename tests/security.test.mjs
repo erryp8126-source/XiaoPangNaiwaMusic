@@ -1565,3 +1565,42 @@ test("toast UX upgrade: global frosted-glass capsule toast replaces native Toast
     assert.doesNotMatch(src, /AlgerAndroid[\s\S]{0,12}\.showToast\(/, `${relPath} must use in-app frosted toast instead of AlgerAndroid.showToast`);
   }
 });
+
+test("mobile drawer layering & auto-close: all <n-drawer> tags exceed MobilePlayBar z-index (9500) and HomeHero closes on navigation", () => {
+  const homeHero = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/home/components/HomeHero.vue"),
+    "utf-8"
+  );
+  assert.match(homeHero, /<n-drawer[\s\S]*?:z-index="12000"/);
+  assert.match(homeHero, /route\.fullPath[\s\S]{0,120}showMoreHomeDrawer\.value\s*=\s*false/);
+  assert.match(homeHero, /onDeactivated\(\(\)\s*=>\s*\{[\s\S]{0,80}showMoreHomeDrawer\.value\s*=\s*false/);
+
+  // Recursively verify every <n-drawer> in upstream/src/renderer has an explicit z-index > 9500
+  const rendererDir = path.join(repoRoot, "upstream/src/renderer");
+  const vueFiles = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".vue")) vueFiles.push(full);
+    }
+  };
+  walk(rendererDir);
+
+  let drawerCount = 0;
+  for (const file of vueFiles) {
+    const src = fs.readFileSync(file, "utf-8");
+    const matches = src.matchAll(/<n-drawer(?=[\s>])[^>]*>/g);
+    for (const m of matches) {
+      drawerCount += 1;
+      const tag = m[0];
+      const zMatch = tag.match(/:?z-index="(\d+)"/);
+      assert.ok(zMatch, `${path.relative(repoRoot, file)} <n-drawer> must set explicit :z-index`);
+      assert.ok(
+        Number(zMatch[1]) > 9500,
+        `${path.relative(repoRoot, file)} <n-drawer> z-index (${zMatch[1]}) must be > 9500`
+      );
+    }
+  }
+  assert.ok(drawerCount >= 8, `Expected at least 8 <n-drawer> tags in renderer, found ${drawerCount}`);
+});

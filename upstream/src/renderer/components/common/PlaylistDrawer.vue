@@ -3,6 +3,7 @@
     :show="modelValue"
     :width="420"
     placement="right"
+    :z-index="12000"
     @update:show="$emit('update:modelValue', $event)"
     :unstable-show-mask="false"
     :show-mask="false"
@@ -148,6 +149,7 @@
 import { useMessage } from 'naive-ui';
 import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { useRoute } from 'vue-router';
 
 import { createPlaylist, updatePlaylistTracks } from '@/api/music';
 import { getUserPlaylist } from '@/api/user';
@@ -157,6 +159,7 @@ import { getLoginErrorMessage, hasPermission } from '@/utils/auth';
 
 const store = useUserStore();
 const { t } = useI18n();
+const route = useRoute();
 const props = defineProps<{
   modelValue: boolean;
   songId?: number;
@@ -286,6 +289,15 @@ watch(
   (newVal) => {
     if (newVal) {
       fetchUserPlaylists();
+    }
+  }
+);
+
+watch(
+  () => route.fullPath,
+  () => {
+    if (props.modelValue) {
+      emit('update:modelValue', false);
     }
   }
 );
