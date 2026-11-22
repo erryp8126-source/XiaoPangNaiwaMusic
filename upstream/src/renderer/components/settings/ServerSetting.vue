@@ -2,6 +2,7 @@
   <n-modal
     v-model:show="visible"
     preset="card"
+    :z-index="12000"
     :title="t('settings.remoteControl.title')"
     class="remote-control-modal"
     style="max-width: 650px; width: 100%"

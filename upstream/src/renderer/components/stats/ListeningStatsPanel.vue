@@ -287,11 +287,12 @@
     <n-modal
       v-model:show="showReportModal"
       preset="card"
+      :z-index="12000"
       style="width: 92vw; max-width: 440px"
       title="生成听歌报告卡片"
       :bordered="false"
     >
-      <div class="space-y-3.5">
+      <div class="space-y-3.5 pr-0.5" style="max-height: 82vh; overflow-y: auto">
         <div class="flex items-center justify-center gap-2">
           <button
             type="button"
@@ -320,18 +321,18 @@
         </div>
 
         <div
-          class="relative w-full rounded-2xl overflow-hidden bg-slate-900 border border-slate-700/60 flex items-center justify-center min-h-[300px] max-h-[60vh]"
+          class="relative w-full rounded-2xl overflow-hidden bg-slate-900 border border-slate-700/60 flex items-center justify-center min-h-[240px] max-h-[52vh]"
         >
           <img
             v-if="reportPreviewUrl"
             :src="reportPreviewUrl"
             alt="听歌统计报告卡片"
-            class="w-full h-auto max-h-[60vh] object-contain"
+            class="w-full h-auto max-h-[52vh] object-contain"
           />
           <n-spin v-else size="medium" />
         </div>
 
-        <div class="flex items-center gap-2.5">
+        <div class="flex items-center gap-2.5 pb-1">
           <button
             type="button"
             :disabled="!reportPreviewUrl || savingReport"

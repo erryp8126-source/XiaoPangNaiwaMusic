@@ -1808,3 +1808,75 @@ test("playlist index sync runtime & invariants: next -> prev always returns to i
   );
   assert.match(playerCoreSrc, /resolveSeededFirstSong\(/);
 });
+
+test("global overlay z-index invariants: all <n-modal>, <n-drawer>, ResponsiveModal & Naive UI containers exceed bottom bar (9500)", () => {
+  const rendererDir = path.join(repoRoot, "upstream/src/renderer");
+  const vueFiles = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".vue")) vueFiles.push(full);
+    }
+  };
+  walk(rendererDir);
+
+  let modalCount = 0;
+  let drawerCount = 0;
+  for (const file of vueFiles) {
+    const src = fs.readFileSync(file, "utf-8");
+    const rel = path.relative(repoRoot, file);
+
+    for (const m of src.matchAll(/<n-modal(?=[\s>])[^>]*>/g)) {
+      modalCount += 1;
+      const zMatch = m[0].match(/:?z-index="(\d+)"/);
+      assert.ok(zMatch, `${rel} <n-modal> must set explicit :z-index`);
+      assert.ok(
+        Number(zMatch[1]) > 10000,
+        `${rel} <n-modal> z-index (${zMatch[1]}) must be > 10000`
+      );
+    }
+
+    for (const m of src.matchAll(/<n-drawer(?=[\s>])[^>]*>/g)) {
+      drawerCount += 1;
+      const zMatch = m[0].match(/:?z-index="(\d+)"/);
+      assert.ok(zMatch, `${rel} <n-drawer> must set explicit :z-index`);
+      const zVal = Number(zMatch[1]);
+      assert.ok(zVal > 9500, `${rel} <n-drawer> z-index (${zVal}) must be > 9500`);
+      if (!rel.endsWith("MusicFull.vue") && !rel.endsWith("MusicFullMobile.vue")) {
+        assert.ok(zVal > 10000, `${rel} <n-drawer> z-index (${zVal}) must be > 10000`);
+      }
+    }
+  }
+
+  assert.ok(modalCount >= 14, `Expected at least 14 <n-modal> tags, found ${modalCount}`);
+  assert.ok(drawerCount >= 8, `Expected at least 8 <n-drawer> tags, found ${drawerCount}`);
+
+  // ResponsiveModal 必须高于 9500（不再停留在 z-[1000]）
+  const responsiveModal = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/common/ResponsiveModal.vue"),
+    "utf-8"
+  );
+  assert.doesNotMatch(responsiveModal, /z-\[1000\]/);
+  assert.match(responsiveModal, /z-\[12000\]/);
+
+  // 听歌报告弹窗需具备小屏限高滚动保护，避免保存/分享按钮被截断
+  const statsPanel = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/stats/ListeningStatsPanel.vue"),
+    "utf-8"
+  );
+  assert.match(statsPanel, /<n-modal[\s\S]{0,160}:z-index="12000"/);
+  assert.match(statsPanel, /max-height:\s*82vh;\s*overflow-y:\s*auto/);
+
+  // 全局 Provider & CSS 容器兜底高于 9500（覆盖 useDialog / useMessage / createDiscreteApi）
+  const appVue = fs.readFileSync(path.join(repoRoot, "upstream/src/renderer/App.vue"), "utf-8");
+  assert.match(appVue, /<n-message-provider[^>]*zIndex:\s*100020/);
+
+  const mobileCss = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/assets/css/mobile.css"),
+    "utf-8"
+  );
+  assert.match(mobileCss, /\.n-modal-container[\s\S]{0,80}z-index:\s*12500\s*!important/);
+  assert.match(mobileCss, /\.n-drawer-container[\s\S]{0,100}z-index:\s*12000\s*!important/);
+  assert.match(mobileCss, /\.n-message-container\s*\{[\s\S]{0,60}z-index:\s*100020\s*!important/);
+});

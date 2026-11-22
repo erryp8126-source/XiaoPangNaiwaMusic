@@ -265,7 +265,7 @@
       v-model:sources="musicSources"
     />
 
-    <n-modal v-if="isAndroid && nativeCapabilities.supportsEq" v-model:show="showEqModal" preset="card" style="width: 94vw; max-width: 680px" title="均衡器 (EQ)">
+    <n-modal v-if="isAndroid && nativeCapabilities.supportsEq" v-model:show="showEqModal" preset="card" :z-index="12000" style="width: 94vw; max-width: 680px" title="均衡器 (EQ)">
       <eq-control />
     </n-modal>
   </div>

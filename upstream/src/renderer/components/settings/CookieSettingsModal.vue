@@ -105,6 +105,7 @@ const handlePaste = async () => {
   <n-modal
     :show="show"
     preset="dialog"
+    :z-index="12000"
     :title="t('settings.cookie.title')"
     @update:show="emit('update:show', $event)"
   >

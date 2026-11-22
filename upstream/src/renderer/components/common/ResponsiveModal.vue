@@ -3,7 +3,7 @@
     <Transition name="fade">
       <div
         v-if="show"
-        class="fixed inset-0 z-[1000] flex items-center justify-center md:items-center items-end"
+        class="fixed inset-0 z-[12000] flex items-center justify-center md:items-center items-end"
         @click="handleMaskClick"
       >
         <!-- Overlay -->

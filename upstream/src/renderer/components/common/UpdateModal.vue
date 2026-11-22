@@ -2,6 +2,7 @@
   <n-modal
     v-model:show="showModal"
     preset="dialog"
+    :z-index="12000"
     :show-icon="false"
     :mask-closable="!isChecking"
     :closable="!isChecking"

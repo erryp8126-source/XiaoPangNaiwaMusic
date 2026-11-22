@@ -98,6 +98,19 @@
   margin-right: 8px !important;
 }
 
+/* 全局弹窗 / 抽屉 / 提示层级兜底：确保 useDialog / useMessage / 动态挂载容器始终高于底部导航栏(9000)与 MobilePlayBar(9500) */
+.n-modal-container:not([style*='9999999']) {
+  z-index: 12500 !important;
+}
+
+.n-drawer-container:not([style*='9998']):not([style*='999999999']) {
+  z-index: 12000 !important;
+}
+
+.n-message-container {
+  z-index: 100020 !important;
+}
+
 /* 弹窗/抽屉移动端圆角精修 */
 .mobile .n-modal.n-card,
 .mobile .n-dialog {

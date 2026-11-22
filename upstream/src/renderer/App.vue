@@ -5,7 +5,7 @@
       :theme-overrides="naiveThemeOverrides"
     >
       <n-dialog-provider>
-        <n-message-provider>
+        <n-message-provider :container-style="{ zIndex: 100020 }">
           <router-view></router-view>
           <app-floating-toast />
           <disclaimer-modal />

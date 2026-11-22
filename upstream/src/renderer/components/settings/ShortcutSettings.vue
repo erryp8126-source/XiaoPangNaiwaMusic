@@ -2,6 +2,7 @@
   <n-modal
     v-model:show="visible"
     preset="card"
+    :z-index="12000"
     class="shortcut-modal"
     :show-icon="false"
     :title="t('settings.shortcutSettings.title')"

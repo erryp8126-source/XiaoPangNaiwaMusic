@@ -270,6 +270,7 @@
     <n-modal
       v-model:show="showDeleteConfirm"
       preset="dialog"
+      :z-index="12000"
       type="warning"
       :title="t('download.delete.title')"
       :content="
@@ -286,6 +287,7 @@
     <n-modal
       v-model:show="showClearConfirm"
       preset="dialog"
+      :z-index="12000"
       type="error"
       :title="t('download.clear.title')"
       :content="t('download.clear.message')"

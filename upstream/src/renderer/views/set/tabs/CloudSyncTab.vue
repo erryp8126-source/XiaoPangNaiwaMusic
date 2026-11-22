@@ -618,6 +618,7 @@
     <n-modal
       :show="Boolean(cloudSyncStore.pendingConflict)"
       preset="card"
+      :z-index="12000"
       :bordered="false"
       :mask-closable="false"
       class="max-w-[460px] w-[92vw] rounded-3xl"

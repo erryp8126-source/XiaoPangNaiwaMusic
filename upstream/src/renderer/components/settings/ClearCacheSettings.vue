@@ -2,6 +2,7 @@
   <n-modal
     v-model:show="visible"
     preset="dialog"
+    :z-index="12000"
     :title="t('settings.system.cache')"
     :positive-text="t('common.confirm')"
     :negative-text="t('common.cancel')"

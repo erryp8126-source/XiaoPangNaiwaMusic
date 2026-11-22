@@ -4,7 +4,7 @@
     :width="800"
     placement="right"
     :mask-closable="true"
-    :z-index="9997"
+    :z-index="12000"
   >
     <div v-loading="loading" class="artist-drawer">
       <div class="close-btn">
