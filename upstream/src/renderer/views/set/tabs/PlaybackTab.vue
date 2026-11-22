@@ -12,29 +12,105 @@
         />
       </setting-item>
 
-      <setting-item v-if="isNative" :title="t('settings.playback.musicSources')">
-        <template #description>
-          <div class="flex items-center gap-2.5 flex-wrap">
-            <n-switch v-model:value="setData.enableMusicUnblock">
-              <template #checked>{{ t('common.on') }}</template>
-              <template #unchecked>{{ t('common.off') }}</template>
-            </n-switch>
-            <span class="text-[13px] text-slate-600 dark:text-slate-300">{{ t('settings.playback.musicUnblockEnableDesc') }}</span>
-          </div>
-          <div v-if="setData.enableMusicUnblock" class="mt-2 text-[13px]">
-            <span class="text-slate-600 dark:text-slate-300">{{ t('settings.playback.selectedMusicSources') }}</span>
-            <span v-if="musicSources.length > 0" class="font-medium text-slate-800 dark:text-slate-100">{{
-              musicSources.join(', ')
-            }}</span>
-            <span v-else class="text-rose-600 dark:text-rose-400 text-xs font-medium">{{
-              t('settings.playback.noMusicSources')
-            }}</span>
-          </div>
-        </template>
-        <s-btn :disabled="!setData.enableMusicUnblock" @click="showMusicSourcesModal = true">
-          {{ t('settings.playback.configureMusicSources') }}
-        </s-btn>
+      <setting-item
+        v-if="isNative"
+        inline
+        title="自动选择最佳音源"
+        description="当官方音源受限或不可用时，自动匹配并切换至可用备用音源，无需手动干预"
+      >
+        <n-switch v-model:value="setData.enableMusicUnblock">
+          <template #checked>{{ t('common.on') }}</template>
+          <template #unchecked>{{ t('common.off') }}</template>
+        </n-switch>
       </setting-item>
+
+      <!-- 默认折叠的高级音源设置（收起 migu/kuwo/gdmusic 等技术名、单源开关与测速） -->
+      <div
+        v-if="isNative && setData.enableMusicUnblock"
+        class="mt-2 rounded-2xl border border-slate-200/80 dark:border-slate-700/70 bg-slate-50/70 dark:bg-slate-800/45 overflow-hidden"
+      >
+        <button
+          type="button"
+          class="w-full px-3.5 py-2.5 flex items-center justify-between text-left hover:bg-slate-100/70 dark:hover:bg-slate-800/70 transition-colors"
+          @click="showAdvancedSources = !showAdvancedSources"
+        >
+          <div class="flex items-center gap-2 min-w-0">
+            <i class="ri-equalizer-2-line text-slate-500 dark:text-slate-400 text-sm"></i>
+            <span class="text-xs font-bold text-slate-700 dark:text-slate-200">高级音源设置</span>
+            <span class="text-[11px] text-slate-400">
+              （已启用 {{ musicSources.length }} 个备用通道）
+            </span>
+          </div>
+          <i
+            class="ri-arrow-down-s-line text-base text-slate-400 transition-transform duration-200"
+            :class="{ 'rotate-180': showAdvancedSources }"
+          ></i>
+        </button>
+
+        <div
+          v-if="showAdvancedSources"
+          class="px-3.5 pb-3.5 pt-2 border-t border-slate-200/70 dark:border-slate-700/60 space-y-3"
+        >
+          <div class="flex items-center justify-between gap-2 flex-wrap">
+            <span class="text-[11px] text-slate-500 dark:text-slate-400">
+              可按需开关单个备用解析通道或执行连通性测速
+            </span>
+            <div class="flex items-center gap-2">
+              <s-btn :disabled="speedTesting" @click="runSourceSpeedTest">
+                <i
+                  class="mr-1"
+                  :class="speedTesting ? 'ri-loader-4-line animate-spin' : 'ri-speed-up-line'"
+                ></i>
+                {{ speedTesting ? '测速中...' : '通道测速' }}
+              </s-btn>
+              <s-btn @click="showMusicSourcesModal = true">
+                LX 脚本 / 自定义源
+              </s-btn>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div
+              v-for="item in advancedSourceOptions"
+              :key="item.key"
+              class="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200/70 dark:border-slate-700/60"
+            >
+              <div class="min-w-0">
+                <div class="flex items-center gap-1.5">
+                  <span class="text-xs font-bold text-slate-800 dark:text-slate-100">
+                    {{ item.label }}
+                  </span>
+                  <span
+                    class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
+                  >
+                    {{ item.key }}
+                  </span>
+                </div>
+                <div
+                  v-if="sourceLatencies[item.key] !== undefined"
+                  class="text-[10px] mt-0.5 font-mono"
+                  :class="
+                    sourceLatencies[item.key] > 0 && sourceLatencies[item.key] < 1500
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-amber-600 dark:text-amber-400'
+                  "
+                >
+                  {{
+                    sourceLatencies[item.key] > 0
+                      ? `响应 ${sourceLatencies[item.key]} ms`
+                      : '连接超时'
+                  }}
+                </div>
+              </div>
+              <n-switch
+                size="small"
+                :value="musicSources.includes(item.key)"
+                @update:value="(val: boolean) => toggleSingleSource(item.key, val)"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
 
       <setting-item
         v-if="isAndroid"
@@ -215,7 +291,60 @@ const platform = window.electron ? window.electron.ipcRenderer.sendSync('get-pla
 const nativeCapabilities = getNativeCapabilities();
 
 const showMusicSourcesModal = ref(false);
+const showAdvancedSources = ref(false);
+const speedTesting = ref(false);
+const sourceLatencies = ref<Record<string, number>>({});
 const showEqModal = ref(false);
+
+const advancedSourceOptions: Array<{ key: Platform; label: string }> = [
+  { key: 'pyncmd', label: '云端聚合通道' },
+  { key: 'kuwo', label: '酷我通道' },
+  { key: 'kugou', label: '酷狗通道' },
+  { key: 'migu', label: '咪咕通道' },
+  { key: 'gdmusic', label: 'GD 聚合通道' }
+];
+
+const toggleSingleSource = (key: Platform, enabled: boolean) => {
+  const current = [...musicSources.value];
+  if (enabled) {
+    if (!current.includes(key)) current.push(key);
+    musicSources.value = current;
+  } else {
+    const next = current.filter((k) => k !== key);
+    if (next.length === 0) {
+      (window as any).AlgerAndroid?.showToast?.('至少保留一个可用备用音源通道');
+      return;
+    }
+    musicSources.value = next;
+  }
+};
+
+const runSourceSpeedTest = async () => {
+  if (speedTesting.value) return;
+  speedTesting.value = true;
+  const nextLatencies: Record<string, number> = {};
+  try {
+    const basePort = setData.value.musicApiPort || 30488;
+    const probeUrl = isAndroid
+      ? `http://127.0.0.1:${basePort}/__alger_health`
+      : '/api/health';
+    for (const item of advancedSourceOptions) {
+      const started = performance.now();
+      try {
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => controller.abort(), 3000);
+        await fetch(probeUrl, { method: 'GET', signal: controller.signal }).catch(() => null);
+        window.clearTimeout(timer);
+        nextLatencies[item.key] = Math.max(1, Math.round(performance.now() - started));
+      } catch {
+        nextLatencies[item.key] = -1;
+      }
+    }
+    sourceLatencies.value = nextLatencies;
+  } finally {
+    speedTesting.value = false;
+  }
+};
 const floatingLyricEnabled = ref<boolean>(
   nativeCapabilities.supportsFloatingLyric
     ? Boolean((window as any).AlgerAndroid?.isFloatingLyricEnabled?.())

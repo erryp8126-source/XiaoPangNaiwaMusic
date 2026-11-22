@@ -15,6 +15,12 @@ import type { Platform, SongResult } from '@/types/music';
 import { getImgUrl } from '@/utils';
 import { getNativeCapabilities, isAndroid, isAndroidAudioCached } from '@/utils/androidBridge';
 import { getImageLinearBackground } from '@/utils/linearColor';
+import {
+  classifyPlaybackFailure,
+  formatAutoFallbackMessage,
+  MAX_SINGLE_TRACK_RETRIES,
+  shouldRetrySingleTrack
+} from '@/utils/playbackDiagnostics';
 import { buildPlaybackMeta, inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
 import { showBottomToast } from '@/utils/shortcutToast';
 
@@ -39,6 +45,8 @@ export const usePlayerCoreStore = defineStore(
     const volume = ref(1);
     const userPlayIntent = ref(false); // 用户是否想要播放
     const isFmPlaying = ref(false); // 是否正在播放私人FM
+    const lastPlaybackError = ref('');
+    const lastFailureCode = ref<string>('');
 
     // 音频输出设备
     const audioOutputDeviceId = ref<string>(
@@ -48,7 +56,7 @@ export const usePlayerCoreStore = defineStore(
 
     let checkPlayTime: NodeJS.Timeout | null = null;
     let checkPlaybackRetryCount = 0;
-    const MAX_CHECKPLAYBACK_RETRIES = 3;
+    const MAX_CHECKPLAYBACK_RETRIES = MAX_SINGLE_TRACK_RETRIES; // 严格限制单曲最大重试 <= 2 次
     let scrobbleTimer: number | null = null;
 
     // ==================== Computed ====================
@@ -149,7 +157,7 @@ export const usePlayerCoreStore = defineStore(
         }
       };
 
-      const onPlayErrorHandler = async () => {
+      const onPlayErrorHandler = async (err?: any) => {
         console.log('播放错误事件触发，检查是否需要重新获取URL');
         audioService.off('play', onPlayHandler);
         audioService.off('playerror', onPlayErrorHandler);
@@ -160,11 +168,32 @@ export const usePlayerCoreStore = defineStore(
           return;
         }
 
-        // 检查重试次数限制：若用户仍希望持续播放，则自动跳过当前异常曲目切下一首，绝不直接静音停播
-        if (checkPlaybackRetryCount >= MAX_CHECKPLAYBACK_RETRIES) {
-          console.warn(`播放重试已达上限 (${MAX_CHECKPLAYBACK_RETRIES} 次)，尝试自动切换下一首`);
+        const isLocal = Boolean(playMusic.value?.playMusicUrl?.startsWith('local://'));
+        const diagnosis = classifyPlaybackFailure({
+          error: err,
+          hasUrl: Boolean(playMusic.value?.playMusicUrl),
+          isOffline: typeof navigator !== 'undefined' && navigator.onLine === false,
+          isLocal
+        });
+        lastPlaybackError.value = diagnosis.userMessage;
+        lastFailureCode.value = diagnosis.code;
+
+        if (playMusic.value) {
+          playMusic.value.playLoading = false;
+        }
+
+        // 检查重试次数上限（严格 <= 2 次）及失败类型，杜绝无限转圈重试
+        if (!shouldRetrySingleTrack(checkPlaybackRetryCount, diagnosis.code)) {
+          console.warn(
+            `播放失败且不再重试 (reason=${diagnosis.code}, retries=${checkPlaybackRetryCount}/${MAX_CHECKPLAYBACK_RETRIES})`
+          );
           checkPlaybackRetryCount = 0;
-          if (userPlayIntent.value) {
+          showBottomToast(
+            diagnosis.code === 'source-unavailable'
+              ? '该歌曲暂无可播放的可用音源'
+              : diagnosis.userMessage
+          );
+          if (userPlayIntent.value && diagnosis.code !== 'offline') {
             const { usePlaylistStore } = await import('./playlist');
             const playlistStore = usePlaylistStore();
             if (playlistStore.playList.length > 1) {
@@ -178,11 +207,8 @@ export const usePlayerCoreStore = defineStore(
 
         if (userPlayIntent.value && play.value) {
           checkPlaybackRetryCount++;
-          console.log(
-            `播放失败，尝试刷新URL并重新播放 (重试 ${checkPlaybackRetryCount}/${MAX_CHECKPLAYBACK_RETRIES})`
-          );
-          // 本地音乐不需要刷新 URL
-          if (!playMusic.value.playMusicUrl?.startsWith('local://')) {
+          showBottomToast(`${diagnosis.userMessage}（重试 ${checkPlaybackRetryCount}/${MAX_CHECKPLAYBACK_RETRIES}）`);
+          if (!isLocal) {
             playMusic.value.playMusicUrl = undefined;
           }
           const refreshedSong = { ...song, isFirstPlay: true };
@@ -253,11 +279,25 @@ export const usePlayerCoreStore = defineStore(
           audioService.off('play', onPlayHandler);
           audioService.off('playerror', onPlayErrorHandler);
 
-          // 检查重试次数限制：若用户仍希望播放，则自动切下一首
-          if (checkPlaybackRetryCount >= MAX_CHECKPLAYBACK_RETRIES) {
-            console.warn(`超时重试已达上限 (${MAX_CHECKPLAYBACK_RETRIES} 次)，尝试自动切换下一首`);
+          const isLocal = Boolean(playMusic.value?.playMusicUrl?.startsWith('local://'));
+          const diagnosis = classifyPlaybackFailure({
+            error: 'network timeout',
+            hasUrl: Boolean(playMusic.value?.playMusicUrl),
+            isOffline: typeof navigator !== 'undefined' && navigator.onLine === false,
+            isLocal
+          });
+          lastPlaybackError.value = diagnosis.userMessage;
+          lastFailureCode.value = diagnosis.code;
+          if (playMusic.value) {
+            playMusic.value.playLoading = false;
+          }
+
+          // 检查重试次数上限（严格 <= 2 次）：超时或离线不再无限转圈
+          if (!shouldRetrySingleTrack(checkPlaybackRetryCount, diagnosis.code)) {
+            console.warn(`超时重试已达上限 (${MAX_CHECKPLAYBACK_RETRIES} 次)，停止当前曲目重试`);
             checkPlaybackRetryCount = 0;
-            if (userPlayIntent.value) {
+            showBottomToast(diagnosis.userMessage);
+            if (userPlayIntent.value && diagnosis.code !== 'offline') {
               void (async () => {
                 const { usePlaylistStore } = await import('./playlist');
                 const playlistStore = usePlaylistStore();
@@ -274,12 +314,9 @@ export const usePlayerCoreStore = defineStore(
           }
 
           checkPlaybackRetryCount++;
-          console.log(
-            `${timeout}ms后歌曲未真正播放，尝试重新获取URL (重试 ${checkPlaybackRetryCount}/${MAX_CHECKPLAYBACK_RETRIES})`
-          );
+          showBottomToast(`${diagnosis.userMessage}（重试 ${checkPlaybackRetryCount}/${MAX_CHECKPLAYBACK_RETRIES}）`);
 
-          // 本地音乐不需要刷新 URL
-          if (!playMusic.value.playMusicUrl?.startsWith('local://')) {
+          if (!isLocal) {
             playMusic.value.playMusicUrl = undefined;
           }
           (async () => {
@@ -444,6 +481,23 @@ export const usePlayerCoreStore = defineStore(
 
         updatedPlayMusic.lyric = lyrics;
 
+        // 若所有音源均未能返回有效播放地址，立即结束 loading 并给出清晰原因，杜绝无限转圈
+        if (!updatedPlayMusic.playMusicUrl || !String(updatedPlayMusic.playMusicUrl).trim()) {
+          const diagnosis = classifyPlaybackFailure({
+            hasUrl: false,
+            isOffline: typeof navigator !== 'undefined' && navigator.onLine === false,
+            isLocal: Boolean(originalMusic.playMusicUrl?.startsWith('local://'))
+          });
+          lastPlaybackError.value = diagnosis.userMessage;
+          lastFailureCode.value = diagnosis.code;
+          updatedPlayMusic.playLoading = false;
+          playMusic.value = updatedPlayMusic;
+          setIsPlay(false);
+          showBottomToast(diagnosis.userMessage);
+          playbackRequestManager.failRequest(requestId);
+          return false;
+        }
+
         // 统一补齐播放音源/音质元数据，并在原生缓存命中时标注「本地缓存」
         const { useSettingsStore } = await import('./settings');
         const settingsStore = useSettingsStore();
@@ -461,17 +515,13 @@ export const usePlayerCoreStore = defineStore(
           existing: updatedPlayMusic.playbackMeta
         });
 
-        // 当主音源解析失败自动切换到备用解灰 / LX 源时，给出不打断听歌的轻量 Toast 提示
+        // 当主音源解析失败自动切换到备用解灰 / LX 源时，给出不打断听歌的清晰可读提示（如「当前音源不可用，已自动切换备用源」）
         if (
           shouldPlay &&
           updatedPlayMusic.playbackMeta?.fallbackFrom === 'official' &&
           !updatedPlayMusic.playbackMeta?.fromDiskCache
         ) {
-          const fallbackTip =
-            updatedPlayMusic.playbackMeta.sourceCategory === 'lx'
-              ? '已自动切换备用 LX 源'
-              : '已自动切换备用音源';
-          showBottomToast(fallbackTip);
+          showBottomToast(formatAutoFallbackMessage(updatedPlayMusic.playbackMeta.sourceCategory));
           updatedPlayMusic.playbackMeta = {
             ...updatedPlayMusic.playbackMeta,
             fallbackFrom: undefined
@@ -531,7 +581,19 @@ export const usePlayerCoreStore = defineStore(
         }
       } catch (error) {
         console.error('处理播放音乐失败:', error);
-        message.error(i18n.global.t('player.playFailed'));
+        const diagnosis = classifyPlaybackFailure({
+          error,
+          hasUrl: Boolean(playMusicUrl.value),
+          isOffline: typeof navigator !== 'undefined' && navigator.onLine === false,
+          isLocal: Boolean(originalMusic.playMusicUrl?.startsWith('local://'))
+        });
+        lastPlaybackError.value = diagnosis.userMessage;
+        lastFailureCode.value = diagnosis.code;
+        if (diagnosis.code === 'timeout' || diagnosis.code === 'offline') {
+          message.warning(diagnosis.userMessage);
+        } else {
+          message.error(diagnosis.userMessage || i18n.global.t('player.playFailed'));
+        }
         if (playMusic.value) {
           playMusic.value.playLoading = false;
         }
@@ -820,22 +882,67 @@ export const usePlayerCoreStore = defineStore(
             isPlay.value = false;
           }
         } else {
-          // 冷启动非自动播放模式：仅保留上次曲目展示信息并标记 isFirstPlay = true，
-          // 避免启动异步 audioLoad(false) 与用户首次点击播放按钮发生竞态冲突或拉起无效过期链接；
-          // 用户点击底部播放键时由 setPlay 立即重新解析最新链接并直接开播！
+          // 继续聆听：冷启动恢复上次退出时的歌曲、播放进度、队列与音质（默认暂停待点播，不自动外放打扰用户）
           console.log('[initializePlayState] 冷启动待命恢复上次曲目:', playMusic.value.name);
           play.value = false;
           isPlay.value = false;
           userPlayIntent.value = false;
+
+          let savedProgressSec = 0;
+          let savedDurationSec = Number(playMusic.value.dt || playMusic.value.duration || 0) / 1000;
+          let restoredQuality = settingStore.setData?.musicQuality || 'higher';
+          try {
+            const rawSnap = localStorage.getItem('playProgress');
+            if (rawSnap) {
+              const parsed = JSON.parse(rawSnap);
+              if (
+                String(parsed?.songId) === String(playMusic.value.id) &&
+                typeof parsed?.progress === 'number' &&
+                parsed.progress > 0
+              ) {
+                savedProgressSec = parsed.progress;
+                if (typeof parsed?.duration === 'number' && parsed.duration > 0) {
+                  savedDurationSec = parsed.duration;
+                }
+                if (typeof parsed?.quality === 'string' && parsed.quality) {
+                  restoredQuality = parsed.quality;
+                }
+              }
+            }
+          } catch {
+            // ignore corrupted storage
+          }
+
           playMusic.value = {
             ...playMusic.value,
             isFirstPlay: true,
             playLoading: false,
             playMusicUrl: isLocalMusic ? playMusic.value.playMusicUrl : undefined,
-            expiredAt: isLocalMusic ? playMusic.value.expiredAt : undefined
+            expiredAt: isLocalMusic ? playMusic.value.expiredAt : undefined,
+            playbackMeta: inferPlaybackMetaFromUrl(
+              isLocalMusic ? playMusic.value.playMusicUrl : undefined,
+              {
+                isDownloaded: Boolean(playMusic.value.isDownloadedTrack),
+                fallbackQuality: restoredQuality,
+                existing: playMusic.value.playbackMeta
+              }
+            )
           };
           if (!isLocalMusic) {
             playMusicUrl.value = '';
+          }
+
+          // 立即将上次进度写入界面时间轴（保持暂停状态，点击播放时精准续播）
+          try {
+            const { nowTime, allTime } = await import('@/hooks/MusicHook');
+            if (savedDurationSec > 0) {
+              allTime.value = savedDurationSec;
+            }
+            if (savedProgressSec > 0 && (savedDurationSec <= 0 || savedProgressSec < savedDurationSec - 2)) {
+              nowTime.value = savedProgressSec;
+            }
+          } catch {
+            // ignore
           }
         }
       }
@@ -893,6 +1000,8 @@ export const usePlayerCoreStore = defineStore(
       volume,
       userPlayIntent,
       isFmPlaying,
+      lastPlaybackError,
+      lastFailureCode,
       audioOutputDeviceId,
       availableAudioDevices,
 

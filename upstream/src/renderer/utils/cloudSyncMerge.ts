@@ -432,3 +432,113 @@ export function smartMergeCloudSnapshots(
     ...(mergedPreferences ? { preferences: mergedPreferences } : {})
   };
 }
+
+export interface SyncConflictDiffPreview {
+  localOnlyFavorites: number;
+  remoteOnlyFavorites: number;
+  localOnlyHistory: number;
+  remoteOnlyHistory: number;
+  localAddedTotal: number;
+  remoteAddedTotal: number;
+}
+
+function collectSnapshotSongIdSet(snapshot?: Partial<CloudSyncSnapshot> | null): Set<string> {
+  const ids = new Set<string>();
+  if (!snapshot) return ids;
+  for (const fav of snapshot.favoriteList || []) {
+    if (fav !== null && fav !== undefined && fav !== '') ids.add(String(fav));
+  }
+  for (const song of snapshot.playHistory?.musicHistory || []) {
+    if (song?.id !== null && song?.id !== undefined && song?.id !== '') ids.add(String(song.id));
+  }
+  for (const pl of snapshot.customPlaylists || []) {
+    for (const track of pl?.tracks || []) {
+      if (track?.id !== null && track?.id !== undefined && track?.id !== '') {
+        ids.add(String(track.id));
+      }
+    }
+  }
+  return ids;
+}
+
+/**
+ * 计算冲突弹窗差异预览：「本机新增 X 首 / 云端新增 Y 首」
+ */
+export function computeSyncConflictDiff(
+  local: Partial<CloudSyncSnapshot> | null | undefined,
+  remote: Partial<CloudSyncSnapshot> | null | undefined
+): SyncConflictDiffPreview {
+  const localFavSet = new Set((local?.favoriteList || []).map(String));
+  const remoteFavSet = new Set((remote?.favoriteList || []).map(String));
+  let localOnlyFavorites = 0;
+  let remoteOnlyFavorites = 0;
+  for (const id of localFavSet) {
+    if (!remoteFavSet.has(id)) localOnlyFavorites++;
+  }
+  for (const id of remoteFavSet) {
+    if (!localFavSet.has(id)) remoteOnlyFavorites++;
+  }
+
+  const localHistSet = new Set((local?.playHistory?.musicHistory || []).map((s: any) => String(s?.id)));
+  const remoteHistSet = new Set((remote?.playHistory?.musicHistory || []).map((s: any) => String(s?.id)));
+  let localOnlyHistory = 0;
+  let remoteOnlyHistory = 0;
+  for (const id of localHistSet) {
+    if (id && !remoteHistSet.has(id)) localOnlyHistory++;
+  }
+  for (const id of remoteHistSet) {
+    if (id && !localHistSet.has(id)) remoteOnlyHistory++;
+  }
+
+  const localAll = collectSnapshotSongIdSet(local);
+  const remoteAll = collectSnapshotSongIdSet(remote);
+  let localAddedTotal = 0;
+  let remoteAddedTotal = 0;
+  for (const id of localAll) {
+    if (!remoteAll.has(id)) localAddedTotal++;
+  }
+  for (const id of remoteAll) {
+    if (!localAll.has(id)) remoteAddedTotal++;
+  }
+
+  return {
+    localOnlyFavorites,
+    remoteOnlyFavorites,
+    localOnlyHistory,
+    remoteOnlyHistory,
+    localAddedTotal,
+    remoteAddedTotal
+  };
+}
+
+export type LocalBackupReason =
+  | 'before-merge'
+  | 'before-use-remote'
+  | 'before-overwrite'
+  | 'before-import'
+  | 'before-rollback';
+
+export interface LocalSyncBackupRecord {
+  id: string;
+  createdAt: number;
+  reason: LocalBackupReason;
+  revision: number;
+  deviceName: string;
+  favoritesCount: number;
+  songsCount: number;
+  snapshot: CloudSyncSnapshot;
+}
+
+/**
+ * 仅保留最近 maxCount（默认 5）份本地快照，按时间倒序排列
+ */
+export function pruneBackupSnapshots(
+  records: LocalSyncBackupRecord[],
+  maxCount = 5
+): LocalSyncBackupRecord[] {
+  const limit = Math.max(1, Math.min(10, Math.floor(maxCount)));
+  return [...records]
+    .filter((r) => r && r.id && r.snapshot)
+    .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))
+    .slice(0, limit);
+}

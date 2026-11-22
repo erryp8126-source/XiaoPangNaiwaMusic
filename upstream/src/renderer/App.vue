@@ -8,6 +8,7 @@
         <n-message-provider>
           <router-view></router-view>
           <disclaimer-modal />
+          <onboarding-guide-modal />
         </n-message-provider>
       </n-dialog-provider>
     </n-config-provider>
@@ -22,6 +23,7 @@ import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 
 import DisclaimerModal from '@/components/common/DisclaimerModal.vue';
+import OnboardingGuideModal from '@/components/common/OnboardingGuideModal.vue';
 import { useCloudSyncStore } from '@/store/modules/cloudSync';
 import { useListeningStatsStore } from '@/store/modules/listeningStats';
 import { usePlayerStore } from '@/store/modules/player';
@@ -340,17 +342,13 @@ onMounted(async () => {
   listeningStatsStore.initWebFallbackTracking();
   cloudSyncStore.runAutoSyncOnLaunch();
 
-  // 检查网络状态，离线时自动跳转到本地音乐页面
+  // 检查网络状态，离线时自动跳转到统一音乐库离线视图
   if (!navigator.onLine) {
-    console.log('检测到无网络连接，跳转到本地音乐页面');
-    router.push('/local-music');
+    console.log('检测到无网络连接，跳转到我的音乐库');
+    router.push('/library?tab=downloaded');
   }
 
-  // 监听网络状态变化，断网时跳转到本地音乐页面
-  window.addEventListener('offline', () => {
-    console.log('网络连接断开，跳转到本地音乐页面');
-    router.push('/local-music');
-  });
+  // 监听网络状态变化，断网时不强制打断当前听歌，由顶部 OfflineBanner 提供一键直达离线音乐库
 
   // 初始化 MusicHook，注入 playerStore
   initMusicHook(playerStore);

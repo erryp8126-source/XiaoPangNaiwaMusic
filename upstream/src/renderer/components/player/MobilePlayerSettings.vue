@@ -81,14 +81,57 @@
                 </button>
                 <button
                   v-if="!nativeCapabilities.supportsFloatingLyric && !nativeCapabilities.supportsEq"
-                  @click="handleOpenDownloads"
+                  @click="handleOpenLibrary"
                   class="flex flex-col items-center justify-center gap-1.5 py-3.5 rounded-2xl bg-slate-800/95 border border-slate-700 text-slate-100 active:scale-95 transition-all"
                 >
                   <i class="ri-folder-music-line text-xl text-sky-400"></i>
-                  <span class="text-xs font-semibold">下载与本地</span>
+                  <span class="text-xs font-semibold">我的音乐库</span>
                 </button>
               </div>
               <div class="h-px bg-slate-800 my-5"></div>
+            </div>
+
+            <!-- 音源详情与缓存清理（统一收入播放页二级抽屉） -->
+            <div class="mb-5 space-y-2.5">
+              <div class="px-4 py-3 rounded-2xl bg-slate-800/90 border border-slate-700/80 space-y-2">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-sm font-semibold text-white">当前音源详情</span>
+                  <span
+                    class="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-200 border border-amber-400/30"
+                  >
+                    {{ currentMetaSummary.badge }}
+                  </span>
+                </div>
+                <div class="text-xs text-slate-400 flex items-center justify-between gap-2 flex-wrap">
+                  <span>来源：{{ currentMetaSummary.sourceLabel }} · 音质：{{ currentMetaSummary.qualityLabel }}</span>
+                  <button
+                    type="button"
+                    class="text-sky-300 hover:text-sky-200 font-semibold"
+                    @click="handleOpenSourceSettings"
+                  >
+                    音源设置 <i class="ri-arrow-right-s-line"></i>
+                  </button>
+                </div>
+              </div>
+
+              <div
+                v-if="nativeCapabilities.supportsAudioCache"
+                class="flex items-center justify-between px-4 py-3 rounded-2xl bg-slate-800/90 border border-slate-700/80"
+              >
+                <div class="pr-3">
+                  <div class="text-sm font-semibold text-white">音频边听缓存</div>
+                  <div class="text-xs text-slate-400 mt-0.5">
+                    当前占用 {{ audioCacheSizeText }}（清理不影响已下载与收藏）
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="px-3.5 py-1.5 rounded-full text-xs font-bold bg-slate-700 hover:bg-slate-600 text-slate-100 active:scale-95 transition-all flex-shrink-0"
+                  @click="handleClearCacheInDrawer"
+                >
+                  清理缓存
+                </button>
+              </div>
             </div>
 
             <!-- 封面动态弥散背景开关 -->
@@ -313,6 +356,7 @@ import {
   registerAndroidBackHandler,
   triggerHaptic
 } from '@/utils/androidBridge';
+import { formatPlaybackBadgeText, inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
 
 const { t } = useI18n();
 const router = useRouter();
@@ -331,10 +375,49 @@ const toggleDynamicBackground = (val: boolean) => {
   settingsStore.setSetData({ enableDynamicBackground: val });
 };
 
-const handleOpenDownloads = () => {
+const handleOpenLibrary = () => {
   close();
   playerStore.setMusicFull(false);
-  router.push('/downloads');
+  router.push('/library');
+};
+
+const handleOpenSourceSettings = () => {
+  close();
+  playerStore.setMusicFull(false);
+  router.push('/set?section=playback');
+};
+
+const currentMetaSummary = computed(() => {
+  const song = playerStore.playMusic;
+  const meta = inferPlaybackMetaFromUrl(song?.playMusicUrl, {
+    isDownloaded: Boolean(song?.isDownloadedTrack),
+    fallbackQuality: settingsStore.setData?.musicQuality || 'higher',
+    existing: song?.playbackMeta
+  });
+  return {
+    sourceLabel: meta.sourceLabel,
+    qualityLabel: meta.qualityLabel,
+    badge: formatPlaybackBadgeText(meta)
+  };
+});
+
+const audioCacheBytes = ref<number>(0);
+const refreshAudioCacheSize = () => {
+  if (nativeCapabilities.supportsAudioCache) {
+    audioCacheBytes.value = Number((window as any).AlgerAndroid?.getAudioCacheSize?.() || 0);
+  }
+};
+const audioCacheSizeText = computed(() => {
+  const b = audioCacheBytes.value;
+  if (!b || b <= 0) return '0 MB';
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
+  return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+});
+const handleClearCacheInDrawer = () => {
+  if (!nativeCapabilities.supportsAudioCache) return;
+  const ok = Boolean((window as any).AlgerAndroid?.clearAudioCache?.());
+  refreshAudioCacheSize();
+  (window as any).AlgerAndroid?.showToast?.(ok ? '已清理音频缓存' : '缓存清理失败');
 };
 
 const showEqModal = ref(false);
@@ -382,6 +465,7 @@ watch(
   (val) => {
     if (val) {
       eqEnabled.value = nativeCapabilities.supportsEq ? audioService.isEQEnabled() : false;
+      refreshAudioCacheSize();
       if (nativeCapabilities.supportsFloatingLyric) {
         floatingLyricOn.value = Boolean((window as any).AlgerAndroid?.isFloatingLyricEnabled?.());
       }

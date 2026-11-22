@@ -46,17 +46,7 @@
         <i class="ri-arrow-down-s-line"></i>
       </div>
 
-      <!-- 顶部居中播放状态胶囊 -->
-      <div
-        v-if="!isLandscape && !showFullLyrics && !config.pureModeEnabled"
-        class="top-center-pill"
-        @click="cycleCoverStyle"
-      >
-        <span class="pill-dot" :class="{ playing: play }"></span>
-        <span>小庞奶娃音乐</span>
-      </div>
-
-      <!-- 右上角设置按钮 -->
+      <!-- 右上角统一二级抽屉入口（收拢 EQ / 睡眠定时 / 音源详情 / 缓存清理） -->
       <div
         class="control-btn absolute right-5 flex items-center gap-2"
         :class="[
@@ -378,15 +368,18 @@
         class="unified-controls"
         :class="{ 'fullscreen-mode': showFullLyrics }"
       >
-        <!-- 音源与音质状态胶囊 -->
+        <!-- 音源与音质状态胶囊（轻点直接展开二级抽屉查看音源详情） -->
         <div v-if="!showFullLyrics && playbackBadgeText" class="audio-meta-pill-row">
-          <span
-            class="audio-meta-pill"
+          <button
+            type="button"
+            class="audio-meta-pill cursor-pointer active:scale-95 transition-transform"
             :class="`source-${currentPlaybackMeta?.sourceCategory || 'official'}`"
+            @click="showPlayerSettings = true"
           >
             <i class="audio-meta-icon" :class="playbackSourceIcon"></i>
             <span class="audio-meta-text">{{ playbackBadgeText }}</span>
-          </span>
+            <i class="ri-arrow-right-s-line text-xs opacity-70"></i>
+          </button>
         </div>
 
         <!-- 进度条 (奶娃暖阳触控流畅版) -->

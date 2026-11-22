@@ -240,6 +240,31 @@ export const useLocalMusicStore = defineStore(
       }
     }
 
+    /**
+     * 批量移除指定的本地音乐条目（仅删除本地音乐库索引，绝不影响收藏记录）
+     */
+    async function removeEntries(ids: string[]): Promise<number> {
+      const idSet = new Set(ids.map(String));
+      if (idSet.size === 0) return 0;
+      try {
+        const localDB = await getDB();
+        let removed = 0;
+        for (const id of idSet) {
+          try {
+            await localDB.deleteData(LOCAL_MUSIC_STORE, id);
+            removed++;
+          } catch {
+            // ignore missing key
+          }
+        }
+        musicList.value = musicList.value.filter((item) => !idSet.has(String(item.id)));
+        return removed;
+      } catch (error) {
+        console.error('批量移除本地音乐条目失败:', error);
+        return 0;
+      }
+    }
+
     return {
       // 状态
       folderPaths,
@@ -252,7 +277,8 @@ export const useLocalMusicStore = defineStore(
       removeFolder,
       scanFolders,
       loadFromCache,
-      clearCache
+      clearCache,
+      removeEntries
     };
   },
   {

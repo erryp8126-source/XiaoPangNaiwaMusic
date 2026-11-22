@@ -117,6 +117,7 @@ const handleAgree = () => {
   }
   disagreeHint.value = '';
   showDisclaimer.value = false;
+  window.dispatchEvent(new CustomEvent('xiaopang-disclaimer-agreed'));
 };
 
 const handleDisagree = () => {

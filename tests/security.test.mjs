@@ -1345,3 +1345,185 @@ test("phase 2 invariants: Android/iOS offline IDs, crossfade & loudness, report 
   assert.match(cloudSyncTab, /以云端为准/);
   assert.match(cloudSyncTab, /覆盖云端/);
 });
+
+test("phase 2.5 runtime: playbackDiagnostics failure explanations & strict <= 2 retry cap", async () => {
+  const diag = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/playbackDiagnostics.ts")).href
+  );
+
+  assert.equal(diag.MAX_SINGLE_TRACK_RETRIES, 2, "Single-track retry cap must be strictly <= 2");
+
+  const offlineRes = diag.classifyPlaybackFailure({ isOffline: true });
+  assert.equal(offlineRes.code, "offline");
+  assert.equal(offlineRes.shouldRetry, false);
+  assert.equal(diag.shouldRetrySingleTrack(0, offlineRes.code), false);
+
+  const timeoutRes = diag.classifyPlaybackFailure({ error: new Error("Request timeout ETIMEDOUT"), hasUrl: true });
+  assert.equal(timeoutRes.code, "timeout");
+  assert.equal(timeoutRes.userMessage, "网络超时，请检查连接");
+  assert.equal(diag.shouldRetrySingleTrack(0, timeoutRes.code), true);
+  assert.equal(diag.shouldRetrySingleTrack(1, timeoutRes.code), true);
+  assert.equal(diag.shouldRetrySingleTrack(2, timeoutRes.code), false, "Must stop retrying once count reaches 2");
+
+  const noSourceRes = diag.classifyPlaybackFailure({ hasUrl: false });
+  assert.equal(noSourceRes.code, "no-source");
+  assert.equal(noSourceRes.userMessage, "该歌曲暂无可播放的可用音源");
+  assert.equal(diag.shouldRetrySingleTrack(0, noSourceRes.code), false);
+
+  const localMissingRes = diag.classifyPlaybackFailure({ isLocal: true });
+  assert.equal(localMissingRes.code, "local-missing");
+  assert.equal(diag.shouldRetrySingleTrack(0, localMissingRes.code), false);
+
+  assert.equal(diag.formatAutoFallbackMessage("unblock"), "当前音源不可用，已自动切换备用源");
+  assert.equal(diag.formatAutoFallbackMessage("lx"), "当前音源不可用，已自动切换备用 LX 源");
+});
+
+test("phase 2.5 runtime: cloudSyncMerge conflict diff preview & local snapshot ring buffer pruning", async () => {
+  const mergeMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/cloudSyncMerge.ts")).href
+  );
+
+  const localSnap = {
+    schema: "xiaopang-music-sync-v1",
+    revision: 3,
+    clientUpdatedAt: 2000,
+    updatedAt: 2000,
+    deviceName: "我的 Android",
+    favoriteList: [100, 200, 300],
+    playHistory: {
+      musicHistory: [
+        { id: 100, name: "共有" },
+        { id: 400, name: "本机历史新增" },
+      ],
+    },
+    customPlaylists: [],
+  };
+  const remoteSnap = {
+    schema: "xiaopang-music-sync-v1",
+    revision: 4,
+    clientUpdatedAt: 3000,
+    updatedAt: 3000,
+    deviceName: "我的 iPhone",
+    favoriteList: [100, 500],
+    playHistory: {
+      musicHistory: [
+        { id: 100, name: "共有" },
+        { id: 600, name: "云端历史新增1" },
+        { id: 700, name: "云端历史新增2" },
+      ],
+    },
+    customPlaylists: [],
+  };
+
+  const diff = mergeMod.computeSyncConflictDiff(localSnap, remoteSnap);
+  assert.equal(diff.localOnlyFavorites, 2); // 200, 300
+  assert.equal(diff.remoteOnlyFavorites, 1); // 500
+  assert.equal(diff.localAddedTotal, 3); // 200, 300, 400
+  assert.equal(diff.remoteAddedTotal, 3); // 500, 600, 700
+
+  // Verify local backup ring buffer keeps only latest 5 snapshots sorted descending
+  const rawBackups = Array.from({ length: 8 }, (_, idx) => ({
+    id: `bak_${idx}`,
+    createdAt: 1000 + idx * 100,
+    reason: "before-merge",
+    revision: idx + 1,
+    deviceName: "Test",
+    favoritesCount: idx,
+    songsCount: idx,
+    snapshot: localSnap,
+  }));
+  const pruned = mergeMod.pruneBackupSnapshots(rawBackups, 5);
+  assert.equal(pruned.length, 5);
+  assert.deepEqual(
+    pruned.map((b) => b.id),
+    ["bak_7", "bak_6", "bak_5", "bak_4", "bak_3"]
+  );
+});
+
+test("phase 2.5 invariants: source folding, unified music library, sync rollback/encrypted backup, cold resume, queue edit, onboarding & visual subtraction", () => {
+  // 1. Source folding & speed test inside advanced disclosure
+  const playbackTab = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/set/tabs/PlaybackTab.vue"),
+    "utf-8"
+  );
+  assert.match(playbackTab, /自动选择最佳音源/);
+  assert.match(playbackTab, /高级音源设置/);
+  assert.match(playbackTab, /showAdvancedSources\s*=\s*ref\(false\)/);
+  assert.match(playbackTab, /runSourceSpeedTest/);
+
+  const playlistStore = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/playlist.ts"),
+    "utf-8"
+  );
+  assert.match(playlistStore, /SINGLE_TRACK_MAX_RETRIES\s*=\s*MAX_SINGLE_TRACK_RETRIES/);
+  assert.match(playlistStore, /const reorderPlayList =/);
+  assert.match(playlistStore, /const saveCurrentQueueAsCustomPlaylist =/);
+
+  // 2. Unified My Music Library with 5 tabs, storage, invalid marker, safe batch delete
+  const libraryPath = path.join(repoRoot, "upstream/src/renderer/views/library/MyMusicLibrary.vue");
+  assert.equal(fs.existsSync(libraryPath), true, "MyMusicLibrary.vue must exist");
+  const librarySrc = fs.readFileSync(libraryPath, "utf-8");
+  for (const label of ["已下载", "手机本地", "已缓存", "最近播放", "收藏", "总存储占用", "文件已失效", "批量删除"]) {
+    assert.ok(librarySrc.includes(label), `MyMusicLibrary.vue must include "${label}"`);
+  }
+  const otherRouter = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/router/other.ts"),
+    "utf-8"
+  );
+  assert.match(otherRouter, /path:\s*'\/library'/);
+
+  // 3. Cloud sync polish: editable device name, conflict diff preview, local rollback, encrypted backup JSON
+  const cloudSyncTab = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/set/tabs/CloudSyncTab.vue"),
+    "utf-8"
+  );
+  assert.match(cloudSyncTab, /当前设备：/);
+  assert.match(cloudSyncTab, /本机新增/);
+  assert.match(cloudSyncTab, /云端新增/);
+  assert.match(cloudSyncTab, /一键回滚/);
+  assert.match(cloudSyncTab, /一键导出加密备份（JSON）/);
+
+  const cloudSyncStore = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/cloudSync.ts"),
+    "utf-8"
+  );
+  assert.match(cloudSyncStore, /exportEncryptedBackupJsonString/);
+  assert.match(cloudSyncStore, /rollbackToBackup/);
+  assert.match(cloudSyncStore, /xiaopang-encrypted-backup-v1/);
+
+  // 4. Queue editing, 3-step onboarding with Skip, cold-start resume, and visual subtraction
+  const queueDrawer = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/player/PlayingListDrawer.vue"),
+    "utf-8"
+  );
+  assert.match(queueDrawer, /存为歌单/);
+  assert.match(queueDrawer, /next-up-bar/);
+  assert.match(queueDrawer, /swipe-remove-bg/);
+  assert.match(queueDrawer, /reorderPlayList/);
+
+  const onboardingPath = path.join(repoRoot, "upstream/src/renderer/components/common/OnboardingGuideModal.vue");
+  assert.equal(fs.existsSync(onboardingPath), true, "OnboardingGuideModal.vue must exist");
+  const onboardingSrc = fs.readFileSync(onboardingPath, "utf-8");
+  assert.match(onboardingSrc, /跳过/);
+  assert.match(onboardingSrc, /3/);
+
+  const musicFull = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/lyric/MusicFullMobile.vue"),
+    "utf-8"
+  );
+  assert.doesNotMatch(musicFull, /class="top-center-pill"/, "Redundant brand pill removed from vinyl player");
+
+  const mobilePlayerSettings = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/player/MobilePlayerSettings.vue"),
+    "utf-8"
+  );
+  assert.match(mobilePlayerSettings, /当前音源详情/);
+  assert.match(mobilePlayerSettings, /清理缓存/);
+
+  const homeHero = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/home/components/HomeHero.vue"),
+    "utf-8"
+  );
+  assert.match(homeHero, /showMoreHomeDrawer/);
+  assert.match(homeHero, /我的音乐库/);
+});

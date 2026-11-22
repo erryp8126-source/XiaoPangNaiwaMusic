@@ -39,10 +39,10 @@ onMounted(() => {
 const goOfflinePlayable = () => {
   triggerHaptic('light');
   if (offlineStore.downloadedIds.size === 0 && offlineStore.localIds.size > 0) {
-    router.push('/local-music');
+    router.push('/library?tab=local');
     return;
   }
-  router.push('/downloads');
+  router.push('/library?tab=downloaded');
 };
 </script>
 

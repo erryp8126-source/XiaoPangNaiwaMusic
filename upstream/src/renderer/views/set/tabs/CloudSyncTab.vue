@@ -28,6 +28,54 @@
           </span>
         </div>
 
+        <!-- 上次同步时间与当前设备名称（可编辑） -->
+        <div
+          class="rounded-2xl bg-white/15 backdrop-blur-md px-3.5 py-2.5 flex items-center justify-between gap-2 flex-wrap"
+        >
+          <div class="flex items-center gap-2 min-w-0 flex-1">
+            <i class="ri-smartphone-line text-sm text-amber-200 flex-shrink-0"></i>
+            <template v-if="editingDeviceName">
+              <input
+                v-model="deviceNameDraft"
+                type="text"
+                maxlength="32"
+                placeholder="输入设备名称（如 我的 iPhone）"
+                class="flex-1 min-w-[120px] h-7 px-2.5 rounded-lg bg-white/20 border border-white/35 text-xs text-white placeholder-white/60 focus:outline-none"
+                @keyup.enter="saveDeviceNameEdit"
+              />
+              <button
+                type="button"
+                class="px-2.5 py-1 rounded-full bg-white text-blue-700 text-[11px] font-bold flex-shrink-0"
+                @click="saveDeviceNameEdit"
+              >
+                保存
+              </button>
+              <button
+                type="button"
+                class="px-2 py-1 rounded-full bg-white/15 text-white text-[11px] flex-shrink-0"
+                @click="editingDeviceName = false"
+              >
+                取消
+              </button>
+            </template>
+            <template v-else>
+              <span class="text-xs font-semibold truncate">
+                当前设备：{{ cloudSyncStore.effectiveDeviceName }}
+              </span>
+              <button
+                type="button"
+                class="px-2 py-0.5 rounded-full bg-white/15 hover:bg-white/25 text-[10px] font-bold text-white flex-shrink-0"
+                @click="startEditDeviceName"
+              >
+                <i class="ri-edit-line mr-0.5"></i>修改
+              </button>
+            </template>
+          </div>
+          <div class="text-[11px] text-white/85 flex-shrink-0">
+            上次同步：{{ cloudSyncStore.lastSyncAt ? formatTime(cloudSyncStore.lastSyncAt) : '尚未同步' }}
+          </div>
+        </div>
+
         <!-- 本地数据概览 -->
         <div class="grid grid-cols-3 gap-2">
           <div class="rounded-2xl bg-white/15 backdrop-blur-md px-3 py-2.5">
@@ -241,17 +289,20 @@
       </div>
 
       <div class="flex items-center gap-2 flex-wrap">
-        <s-btn variant="primary" @click="handleCopyBackupJson">
+        <s-btn variant="primary" @click="handleExportEncryptedJsonFile">
+          <i class="ri-shield-keyhole-line mr-1"></i>一键导出加密备份（JSON）
+        </s-btn>
+        <s-btn @click="triggerFileImport">
+          <i class="ri-upload-2-line mr-1"></i>导入备份恢复
+        </s-btn>
+        <s-btn @click="handleCopyBackupJson">
           <i class="ri-wechat-line mr-1"></i>复制备份发微信
         </s-btn>
         <s-btn @click="showPasteBox = !showPasteBox">
-          <i class="ri-clipboard-line mr-1"></i>{{ showPasteBox ? '收起粘贴框' : '粘贴一键恢复' }}
+          <i class="ri-clipboard-line mr-1"></i>{{ showPasteBox ? '收起粘贴框' : '粘贴恢复' }}
         </s-btn>
         <s-btn @click="handleExportJsonFile">
-          <i class="ri-download-2-line mr-1"></i>导出文件
-        </s-btn>
-        <s-btn @click="triggerFileImport">
-          <i class="ri-upload-2-line mr-1"></i>选文件恢复
+          <i class="ri-download-2-line mr-1"></i>导出明文 JSON
         </s-btn>
         <input
           ref="fileInputRef"
@@ -260,6 +311,54 @@
           class="hidden"
           @change="handleFileSelected"
         />
+      </div>
+
+      <!-- 加密备份口令（留空自动复用当前同步口令） -->
+      <div class="flex items-center gap-2 flex-wrap">
+        <n-input
+          v-model:value="backupPassphrase"
+          type="password"
+          show-password-on="click"
+          size="small"
+          class="flex-1 min-w-[200px]"
+          placeholder="加密备份/解密口令（留空自动使用当前同步口令，至少 10 位字母+数字）"
+        />
+      </div>
+
+      <!-- 本地同步快照一键回滚（每次覆盖/合并前自动保存最近 5 份） -->
+      <div
+        v-if="cloudSyncStore.localBackups.length > 0"
+        class="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2"
+      >
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-extrabold text-slate-700 dark:text-slate-200">
+            <i class="ri-history-line mr-1 text-amber-500"></i>
+            本地安全快照（最近 {{ cloudSyncStore.localBackups.length }} 份 · 支持一键回滚）
+          </span>
+        </div>
+        <div class="space-y-1.5">
+          <div
+            v-for="bak in cloudSyncStore.localBackups"
+            :key="bak.id"
+            class="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200/70 dark:border-slate-700/60"
+          >
+            <div class="min-w-0">
+              <div class="text-xs font-bold text-slate-800 dark:text-slate-100 truncate">
+                {{ formatBackupReason(bak.reason) }} · v{{ bak.revision }}
+              </div>
+              <div class="text-[11px] text-slate-500 dark:text-slate-400">
+                {{ formatConflictTime(bak.createdAt) }} · 喜欢 {{ bak.favoritesCount }} 首 · 历史 {{ bak.songsCount }} 首
+              </div>
+            </div>
+            <button
+              type="button"
+              class="px-3 py-1 rounded-full text-[11px] font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-300 flex-shrink-0 transition-colors"
+              @click="handleRollbackBackup(bak.id)"
+            >
+              一键回滚
+            </button>
+          </div>
+        </div>
       </div>
 
       <div v-if="showPasteBox" class="space-y-2.5 pt-2 border-t border-slate-100 dark:border-slate-800">
@@ -527,8 +626,21 @@
     >
       <div v-if="cloudSyncStore.pendingConflict" class="space-y-4">
         <p class="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-          云端数据已被其他设备更新，同时本机也存在尚未上传的修改。为避免误覆盖丢失歌曲，请选择处理方式：
+          云端数据已被其他设备更新，同时本机也存在尚未上传的修改。为避免误覆盖丢失歌曲，请选择处理方式（执行前会自动留存本机快照支持回滚）：
         </p>
+
+        <!-- 差异预览条：本机新增 X 首 / 云端新增 Y 首 -->
+        <div
+          class="rounded-2xl px-3.5 py-2.5 bg-amber-50/90 dark:bg-amber-500/15 border border-amber-200/80 dark:border-amber-400/30 flex items-center justify-between gap-2 flex-wrap text-xs"
+        >
+          <span class="font-extrabold text-amber-800 dark:text-amber-200">
+            本机新增 {{ cloudSyncStore.pendingConflict.diffPreview.localAddedTotal }} 首 / 云端新增
+            {{ cloudSyncStore.pendingConflict.diffPreview.remoteAddedTotal }} 首
+          </span>
+          <span class="text-[11px] text-amber-700/80 dark:text-amber-300/80">
+            （喜欢：本机 +{{ cloudSyncStore.pendingConflict.diffPreview.localOnlyFavorites }} · 云端 +{{ cloudSyncStore.pendingConflict.diffPreview.remoteOnlyFavorites }}）
+          </span>
+        </div>
 
         <div class="grid grid-cols-2 gap-2.5">
           <div
@@ -645,12 +757,41 @@ const userStore = useUserStore();
 const config = cloudSyncStore.config;
 const inputSyncCode = ref('');
 const showSyncCode = ref(true);
+const editingDeviceName = ref(false);
+const deviceNameDraft = ref('');
+const backupPassphrase = ref('');
 const showAdvanced = ref(false);
 const activeAdvancedTab = ref<'supabase' | 'webdav' | 'github'>('supabase');
 const importMode = ref<'merge' | 'replace'>('merge');
 const showPasteBox = ref(false);
 const pastedJson = ref('');
 const fileInputRef = ref<HTMLInputElement | null>(null);
+
+const startEditDeviceName = () => {
+  deviceNameDraft.value = cloudSyncStore.effectiveDeviceName;
+  editingDeviceName.value = true;
+};
+
+const saveDeviceNameEdit = () => {
+  cloudSyncStore.setDeviceName(deviceNameDraft.value);
+  editingDeviceName.value = false;
+  message.success(`设备名称已更新为：${cloudSyncStore.effectiveDeviceName}`);
+};
+
+const formatBackupReason = (reason: string): string => {
+  if (reason === 'before-merge') return '智能合并前快照';
+  if (reason === 'before-use-remote') return '云端覆盖前快照';
+  if (reason === 'before-overwrite') return '覆盖云端前快照';
+  if (reason === 'before-import') return '导入恢复前快照';
+  if (reason === 'before-rollback') return '回滚前快照';
+  return '本地安全快照';
+};
+
+const handleRollbackBackup = async (backupId: string) => {
+  const res = await cloudSyncStore.rollbackToBackup(backupId);
+  if (res.ok) message.success(res.message);
+  else message.error(res.message);
+};
 
 const advancedTabs: Array<{ id: 'supabase' | 'webdav' | 'github'; label: string }> = [
   { id: 'supabase', label: '自建口令节点' },
@@ -778,6 +919,53 @@ const formatConflictTime = (ts: number): string => {
   return `${d.getMonth() + 1}-${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 };
 
+const saveTextBackupFile = async (filename: string, content: string, successLabel: string) => {
+  if (isAndroid()) {
+    try {
+      const res = await invokeAndroidAsync<{ success?: boolean; path?: string }>(
+        'save-text-file',
+        { filename, content },
+        15000
+      );
+      if (res?.success) {
+        message.success(`${successLabel}已保存到：${res.path || filename}`, { duration: 4500 });
+        return;
+      }
+    } catch {
+      // fallback below
+    }
+  }
+
+  const blob = new Blob([content], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+  message.success(`已导出${successLabel} ${filename}`);
+};
+
+const handleExportEncryptedJsonFile = async () => {
+  try {
+    const res = await cloudSyncStore.exportEncryptedBackupJsonString(backupPassphrase.value);
+    if (!res.ok || !res.json) {
+      message.warning(res.message);
+      return;
+    }
+    const now = new Date();
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(
+      now.getDate()
+    ).padStart(2, '0')}`;
+    const filename = `xiaopang-music-encrypted-backup-${stamp}.json`;
+    await saveTextBackupFile(filename, res.json, 'AES-256 加密备份');
+  } catch (err: any) {
+    message.error(`导出加密备份失败：${err?.message || '未知错误'}`);
+  }
+};
+
 const handleExportJsonFile = async () => {
   try {
     const jsonStr = await cloudSyncStore.exportBackupJsonString();
@@ -786,33 +974,7 @@ const handleExportJsonFile = async () => {
       now.getDate()
     ).padStart(2, '0')}`;
     const filename = `xiaopang-music-backup-${stamp}.json`;
-
-    if (isAndroid()) {
-      try {
-        const res = await invokeAndroidAsync<{ success?: boolean; path?: string }>(
-          'save-text-file',
-          { filename, content: jsonStr },
-          15000
-        );
-        if (res?.success) {
-          message.success(`备份已保存到：${res.path || filename}`, { duration: 4500 });
-          return;
-        }
-      } catch {
-        // fallback below
-      }
-    }
-
-    const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 1500);
-    message.success(`已导出备份文件 ${filename}`);
+    await saveTextBackupFile(filename, jsonStr, '备份文件');
   } catch (err: any) {
     message.error(`导出失败：${err?.message || '未知错误'}`);
   }
@@ -839,8 +1001,13 @@ const triggerFileImport = async () => {
         60000
       );
       if (picked && picked.content) {
-        const res = await cloudSyncStore.importBackupJsonString(picked.content, importMode.value);
+        const res = await cloudSyncStore.importBackupJsonString(
+          picked.content,
+          importMode.value,
+          backupPassphrase.value
+        );
         if (res.ok) message.success(res.message);
+        else if (res.needsPassphrase) message.warning(res.message);
         else message.error(res.message);
       }
       return;
@@ -857,8 +1024,13 @@ const handleFileSelected = async (event: Event) => {
   if (!file) return;
   try {
     const text = await file.text();
-    const res = await cloudSyncStore.importBackupJsonString(text, importMode.value);
+    const res = await cloudSyncStore.importBackupJsonString(
+      text,
+      importMode.value,
+      backupPassphrase.value
+    );
     if (res.ok) message.success(res.message);
+    else if (res.needsPassphrase) message.warning(res.message);
     else message.error(res.message);
   } catch (err: any) {
     message.error(`读取文件失败：${err?.message || '未知错误'}`);
@@ -868,11 +1040,17 @@ const handleFileSelected = async (event: Event) => {
 };
 
 const handleImportPasted = async () => {
-  const res = await cloudSyncStore.importBackupJsonString(pastedJson.value, importMode.value);
+  const res = await cloudSyncStore.importBackupJsonString(
+    pastedJson.value,
+    importMode.value,
+    backupPassphrase.value
+  );
   if (res.ok) {
     message.success(res.message);
     pastedJson.value = '';
     showPasteBox.value = false;
+  } else if (res.needsPassphrase) {
+    message.warning(res.message);
   } else {
     message.error(res.message);
   }

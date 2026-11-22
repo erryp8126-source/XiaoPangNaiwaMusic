@@ -35,10 +35,67 @@ export const initMusicHook = (store: ReturnType<typeof usePlayerStore>) => {
   setupPlayStateWatcher();
   setupAndroidFloatingLyricSync();
   setupAndroidBackgroundSync();
+  setupColdStartResumePersistence();
   if (isAndroid) {
     setupAudioListeners();
   }
 };
+
+function getSavedQualityForResume(): string {
+  try {
+    const raw = localStorage.getItem('appSettings');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed?.musicQuality) return String(parsed.musicQuality);
+    }
+  } catch {
+    // ignore
+  }
+  return 'higher';
+}
+
+function persistResumeProgressSnapshot(songId: string | number | undefined, progressSec: number, durationSec?: number) {
+  if (songId === undefined || songId === null || !Number.isFinite(progressSec) || progressSec < 0) return;
+  try {
+    localStorage.setItem(
+      'playProgress',
+      JSON.stringify({
+        songId,
+        progress: progressSec,
+        duration: Number.isFinite(durationSec) && (durationSec || 0) > 0 ? durationSec : allTime.value || 0,
+        quality: getSavedQualityForResume(),
+        savedAt: Date.now()
+      })
+    );
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+let resumePersistBound = false;
+function setupColdStartResumePersistence() {
+  if (resumePersistBound || typeof window === 'undefined') return;
+  resumePersistBound = true;
+  const flushSnapshot = () => {
+    try {
+      const store = getPlayerStore();
+      if (!store.playMusic?.id) return;
+      const curSound = audioService.getCurrentSound();
+      const rawSeek = curSound ? Number(curSound.seek()) : nowTime.value;
+      const sec = Number.isFinite(rawSeek) && rawSeek >= 0 ? rawSeek : nowTime.value;
+      persistResumeProgressSnapshot(store.playMusic.id, sec, allTime.value);
+    } catch {
+      // ignore
+    }
+  };
+  window.addEventListener('pagehide', flushSnapshot);
+  window.addEventListener('beforeunload', flushSnapshot);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      flushSnapshot();
+    }
+  });
+}
 
 /**
  * 将原生层正在播放或刚无缝切换好的曲目同步到前端 Vue Store / NativeHowl（同步执行，0 竞态），
@@ -660,13 +717,7 @@ const setupAudioListeners = () => {
         ) {
           lastSavedProgress = currentTime;
           if (getPlayerStore().playMusic?.id) {
-            localStorage.setItem(
-              'playProgress',
-              JSON.stringify({
-                songId: getPlayerStore().playMusic.id,
-                progress: currentTime
-              })
-            );
+            persistResumeProgressSnapshot(getPlayerStore().playMusic.id, currentTime, allTime.value);
           }
         }
       } catch (error) {
@@ -883,13 +934,7 @@ export const pause = () => {
       // 保存当前播放进度
       const currentTime = currentSound.seek() as number;
       if (getPlayerStore().playMusic && getPlayerStore().playMusic.id) {
-        localStorage.setItem(
-          'playProgress',
-          JSON.stringify({
-            songId: getPlayerStore().playMusic.id,
-            progress: currentTime
-          })
-        );
+        persistResumeProgressSnapshot(getPlayerStore().playMusic.id, currentTime, allTime.value);
       }
 
       audioService.pause();

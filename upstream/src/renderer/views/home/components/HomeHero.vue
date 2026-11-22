@@ -16,13 +16,13 @@
 
     <!-- Main Content -->
     <div v-else class="space-y-4 w-full max-w-full min-w-0">
-      <!-- 奶娃萌趣快捷入口（移动端横向磨砂方圆图标条） -->
-      <nav class="scrollbar-hide flex w-full max-w-full min-w-0 gap-3 overflow-x-auto pb-1 pt-0.5 md:hidden">
+      <!-- 精简 4 格高频入口（收拢低频入口至二级「更多」抽屉，突出首页每日推荐主操作） -->
+      <nav class="grid grid-cols-4 gap-2.5 pb-1 pt-0.5 md:hidden">
         <button
           v-for="(item, index) in quickNavItems"
           :key="item.key"
           type="button"
-          class="quick-tile nav-chip flex flex-shrink-0 flex-col items-center gap-1.5 select-none active:scale-90 transition-transform"
+          class="quick-tile nav-chip flex flex-col items-center gap-1.5 select-none active:scale-90 transition-transform"
           :style="{ animationDelay: `${index * 0.03}s` }"
           @click="item.action"
         >
@@ -40,6 +40,44 @@
           </span>
         </button>
       </nav>
+
+      <!-- 首页低频入口二级抽屉（新碟 / 播客 / MV / 排行榜 / 心动模式 / 播放设置） -->
+      <n-drawer v-model:show="showMoreHomeDrawer" placement="bottom" height="auto">
+        <div
+          class="p-5 pb-8 bg-white dark:bg-[#131b28] rounded-t-[26px] space-y-4"
+          :style="{ paddingBottom: `calc(24px + var(--safe-area-inset-bottom, 0px))` }"
+        >
+          <div class="flex items-center justify-between">
+            <span class="text-sm font-extrabold text-slate-900 dark:text-white">更多发现与工具</span>
+            <button
+              type="button"
+              class="w-7 h-7 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 flex items-center justify-center"
+              @click="showMoreHomeDrawer = false"
+            >
+              <i class="ri-close-line"></i>
+            </button>
+          </div>
+          <div class="grid grid-cols-4 gap-3">
+            <button
+              v-for="sub in secondaryNavItems"
+              :key="sub.key"
+              type="button"
+              class="flex flex-col items-center gap-1.5 py-2 rounded-2xl active:scale-95 transition-transform"
+              @click="runSecondaryAction(sub.action)"
+            >
+              <div
+                class="flex h-11 w-11 items-center justify-center rounded-2xl text-[19px]"
+                :class="sub.active ? 'bg-gradient-to-br from-amber-400 to-orange-500 text-white' : sub.tintClass"
+              >
+                <i :class="sub.icon" />
+              </div>
+              <span class="text-[11px] font-semibold text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                {{ sub.label }}
+              </span>
+            </button>
+          </div>
+        </div>
+      </n-drawer>
 
       <!-- Hero Cards -->
       <div class="hero-grid grid gap-3.5">
@@ -283,7 +321,7 @@ import {
   useRecommendStore,
   useUserStore
 } from '@/store';
-import { getImgUrl, isAndroid } from '@/utils';
+import { getImgUrl } from '@/utils';
 import { getImageBackground } from '@/utils/linearColor';
 
 const { t } = useI18n();
@@ -474,9 +512,53 @@ const handleFmTrash = async () => {
   await handleFmNext();
 };
 
-// ==================== Quick Nav ====================
+// ==================== Quick Nav（视觉减法：首页常驻 4 个高频入口，低频入口收入二级抽屉） ====================
 
-const quickNavItems = computed(() => {
+const showMoreHomeDrawer = ref(false);
+
+const runSecondaryAction = (fn: () => void) => {
+  showMoreHomeDrawer.value = false;
+  fn();
+};
+
+const quickNavItems = computed(() => [
+  {
+    key: 'library',
+    label: '我的音乐库',
+    icon: 'ri-disc-fill',
+    tintClass: 'bg-amber-100/90 text-amber-600 dark:bg-amber-500/20 dark:text-amber-300',
+    active: false,
+    action: () => router.push('/library')
+  },
+  {
+    key: 'favorite',
+    label: t('comp.homeHero.quickNav.myFavorite'),
+    icon: 'ri-heart-3-fill',
+    tintClass: 'bg-pink-100/90 text-pink-500 dark:bg-pink-500/20 dark:text-pink-300',
+    active: false,
+    action: () => router.push('/favorite')
+  },
+  {
+    key: 'listeningStats',
+    label: '听歌统计',
+    icon: 'ri-bar-chart-2-fill',
+    tintClass: 'bg-violet-100/90 text-violet-500 dark:bg-violet-500/20 dark:text-violet-300',
+    active: false,
+    action: () => router.push('/listening-stats')
+  },
+  {
+    key: 'more',
+    label: '更多',
+    icon: 'ri-apps-2-fill',
+    tintClass: 'bg-sky-100/90 text-sky-600 dark:bg-sky-500/20 dark:text-sky-300',
+    active: showMoreHomeDrawer.value,
+    action: () => {
+      showMoreHomeDrawer.value = true;
+    }
+  }
+]);
+
+const secondaryNavItems = computed(() => {
   const items = [
     {
       key: 'intelligence',
@@ -488,40 +570,22 @@ const quickNavItems = computed(() => {
       show: isLoggedIn.value
     },
     {
-      key: 'favorite',
-      label: t('comp.homeHero.quickNav.myFavorite'),
-      icon: 'ri-heart-3-fill',
-      tintClass: 'bg-pink-100/90 text-pink-500 dark:bg-pink-500/20 dark:text-pink-300',
+      key: 'toplist',
+      label: t('comp.toplist'),
+      icon: 'ri-trophy-fill',
+      tintClass: 'bg-yellow-100/90 text-amber-600 dark:bg-yellow-500/20 dark:text-yellow-300',
       active: false,
-      action: () => router.push('/favorite'),
+      action: () => router.push('/toplist'),
       show: true
     },
     {
-      key: 'listeningStats',
-      label: '听歌统计',
-      icon: 'ri-bar-chart-2-fill',
-      tintClass: 'bg-violet-100/90 text-violet-500 dark:bg-violet-500/20 dark:text-violet-300',
+      key: 'playlist',
+      label: t('comp.list'),
+      icon: 'ri-play-list-2-fill',
+      tintClass: 'bg-cyan-100/90 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-300',
       active: false,
-      action: () => router.push('/listening-stats'),
+      action: () => router.push('/list'),
       show: true
-    },
-    {
-      key: 'localMusic',
-      label: t('comp.localMusic'),
-      icon: 'ri-folder-music-fill',
-      tintClass: 'bg-amber-100/90 text-amber-600 dark:bg-amber-500/20 dark:text-amber-300',
-      active: false,
-      action: () => router.push('/local-music'),
-      show: isAndroid
-    },
-    {
-      key: 'downloads',
-      label: t('download.title'),
-      icon: 'ri-download-cloud-2-fill',
-      tintClass: 'bg-sky-100/90 text-sky-600 dark:bg-sky-500/20 dark:text-sky-300',
-      active: false,
-      action: () => router.push('/downloads'),
-      show: isAndroid
     },
     {
       key: 'album',
@@ -551,30 +615,21 @@ const quickNavItems = computed(() => {
       show: true
     },
     {
-      key: 'toplist',
-      label: t('comp.toplist'),
-      icon: 'ri-trophy-fill',
-      tintClass: 'bg-yellow-100/90 text-amber-600 dark:bg-yellow-500/20 dark:text-yellow-300',
+      key: 'settings',
+      label: '播放与音源',
+      icon: 'ri-settings-3-fill',
+      tintClass: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
       active: false,
-      action: () => router.push('/toplist'),
+      action: () => router.push('/set?section=playback'),
       show: true
     },
     {
-      key: 'playlist',
-      label: t('comp.list'),
-      icon: 'ri-play-list-2-fill',
-      tintClass: 'bg-cyan-100/90 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-300',
+      key: 'sync',
+      label: '云同步',
+      icon: 'ri-cloud-fill',
+      tintClass: 'bg-sky-100/90 text-sky-600 dark:bg-sky-500/20 dark:text-sky-300',
       active: false,
-      action: () => router.push('/list'),
-      show: true
-    },
-    {
-      key: 'history',
-      label: t('comp.history'),
-      icon: 'ri-history-fill',
-      tintClass: 'bg-violet-100/90 text-violet-500 dark:bg-violet-500/20 dark:text-violet-300',
-      active: false,
-      action: () => router.push('/history'),
+      action: () => router.push('/set?section=sync'),
       show: true
     }
   ];

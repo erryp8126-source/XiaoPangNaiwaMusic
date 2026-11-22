@@ -22,6 +22,18 @@ const otherRouter = [
     component: () => import('@/views/user/followers.vue')
   },
   {
+    path: '/library',
+    name: 'library',
+    meta: {
+      title: '我的音乐库',
+      keepAlive: true,
+      showInMenu: true,
+      back: true,
+      icon: 'ri-disc-line'
+    },
+    component: () => import('@/views/library/MyMusicLibrary.vue')
+  },
+  {
     path: '/downloads',
     name: 'downloads',
     meta: {
