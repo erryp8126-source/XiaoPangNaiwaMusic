@@ -1,6 +1,6 @@
 {
   "name": "xiaopang-naiwa-music",
-  "version": "5.1.4",
+  "version": "1.0.0",
   "description": "XiaoPang Naiwa Music Player",
   "author": "perry <erryp8126-source>",
   "main": "./out/main/index.js",
