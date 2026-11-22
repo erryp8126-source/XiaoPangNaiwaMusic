@@ -910,10 +910,8 @@ const handleCoverTouchEnd = (e: TouchEvent) => {
       triggerHaptic('medium');
       if (dx < 0) {
         playerStore.nextPlay();
-        showBottomToast('下一首');
       } else {
         playerStore.prevPlay();
-        showBottomToast('上一首');
       }
     } else if (dy > 90 && dy > Math.abs(dx) * 1.35) {
       suppressNextCoverClick = true;

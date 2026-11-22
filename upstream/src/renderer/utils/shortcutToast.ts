@@ -1,52 +1,55 @@
-import { createVNode, render } from 'vue';
+import { reactive } from 'vue';
 
-import ShortcutToast from '@/components/ShortcutToast.vue';
-
-let container: HTMLDivElement | null = null;
-let toastInstance: any = null;
-
-interface ToastOptions {
+export interface ToastOptions {
   position?: 'top' | 'center' | 'bottom';
   showIcon?: boolean;
+  durationMs?: number;
+}
+
+export const floatingToastState = reactive({
+  visible: false,
+  text: '',
+  icon: ''
+});
+
+let dismissTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * 展示全局应用内毛玻璃胶囊轻提示（单条覆盖不堆叠，默认 1.5s 自动淡出）
+ */
+export function showFloatingToast(message: string, iconName = '', durationMs = 1500) {
+  const cleanMsg = String(message ?? '').trim();
+  if (!cleanMsg) return;
+
+  // 极端兜底：无 DOM 环境时退回原生提示
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    (globalThis as any).AlgerAndroid?.showToast?.(cleanMsg);
+    return;
+  }
+
+  if (dismissTimer) {
+    clearTimeout(dismissTimer);
+    dismissTimer = null;
+  }
+
+  floatingToastState.text = cleanMsg;
+  floatingToastState.icon = iconName;
+  floatingToastState.visible = true;
+
+  dismissTimer = setTimeout(() => {
+    floatingToastState.visible = false;
+    dismissTimer = null;
+  }, Math.max(800, durationMs));
 }
 
 export function showShortcutToast(message: string, iconName = '', options: ToastOptions = {}) {
-  // 如果容器不存在，创建一个新的容器
-  if (!container) {
-    container = document.createElement('div');
-    document.body.appendChild(container);
-  }
-
-  // 如果已经有实例，先销毁它
-  if (toastInstance) {
-    render(null, container);
-    toastInstance = null;
-  }
-
-  // 创建新的 toast 实例
-  const vnode = createVNode(ShortcutToast, {
-    position: options.position || 'center',
-    showIcon: options.showIcon !== undefined ? options.showIcon : true,
-    onDestroy: () => {
-      if (container) {
-        render(null, container);
-        document.body.removeChild(container);
-        container = null;
-      }
-    }
-  });
-
-  // 渲染 toast
-  render(vnode, container);
-  toastInstance = vnode.component?.exposed;
-
-  // 显示 toast
-  if (toastInstance) {
-    toastInstance.show(message, iconName, { showIcon: options.showIcon });
-  }
+  const resolvedIcon = options.showIcon === false ? '' : iconName;
+  showFloatingToast(message, resolvedIcon, options.durationMs ?? 1500);
 }
 
-// 新增便捷方法 - 底部无图标 toast
+/**
+ * 应用内轻提示（已统一接入顶部安全区下方毛玻璃胶囊组件）
+ */
 export function showBottomToast(message: string) {
-  showShortcutToast(message, '', { position: 'bottom', showIcon: false });
+  showFloatingToast(message, '', 1500);
 }

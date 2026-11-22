@@ -1527,3 +1527,41 @@ test("phase 2.5 invariants: source folding, unified music library, sync rollback
   assert.match(homeHero, /showMoreHomeDrawer/);
   assert.match(homeHero, /我的音乐库/);
 });
+
+test("toast UX upgrade: global frosted-glass capsule toast replaces native Toast and removes swipe text popups", () => {
+  const toastPath = path.join(repoRoot, "upstream/src/renderer/components/common/AppFloatingToast.vue");
+  assert.equal(fs.existsSync(toastPath), true, "AppFloatingToast.vue must exist");
+  const toastSrc = fs.readFileSync(toastPath, "utf-8");
+  assert.match(toastSrc, /rgba\(18,\s*20,\s*26,\s*0\.78\)/);
+  assert.match(toastSrc, /blur\(16px\)/);
+  assert.match(toastSrc, /calc\(env\(safe-area-inset-top,\s*24px\)\s*\+\s*56px\)/);
+
+  const appVue = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/App.vue"),
+    "utf-8"
+  );
+  assert.match(appVue, /<app-floating-toast\s*\/>/);
+
+  const shortcutToastTs = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/utils/shortcutToast.ts"),
+    "utf-8"
+  );
+  assert.match(shortcutToastTs, /export const floatingToastState/);
+  assert.match(shortcutToastTs, /1500/);
+
+  const musicFull = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/lyric/MusicFullMobile.vue"),
+    "utf-8"
+  );
+  assert.doesNotMatch(musicFull, /showBottomToast\('下一首'\)/);
+  assert.doesNotMatch(musicFull, /showBottomToast\('上一首'\)/);
+
+  for (const relPath of [
+    "upstream/src/renderer/components/player/MobilePlayerSettings.vue",
+    "upstream/src/renderer/views/set/tabs/PlaybackTab.vue",
+    "upstream/src/renderer/utils/bridge/ipcAdapter.ts",
+  ]) {
+    const src = fs.readFileSync(path.join(repoRoot, relPath), "utf-8");
+    assert.doesNotMatch(src, /AlgerAndroid[\s\S]{0,12}\.showToast\(/, `${relPath} must use in-app frosted toast instead of AlgerAndroid.showToast`);
+  }
+});

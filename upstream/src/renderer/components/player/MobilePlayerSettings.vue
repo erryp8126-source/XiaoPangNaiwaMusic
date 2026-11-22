@@ -357,6 +357,7 @@ import {
   triggerHaptic
 } from '@/utils/androidBridge';
 import { formatPlaybackBadgeText, inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
+import { showBottomToast } from '@/utils/shortcutToast';
 
 const { t } = useI18n();
 const router = useRouter();
@@ -417,7 +418,7 @@ const handleClearCacheInDrawer = () => {
   if (!nativeCapabilities.supportsAudioCache) return;
   const ok = Boolean((window as any).AlgerAndroid?.clearAudioCache?.());
   refreshAudioCacheSize();
-  (window as any).AlgerAndroid?.showToast?.(ok ? '已清理音频缓存' : '缓存清理失败');
+  showBottomToast(ok ? '已清理音频缓存' : '缓存清理失败');
 };
 
 const showEqModal = ref(false);

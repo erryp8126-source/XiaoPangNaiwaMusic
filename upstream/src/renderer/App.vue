@@ -7,6 +7,7 @@
       <n-dialog-provider>
         <n-message-provider>
           <router-view></router-view>
+          <app-floating-toast />
           <disclaimer-modal />
           <onboarding-guide-modal />
         </n-message-provider>
@@ -22,6 +23,7 @@ import { computed, nextTick, onMounted, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 
+import AppFloatingToast from '@/components/common/AppFloatingToast.vue';
 import DisclaimerModal from '@/components/common/DisclaimerModal.vue';
 import OnboardingGuideModal from '@/components/common/OnboardingGuideModal.vue';
 import { useCloudSyncStore } from '@/store/modules/cloudSync';

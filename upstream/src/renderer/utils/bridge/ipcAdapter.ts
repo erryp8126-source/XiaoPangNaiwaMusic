@@ -1,3 +1,5 @@
+import { showBottomToast } from '@/utils/shortcutToast';
+
 import {
   getNativeCapabilities,
   invokeAndroidAsync,
@@ -22,7 +24,7 @@ export const androidIpcAdapter: NativeIpcAdapter = {
     if (channel === 'download-music') {
       void invokeAndroidAsync('download-music', args[0] || {});
     } else if (channel === 'open-directory') {
-      window.AlgerAndroid!.showToast(`保存位置: ${args[0] || 'Music/AlgerMusicPlayer'}`);
+      showBottomToast(`保存位置: ${args[0] || 'Music/XiaoPangNaiwaMusic'}`);
     } else if (channel === 'close-lyric') {
       if (getNativeCapabilities().supportsFloatingLyric) {
         window.AlgerAndroid!.setFloatingLyricEnabled(false);

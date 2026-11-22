@@ -270,6 +270,7 @@ import MusicSourceSettings from '@/components/settings/MusicSourceSettings.vue';
 import { type Platform } from '@/types/music';
 import { isAndroid, isElectron, isNative } from '@/utils';
 import { getNativeCapabilities } from '@/utils/androidBridge';
+import { showBottomToast } from '@/utils/shortcutToast';
 
 import { SETTINGS_DATA_KEY } from '../keys';
 import SBtn from '../SBtn.vue';
@@ -312,7 +313,7 @@ const toggleSingleSource = (key: Platform, enabled: boolean) => {
   } else {
     const next = current.filter((k) => k !== key);
     if (next.length === 0) {
-      (window as any).AlgerAndroid?.showToast?.('至少保留一个可用备用音源通道');
+      showBottomToast('至少保留一个可用备用音源通道');
       return;
     }
     musicSources.value = next;
@@ -386,7 +387,7 @@ const handleClearAudioCache = () => {
   if (!nativeCapabilities.supportsAudioCache) return;
   const ok = Boolean((window as any).AlgerAndroid?.clearAudioCache?.());
   audioCacheBytes.value = Number((window as any).AlgerAndroid?.getAudioCacheSize?.() || 0);
-  (window as any).AlgerAndroid?.showToast?.(ok ? '已清理音频缓存' : '缓存清理失败');
+  showBottomToast(ok ? '已清理音频缓存' : '缓存清理失败');
 };
 
 const qualityOptions = computed(() => [
