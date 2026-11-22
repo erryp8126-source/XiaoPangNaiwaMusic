@@ -6,7 +6,7 @@ on:
       release_tag:
         description: '自动上传到指定 GitHub Release 标签（留空则仅生成 Actions 构件）'
         required: false
-        default: 'v5.1.4'
+        default: ''
         type: string
   push:
     tags:
@@ -216,6 +216,7 @@ jobs:
 
   deploy-pages:
     name: Deploy Safari PWA to GitHub Pages
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     needs: [build-pwa]
     runs-on: ubuntu-latest
     permissions:
