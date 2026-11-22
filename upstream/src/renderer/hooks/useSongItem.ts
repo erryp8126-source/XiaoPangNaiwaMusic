@@ -1,10 +1,11 @@
 import { useMessage } from 'naive-ui';
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import { usePlayerStore, useRecommendStore } from '@/store';
 import type { SongResult } from '@/types/music';
 import { getImgUrl } from '@/utils';
+import { triggerHaptic } from '@/utils/androidBridge';
 import { getImageBackground } from '@/utils/linearColor';
 
 import { dislikeRecommendedSong } from '../api/music';
@@ -81,8 +82,10 @@ export function useSongItem(props: { item: SongResult; canRemove?: boolean }) {
       typeof props.item.id === 'string' ? parseInt(props.item.id, 10) : props.item.id;
 
     if (isFavorite.value) {
+      triggerHaptic('selection');
       playerStore.removeFromFavorite(numericId);
     } else {
+      triggerHaptic('success');
       playerStore.addToFavorite(numericId);
     }
   };
@@ -162,9 +165,65 @@ export function useSongItem(props: { item: SongResult; canRemove?: boolean }) {
     return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   };
 
-  // 处理右键菜单
+  // 移动端长按手势触发操作菜单（兼容 iOS WKWebView 与 Android WebView）
+  let longPressTimer: number | null = null;
+  let longPressStartX = 0;
+  let longPressStartY = 0;
+  let lastLongPressAt = 0;
+
+  const clearLongPressTimer = () => {
+    if (longPressTimer !== null) {
+      window.clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+  };
+
+  const handleLongPressTouchStart = (e: TouchEvent) => {
+    clearLongPressTimer();
+    if (!e.touches || e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    longPressStartX = touch.clientX;
+    longPressStartY = touch.clientY;
+    longPressTimer = window.setTimeout(() => {
+      longPressTimer = null;
+      lastLongPressAt = Date.now();
+      triggerHaptic('medium');
+      dropdownX.value = longPressStartX;
+      dropdownY.value = longPressStartY;
+      showDropdown.value = true;
+    }, 480);
+  };
+
+  const handleLongPressTouchMove = (e: TouchEvent) => {
+    if (longPressTimer === null || !e.touches || e.touches.length === 0) return;
+    const touch = e.touches[0];
+    if (
+      Math.abs(touch.clientX - longPressStartX) > 10 ||
+      Math.abs(touch.clientY - longPressStartY) > 10
+    ) {
+      clearLongPressTimer();
+    }
+  };
+
+  const handleLongPressTouchEnd = () => {
+    clearLongPressTimer();
+  };
+
+  const consumeLongPressClickGuard = (): boolean => {
+    return Date.now() - lastLongPressAt < 650;
+  };
+
+  onBeforeUnmount(() => {
+    clearLongPressTimer();
+  });
+
+  // 处理右键/系统长按菜单
   const handleContextMenu = (e: MouseEvent) => {
     e.preventDefault();
+    if (Date.now() - lastLongPressAt < 650) {
+      return;
+    }
+    triggerHaptic('medium');
     showDropdown.value = true;
     dropdownX.value = e.clientX;
     dropdownY.value = e.clientY;
@@ -173,6 +232,7 @@ export function useSongItem(props: { item: SongResult; canRemove?: boolean }) {
   // 处理菜单点击
   const handleMenuClick = (e: MouseEvent) => {
     e.preventDefault();
+    triggerHaptic('light');
     showDropdown.value = true;
     dropdownX.value = e.clientX;
     dropdownY.value = e.clientY;
@@ -217,6 +277,10 @@ export function useSongItem(props: { item: SongResult; canRemove?: boolean }) {
     formatDuration,
     handleContextMenu,
     handleMenuClick,
+    handleLongPressTouchStart,
+    handleLongPressTouchMove,
+    handleLongPressTouchEnd,
+    consumeLongPressClickGuard,
     handleArtistClick,
     handleMouseEnter,
     handleMouseLeave,

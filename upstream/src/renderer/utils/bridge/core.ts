@@ -1,8 +1,33 @@
-import type { AndroidServerConfig, NativeCapabilities, NativeEventListener } from './types';
+import type { AndroidServerConfig, HapticStyle, NativeCapabilities, NativeEventListener } from './types';
 
 export const isAndroid = (): boolean => {
   return typeof window !== 'undefined' && typeof window.AlgerAndroid !== 'undefined';
 };
+
+/**
+ * 触发原生触觉反馈（Android HapticFeedbackConstants / iOS UIFeedbackGenerator）
+ * Web / PWA 环境静默降级为无操作
+ */
+export function triggerHaptic(style: HapticStyle = 'light'): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.AlgerAndroid?.triggerHaptic?.(style);
+  } catch {
+    // 非原生或不支持环境静默降级
+  }
+}
+
+/**
+ * 查询 Android 原生 SimpleCache 是否已缓存指定曲目与音质
+ */
+export function isAndroidAudioCached(songId: string | number, quality: string = 'higher'): boolean {
+  if (typeof window === 'undefined' || !songId) return false;
+  try {
+    return Boolean(window.AlgerAndroid?.isAudioCached?.(String(songId), quality || 'higher'));
+  } catch {
+    return false;
+  }
+}
 
 const isIOSNativeEnv = (): boolean => {
   if (typeof window === 'undefined') return false;

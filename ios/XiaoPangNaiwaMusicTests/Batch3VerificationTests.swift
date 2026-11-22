@@ -274,4 +274,66 @@ final class Batch3VerificationTests: XCTestCase {
             SafeHttpGuard.validateUrlAndResolve(loopbackUrl, allowedSuffixes: SafeHttpGuard.audioAndProxyAllowedDomains)
         )
     }
+
+    /// 验证 5（Phase 1）：iOS 原生桥接暴露 triggerHaptic 并正确派发四类触觉反馈
+    func testIosBridgeTriggerHapticBridgeAndNativeFeedback() {
+        let prefs = AppPrefs()
+        let ncm = NeteaseApiClient(prefs: prefs)
+        let unblock = MusicUnblockEngine()
+        let httpServer = LocalHttpServer(ncmClient: ncm, unblockEngine: unblock)
+        let audio = AudioPlayerManager(ncmClient: ncm, unblockEngine: unblock, skipSystemAudioSetup: true)
+        let storage = LocalMusicAndDownloadManager(portProvider: { 30488 }, tokenProvider: { "tok" }) { _, _ in }
+
+        let bridge = IOSJsBridge(
+            prefs: prefs,
+            ncmClient: ncm,
+            unblockEngine: unblock,
+            httpServer: httpServer,
+            audioManager: audio,
+            storageManager: storage,
+            onStatusBarStyle: { _ in },
+            onOpenExternalUrl: { _ in },
+            onShowToast: { _ in },
+            onPickTextFile: { cb in cb(nil) },
+            onPickLocalAudioSources: { cb in cb(["canceled": true, "filePaths": []]) },
+            callbackDispatcher: { _, _, _ in }
+        )
+
+        let userScript = bridge.makeInjectionScript()
+        let ctx = JSContext()!
+        ctx.evaluateScript("""
+        var window = this;
+        var __postedMessages = [];
+        window.webkit = {
+          messageHandlers: {
+            AlgerIOS: {
+              postMessage: function(msg) { __postedMessages.push(msg); }
+            }
+          }
+        };
+        """)
+        ctx.evaluateScript(userScript.source)
+
+        let probe = ctx.evaluateScript("""
+        (function() {
+          window.AlgerAndroid.triggerHaptic('light');
+          window.AlgerAndroid.triggerHaptic('medium');
+          window.AlgerAndroid.triggerHaptic('selection');
+          window.AlgerAndroid.triggerHaptic('success');
+          return JSON.stringify(__postedMessages);
+        })();
+        """)?.toString() ?? "[]"
+
+        let data = probe.data(using: .utf8)!
+        let msgs = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] ?? []
+        XCTAssertEqual(msgs.count, 4, "Should post 4 triggerHaptic bridge messages")
+        let styles = msgs.compactMap { ($0["payload"] as? [String: Any])?["style"] as? String }
+        XCTAssertEqual(styles, ["light", "medium", "selection", "success"])
+        XCTAssertTrue(msgs.allSatisfy { ($0["method"] as? String) == "triggerHaptic" })
+
+        // 主线程直接触发系统 FeedbackGenerator，验证无崩溃
+        for style in ["light", "medium", "selection", "success", "unknown"] {
+            bridge.triggerNativeHaptic(style: style)
+        }
+    }
 }

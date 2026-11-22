@@ -101,6 +101,17 @@
 
       <setting-item
         inline
+        title="动态背景"
+        description="根据当前歌曲封面自动提取主色调，为全屏播放页与底部迷你播放条渲染平滑弥散渐变背景"
+      >
+        <n-switch v-model:value="dynamicBackgroundEnabled">
+          <template #checked>{{ t('common.on') }}</template>
+          <template #unchecked>{{ t('common.off') }}</template>
+        </n-switch>
+      </setting-item>
+
+      <setting-item
+        inline
         :title="t('settings.playback.autoPlay')"
         :description="t('settings.playback.autoPlayDesc')"
       >
@@ -247,6 +258,13 @@ const musicSources = computed({
   set: (newValue: Platform[]) => {
     const valuesToSet = newValue.length > 0 ? [...new Set(newValue)] : ALL_PLATFORMS;
     setData.value = { ...setData.value, enabledMusicSources: valuesToSet };
+  }
+});
+
+const dynamicBackgroundEnabled = computed({
+  get: () => setData.value.enableDynamicBackground !== false,
+  set: (val: boolean) => {
+    setData.value = { ...setData.value, enableDynamicBackground: val };
   }
 });
 </script>

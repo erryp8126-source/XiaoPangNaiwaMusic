@@ -11,6 +11,8 @@ export interface AndroidServerConfig {
   floatingLyricEnabled: boolean;
 }
 
+export type HapticStyle = 'light' | 'medium' | 'selection' | 'success';
+
 export interface NativeCapabilities {
   supportsEq: boolean;
   supportsFloatingLyric: boolean;
@@ -52,6 +54,8 @@ export interface AndroidBridgeInterface {
   isIgnoringBatteryOptimizations(): boolean;
   openExternalUrl(url: string): void;
   showToast(msg: string): void;
+  triggerHaptic?(style: string): void;
+  isAudioCached?(songId: string, quality: string): boolean;
   exitApp?(): void;
   getAudioCacheSize?(): number;
   clearAudioCache?(): boolean;

@@ -187,6 +187,7 @@ import { audioService } from '@/services/audioService';
 import { usePlayerStore } from '@/store/modules/player';
 import { useSettingsStore } from '@/store/modules/settings';
 import { getImgUrl, isElectron, isMobile, secondToMinute, setAnimationClass } from '@/utils';
+import { triggerHaptic } from '@/utils/androidBridge';
 
 const playerStore = usePlayerStore();
 const settingsStore = useSettingsStore();
@@ -309,6 +310,7 @@ const showSliderTooltip = ref(false);
 
 // 播放暂停按钮事件
 const playMusicEvent = async () => {
+  triggerHaptic('light');
   try {
     const result = await playerStore.setPlay({ ...playMusic.value });
     if (result) {
@@ -348,8 +350,10 @@ const toggleFavorite = async (e: Event) => {
   let favoriteId = playMusic.value.id;
 
   if (isFavorite.value) {
+    triggerHaptic('selection');
     playerStore.removeFromFavorite(favoriteId);
   } else {
+    triggerHaptic('success');
     playerStore.addToFavorite(favoriteId);
   }
 };

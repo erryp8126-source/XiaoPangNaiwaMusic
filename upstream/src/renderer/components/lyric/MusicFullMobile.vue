@@ -17,12 +17,18 @@
       ]"
     >
       <!-- 多层专辑封面流光氛围背景 -->
-      <div class="aurora-backdrop" aria-hidden="true">
+      <div
+        class="aurora-backdrop"
+        :class="{ 'dynamic-disabled': !dynamicBackgroundEnabled }"
+        :style="auroraBackdropStyle"
+        aria-hidden="true"
+      >
         <div
-          v-if="playMusic?.picUrl"
+          v-if="playMusic?.picUrl && dynamicBackgroundEnabled"
           class="aurora-cover-layer"
           :style="{ backgroundImage: `url(${getImgUrl(playMusic.picUrl, '300y300')})` }"
         ></div>
+        <div class="aurora-base-glow"></div>
         <div class="aurora-warm-orb"></div>
         <div class="aurora-sky-orb"></div>
         <div class="aurora-scrim"></div>
@@ -244,6 +250,15 @@
 
           <!-- 左侧进度条 -->
           <div class="landscape-progress-container">
+            <div v-if="playbackBadgeText" class="audio-meta-pill-row landscape-meta-row">
+              <span
+                class="audio-meta-pill"
+                :class="`source-${currentPlaybackMeta?.sourceCategory || 'official'}`"
+              >
+                <i class="audio-meta-icon" :class="playbackSourceIcon"></i>
+                <span class="audio-meta-text">{{ playbackBadgeText }}</span>
+              </span>
+            </div>
             <div class="time-info">
               <span class="current-time">{{ secondToMinute(displayTime) }}</span>
               <span class="total-time">{{ secondToMinute(allTime) }}</span>
@@ -363,6 +378,17 @@
         class="unified-controls"
         :class="{ 'fullscreen-mode': showFullLyrics }"
       >
+        <!-- 音源与音质状态胶囊 -->
+        <div v-if="!showFullLyrics && playbackBadgeText" class="audio-meta-pill-row">
+          <span
+            class="audio-meta-pill"
+            :class="`source-${currentPlaybackMeta?.sourceCategory || 'official'}`"
+          >
+            <i class="audio-meta-icon" :class="playbackSourceIcon"></i>
+            <span class="audio-meta-text">{{ playbackBadgeText }}</span>
+          </span>
+        </div>
+
         <!-- 进度条 (奶娃暖阳触控流畅版) -->
         <div class="progress-container">
           <div class="time-info">
@@ -445,14 +471,95 @@ import { useArtist } from '@/hooks/useArtist';
 import { usePlayMode } from '@/hooks/usePlayMode';
 import { audioService } from '@/services/audioService';
 import { usePlayerStore } from '@/store/modules/player';
+import { useSettingsStore } from '@/store/modules/settings';
 import { DEFAULT_LYRIC_CONFIG, LyricConfig } from '@/types/lyric';
 import { getImgUrl, secondToMinute } from '@/utils';
-import { registerAndroidBackHandler } from '@/utils/androidBridge';
+import { registerAndroidBackHandler, triggerHaptic } from '@/utils/androidBridge';
+import {
+  DEFAULT_DYNAMIC_PALETTE,
+  type DynamicCoverPalette,
+  extractCoverPalette
+} from '@/utils/coverColorExtractor';
 import { animateGradient, getHoverBackgroundColor, getTextColors } from '@/utils/linearColor';
+import { formatPlaybackBadgeText, inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
 import { showBottomToast } from '@/utils/shortcutToast';
 
 const { t } = useI18n();
 const playerStore = usePlayerStore();
+const settingsStore = useSettingsStore();
+
+// 封面动态弥散背景（默认开启，24x24 离屏 Canvas 主/次色采样 + URL 缓存 + 对比度兜底）
+const dynamicBackgroundEnabled = computed(
+  () => settingsStore.setData?.enableDynamicBackground !== false
+);
+const dynamicPalette = ref<DynamicCoverPalette>(DEFAULT_DYNAMIC_PALETTE);
+let paletteReqSeq = 0;
+
+watch(
+  [() => playMusic.value?.picUrl, dynamicBackgroundEnabled],
+  async ([picUrl, enabled]) => {
+    const seq = ++paletteReqSeq;
+    if (!enabled || !picUrl) {
+      dynamicPalette.value = DEFAULT_DYNAMIC_PALETTE;
+      return;
+    }
+    const palette = await extractCoverPalette(getImgUrl(picUrl, '120y120'));
+    if (seq === paletteReqSeq) {
+      dynamicPalette.value = palette;
+    }
+  },
+  { immediate: true }
+);
+
+const auroraBackdropStyle = computed(() => {
+  const palette = dynamicPalette.value;
+  if (!dynamicBackgroundEnabled.value) {
+    return {
+      '--dyn-primary': '#0f1522',
+      '--dyn-secondary': '#141d30',
+      '--dyn-orb-primary': 'rgba(255, 194, 46, 0.2)',
+      '--dyn-orb-secondary': 'rgba(91, 196, 240, 0.16)'
+    };
+  }
+  return {
+    '--dyn-primary': palette.primaryCss,
+    '--dyn-secondary': palette.secondaryCss,
+    '--dyn-orb-primary': palette.orbPrimaryCss,
+    '--dyn-orb-secondary': palette.orbSecondaryCss
+  };
+});
+
+// 音源与音质状态胶囊
+const currentPlaybackMeta = computed(() => {
+  const song = playMusic.value;
+  if (!song || !song.id) return null;
+  if (song.playbackMeta) return song.playbackMeta;
+  if (!song.playMusicUrl) return null;
+  return inferPlaybackMetaFromUrl(song.playMusicUrl, {
+    isDownloaded: Boolean(song.isDownloadedTrack),
+    fallbackQuality: settingsStore.setData?.musicQuality || 'higher'
+  });
+});
+
+const playbackBadgeText = computed(() => formatPlaybackBadgeText(currentPlaybackMeta.value));
+
+const playbackSourceIcon = computed(() => {
+  switch (currentPlaybackMeta.value?.sourceCategory) {
+    case 'local':
+      return 'ri-folder-music-line';
+    case 'downloaded':
+      return 'ri-download-cloud-2-line';
+    case 'cache':
+      return 'ri-hard-drive-2-line';
+    case 'lx':
+      return 'ri-sparkling-2-line';
+    case 'unblock':
+    case 'custom':
+      return 'ri-route-line';
+    default:
+      return 'ri-hq-line';
+  }
+});
 
 // 播放控制相关
 const play = computed(() => playerStore.isPlay);
@@ -521,8 +628,10 @@ const isFavorite = computed(() => {
 
 const toggleFavorite = () => {
   if (isFavorite.value) {
+    triggerHaptic('selection');
     playerStore.removeFromFavorite(playMusic.value.id as number);
   } else {
+    triggerHaptic('success');
     playerStore.addToFavorite(playMusic.value.id as number);
   }
 };
@@ -805,11 +914,12 @@ const handleCoverTouchEnd = (e: TouchEvent) => {
     const dy = touch.clientY - coverTouchStartY.value;
     if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.3) {
       suppressNextCoverClick = true;
+      triggerHaptic('medium');
       if (dx < 0) {
-        nextSong();
+        playerStore.nextPlay();
         showBottomToast('下一首');
       } else {
-        prevSong();
+        playerStore.prevPlay();
         showBottomToast('上一首');
       }
     } else if (dy > 90 && dy > Math.abs(dx) * 1.35) {
@@ -1077,6 +1187,7 @@ const handleArtistClick = (id: number) => {
 // 播放控制功能
 const togglePlay = async () => {
   if (!playMusic.value?.id) return;
+  triggerHaptic('light');
   try {
     await playerStore.setPlay({ ...playMusic.value });
   } catch (error) {
@@ -1085,19 +1196,23 @@ const togglePlay = async () => {
 };
 
 const nextSong = () => {
+  triggerHaptic('light');
   playerStore.nextPlay();
 };
 
 const prevSong = () => {
+  triggerHaptic('light');
   playerStore.prevPlay();
 };
 
 const togglePlayMode = () => {
+  triggerHaptic('selection');
   togglePlayModeBase();
   showBottomToast(playModeText.value);
 };
 
 const closeMusicFull = () => {
+  triggerHaptic('light');
   isVisible.value = false;
   playerStore.setMusicFull(false);
 };
@@ -1293,39 +1408,67 @@ const getWordStyle = (lineIndex: number, _wordIndex: number, word: any) => {
     z-index: 0;
     overflow: hidden;
     pointer-events: none;
-    background: #0f1522;
+    background-color: var(--dyn-primary, #0f1522);
+    transition: background-color 0.85s ease;
 
     .aurora-cover-layer {
       position: absolute;
       inset: -18%;
       background-size: cover;
       background-position: center;
-      filter: blur(58px) saturate(1.45) brightness(0.8);
+      filter: blur(62px) saturate(1.35) brightness(0.68);
       transform: scale(1.2);
-      transition: background-image 0.7s ease;
-      opacity: 0.9;
+      transition: background-image 0.75s ease, opacity 0.55s ease;
+      opacity: 0.58;
+    }
+
+    .aurora-base-glow {
+      position: absolute;
+      inset: -10%;
+      background-color: var(--dyn-secondary, #141d30);
+      filter: blur(76px);
+      opacity: 0.62;
+      transition: background-color 0.85s ease, opacity 0.55s ease;
     }
 
     .aurora-warm-orb {
       position: absolute;
       top: -12%;
       right: -14%;
-      width: 68vw;
-      height: 68vw;
+      width: 72vw;
+      height: 72vw;
       border-radius: 9999px;
-      background: radial-gradient(circle, rgba(255, 194, 46, 0.24) 0%, transparent 70%);
-      filter: blur(26px);
+      background-color: var(--dyn-orb-primary, rgba(255, 194, 46, 0.24));
+      filter: blur(66px);
+      opacity: 0.44;
+      transition: background-color 0.85s ease, opacity 0.55s ease;
     }
 
     .aurora-sky-orb {
       position: absolute;
-      bottom: 8%;
+      bottom: 6%;
       left: -16%;
-      width: 72vw;
-      height: 72vw;
+      width: 76vw;
+      height: 76vw;
       border-radius: 9999px;
-      background: radial-gradient(circle, rgba(91, 196, 240, 0.2) 0%, transparent 72%);
-      filter: blur(30px);
+      background-color: var(--dyn-orb-secondary, rgba(91, 196, 240, 0.2));
+      filter: blur(72px);
+      opacity: 0.4;
+      transition: background-color 0.85s ease, opacity 0.55s ease;
+    }
+
+    &.dynamic-disabled {
+      .aurora-base-glow {
+        opacity: 0;
+      }
+
+      .aurora-warm-orb {
+        opacity: 0.14;
+      }
+
+      .aurora-sky-orb {
+        opacity: 0.12;
+      }
     }
 
     .aurora-scrim {
@@ -1333,10 +1476,52 @@ const getWordStyle = (lineIndex: number, _wordIndex: number, word: any) => {
       inset: 0;
       background: linear-gradient(
         180deg,
-        rgba(12, 17, 28, 0.36) 0%,
-        rgba(12, 17, 28, 0.5) 45%,
-        rgba(10, 14, 23, 0.84) 100%
+        rgba(8, 12, 22, 0.44) 0%,
+        rgba(8, 12, 22, 0.58) 46%,
+        rgba(7, 10, 18, 0.88) 100%
       );
+    }
+  }
+
+  .audio-meta-pill-row {
+    @apply flex items-center justify-center mb-1.5;
+
+    &.landscape-meta-row {
+      @apply justify-start mb-2;
+    }
+
+    .audio-meta-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 10px;
+      border-radius: 9999px;
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      color: rgba(255, 255, 255, 0.92);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      line-height: 1.3;
+
+      .audio-meta-icon {
+        font-size: 12px;
+        color: #ffd147;
+      }
+
+      &.source-cache .audio-meta-icon,
+      &.source-downloaded .audio-meta-icon,
+      &.source-local .audio-meta-icon {
+        color: #6ee7b7;
+      }
+
+      &.source-lx .audio-meta-icon,
+      &.source-unblock .audio-meta-icon,
+      &.source-custom .audio-meta-icon {
+        color: #7dd3fc;
+      }
     }
   }
 

@@ -13,8 +13,10 @@ import { SongSourceConfigManager } from '@/services/SongSourceConfigManager';
 import type { AudioOutputDevice } from '@/types/audio';
 import type { Platform, SongResult } from '@/types/music';
 import { getImgUrl } from '@/utils';
-import { isAndroid } from '@/utils/androidBridge';
+import { isAndroid, isAndroidAudioCached } from '@/utils/androidBridge';
 import { getImageLinearBackground } from '@/utils/linearColor';
+import { buildPlaybackMeta, inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
+import { showBottomToast } from '@/utils/shortcutToast';
 
 import { usePlayHistoryStore } from './playHistory';
 
@@ -442,6 +444,40 @@ export const usePlayerCoreStore = defineStore(
 
         updatedPlayMusic.lyric = lyrics;
 
+        // 统一补齐播放音源/音质元数据，并在原生缓存命中时标注「本地缓存」
+        const { useSettingsStore } = await import('./settings');
+        const settingsStore = useSettingsStore();
+        const currentQuality = settingsStore.setData?.musicQuality || 'higher';
+        const isLocalUrl = Boolean(updatedPlayMusic.playMusicUrl?.startsWith('local://'));
+        const hitAndroidDiskCache =
+          isAndroid() &&
+          !isLocalUrl &&
+          isAndroidAudioCached(updatedPlayMusic.id, currentQuality);
+
+        updatedPlayMusic.playbackMeta = inferPlaybackMetaFromUrl(updatedPlayMusic.playMusicUrl, {
+          isDownloaded: Boolean(updatedPlayMusic.isDownloadedTrack),
+          fromDiskCache: hitAndroidDiskCache,
+          fallbackQuality: currentQuality,
+          existing: updatedPlayMusic.playbackMeta
+        });
+
+        // 当主音源解析失败自动切换到备用解灰 / LX 源时，给出不打断听歌的轻量 Toast 提示
+        if (
+          shouldPlay &&
+          updatedPlayMusic.playbackMeta?.fallbackFrom === 'official' &&
+          !updatedPlayMusic.playbackMeta?.fromDiskCache
+        ) {
+          const fallbackTip =
+            updatedPlayMusic.playbackMeta.sourceCategory === 'lx'
+              ? '已自动切换备用 LX 源'
+              : '已自动切换备用音源';
+          showBottomToast(fallbackTip);
+          updatedPlayMusic.playbackMeta = {
+            ...updatedPlayMusic.playbackMeta,
+            fallbackFrom: undefined
+          };
+        }
+
         playMusic.value = updatedPlayMusic;
         playMusicUrl.value = updatedPlayMusic.playMusicUrl as string;
         music.playMusicUrl = updatedPlayMusic.playMusicUrl as string;
@@ -688,13 +724,25 @@ export const usePlayerCoreStore = defineStore(
         const res = await getParsingMusicUrl(numericId, songData);
 
         if (res && res.data && res.data.data && res.data.data.url) {
-          const newUrl = res.data.data.url;
+          const parsedData = res.data.data;
+          const newUrl = parsedData.url;
           console.log(`解析成功，获取新URL: ${newUrl.substring(0, 50)}...`);
 
           const updatedMusic = {
             ...currentSong,
             playMusicUrl: newUrl,
-            expiredAt: Date.now() + 1800000
+            expiredAt: Date.now() + 1800000,
+            playbackMeta: buildPlaybackMeta({
+              url: newUrl,
+              br: parsedData.br,
+              type: parsedData.type,
+              encodeType: parsedData.encodeType,
+              level: parsedData.level,
+              quality: parsedData.quality,
+              strategy: parsedData._strategy || sourcePlatform,
+              rawSource: parsedData.source || parsedData.platform || sourcePlatform,
+              platform: parsedData.platform || sourcePlatform
+            })
           };
 
           await handlePlayMusic(updatedMusic, true);

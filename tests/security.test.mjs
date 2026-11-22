@@ -779,3 +779,158 @@ test("batch 3 invariants: iOS download delegate, local picker & SHA-256 IDs, int
     assert.equal(fs.existsSync(path.join(repoRoot, splitFile)), true, `${splitFile} must exist`);
   }
 });
+
+test("phase 1 runtime: coverColorExtractor dark-mode contrast >= 4.5:1 & 24x24 pixel clustering", async () => {
+  const extractor = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/coverColorExtractor.ts")).href
+  );
+
+  // 1. 极亮纯白与高亮霓虹黄必须被自动压暗柔化，确保暗色模式下与 #FFFFFF 对比度 >= 4.5:1
+  for (const brightRgb of [
+    [255, 255, 255],
+    [255, 255, 0],
+    [180, 255, 230],
+    [255, 210, 230],
+  ]) {
+    const safe = extractor.constrainForDarkReadability(brightRgb, 4.5);
+    const ratio = extractor.contrastRatio(safe, [255, 255, 255]);
+    assert.ok(
+      ratio >= 4.5,
+      `Expected constrained color for ${JSON.stringify(brightRgb)} to have contrast >= 4.5:1, got ${ratio.toFixed(2)}`
+    );
+  }
+
+  // 2. 构造 24x24 双色封面像素缓冲（左暖橙红 + 右青蓝）验证主/次色聚类及对比度兜底
+  const pixels = new Uint8ClampedArray(24 * 24 * 4);
+  for (let y = 0; y < 24; y++) {
+    for (let x = 0; x < 24; x++) {
+      const idx = (y * 24 + x) * 4;
+      if (x < 15) {
+        pixels[idx] = 245;
+        pixels[idx + 1] = 148;
+        pixels[idx + 2] = 66;
+      } else {
+        pixels[idx] = 64;
+        pixels[idx + 1] = 188;
+        pixels[idx + 2] = 240;
+      }
+      pixels[idx + 3] = 255;
+    }
+  }
+  const palette = extractor.extractPaletteFromPixels(pixels);
+  assert.ok(palette.contrastOnWhite >= 4.5, `Primary contrast ${palette.contrastOnWhite} must be >= 4.5`);
+  assert.ok(
+    extractor.contrastRatio(palette.secondaryRgb, [255, 255, 255]) >= 4.5,
+    "Secondary contrast must also be >= 4.5"
+  );
+  assert.notDeepEqual(palette.primaryRgb, palette.secondaryRgb, "Two-tone cover should yield distinct primary & secondary colors");
+
+  // 3. 无 DOM / 空 URL 时安全返回默认暗色极光调色板
+  const fallback = await extractor.extractCoverPalette("");
+  assert.deepEqual(fallback, extractor.DEFAULT_DYNAMIC_PALETTE);
+});
+
+test("phase 1 runtime: playbackMeta quality/source labels and cross-platform haptics/UX invariants", async () => {
+  const metaMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/playbackMeta.ts")).href
+  );
+
+  assert.equal(
+    metaMod.formatPlaybackBadgeText(
+      metaMod.buildPlaybackMeta({ br: 999000, type: "flac", fromDiskCache: true })
+    ),
+    "FLAC · 本地缓存"
+  );
+  assert.equal(
+    metaMod.formatPlaybackBadgeText(
+      metaMod.buildPlaybackMeta({ br: 320000, rawSource: "official" })
+    ),
+    "320k · 官方源"
+  );
+  assert.equal(
+    metaMod.formatPlaybackBadgeText(
+      metaMod.buildPlaybackMeta({ quality: "flac", strategy: "lxMusic", rawSource: "lx-wy", fallbackFrom: "official" })
+    ),
+    "FLAC · LX 源"
+  );
+  assert.equal(
+    metaMod.formatPlaybackBadgeText(
+      metaMod.buildPlaybackMeta({ br: 128000, url: "local:///Music/demo.mp3", isLocal: true })
+    ),
+    "128k · 本地文件"
+  );
+  assert.equal(
+    metaMod.formatPlaybackBadgeText(
+      metaMod.buildPlaybackMeta({ url: "local:///Downloads/song.flac", isDownloaded: true })
+    ),
+    "FLAC · 已下载"
+  );
+  assert.equal(
+    metaMod.formatPlaybackBadgeText(
+      metaMod.buildPlaybackMeta({ br: 320000, platform: "kuwo", strategy: "unblockMusic", fallbackFrom: "official" })
+    ),
+    "320k · 备用源"
+  );
+
+  // Android Haptics + Audio cache bridge checks
+  const androidBridgeKt = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/bridge/AndroidJsBridge.kt"),
+    "utf-8"
+  );
+  assert.match(androidBridgeKt, /@JavascriptInterface[\s\S]{0,60}fun triggerHaptic\(style: String\)/);
+  assert.match(androidBridgeKt, /HapticFeedbackConstants\.CLOCK_TICK/);
+  assert.match(androidBridgeKt, /HapticFeedbackConstants\.CONTEXT_CLICK/);
+  assert.match(androidBridgeKt, /HapticFeedbackConstants\.CONFIRM/);
+  assert.doesNotMatch(
+    androidBridgeKt,
+    /performHapticFeedback\([^)]*FLAG_IGNORE_GLOBAL_SETTING/,
+    "Android triggerHaptic must respect system vibration/haptic settings"
+  );
+  assert.match(androidBridgeKt, /@JavascriptInterface[\s\S]{0,60}fun isAudioCached\(/);
+
+  // iOS Haptics bridge check (system UIKit only, zero third-party deps)
+  const iosBridgeSwift = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Bridge/IOSJsBridge.swift"),
+    "utf-8"
+  );
+  assert.match(iosBridgeSwift, /triggerHaptic:\s*function\(style\)/);
+  assert.match(iosBridgeSwift, /UIImpactFeedbackGenerator/);
+  assert.match(iosBridgeSwift, /UISelectionFeedbackGenerator/);
+  assert.match(iosBridgeSwift, /UINotificationFeedbackGenerator/);
+
+  // Frontend Haptics, Dynamic Background toggle, and Audio Meta badge wiring
+  const bridgeCore = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/utils/bridge/core.ts"),
+    "utf-8"
+  );
+  assert.match(bridgeCore, /export function triggerHaptic\(/);
+
+  const musicFullMobile = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/lyric/MusicFullMobile.vue"),
+    "utf-8"
+  );
+  assert.match(musicFullMobile, /extractCoverPalette/);
+  assert.match(musicFullMobile, /audio-meta-pill/);
+  assert.match(musicFullMobile, /triggerHaptic\(/);
+
+  const mobilePlayBar = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/player/MobilePlayBar.vue"),
+    "utf-8"
+  );
+  assert.match(mobilePlayBar, /extractCoverPalette/);
+  assert.match(mobilePlayBar, /mini-dynamic-bg/);
+  assert.match(mobilePlayBar, /triggerHaptic\(/);
+
+  const playbackTab = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/set/tabs/PlaybackTab.vue"),
+    "utf-8"
+  );
+  assert.match(playbackTab, /enableDynamicBackground/);
+  assert.match(playbackTab, /动态背景/);
+
+  const playerCore = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/playerCore.ts"),
+    "utf-8"
+  );
+  assert.match(playerCore, /已自动切换备用/);
+});

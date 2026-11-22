@@ -8,6 +8,7 @@ import { SongSourceConfigManager } from '@/services/SongSourceConfigManager';
 import type { ILyric, ILyricText, IWordData, SongResult } from '@/types/music';
 import { getImgUrl, isElectron } from '@/utils';
 import { getImageLinearBackground } from '@/utils/linearColor';
+import { buildPlaybackMeta, inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
 import { parseLyrics as parseYrcLyrics } from '@/utils/yrcParser';
 
 const { message } = createDiscreteApi(['message']);
@@ -48,6 +49,12 @@ const resolveCachedPlaybackUrl = async (
     })) as DiskCacheResolveResult;
 
     if (result?.url) {
+      if (result.cached) {
+        songData.playbackMeta = inferPlaybackMetaFromUrl(result.url, {
+          fromDiskCache: true,
+          existing: songData.playbackMeta
+        });
+      }
       return result.url;
     }
   } catch (error) {
@@ -80,9 +87,31 @@ export const getSongUrl = async (
     }
 
     if (songData.playMusicUrl) {
+      if (!songData.playbackMeta) {
+        songData.playbackMeta = inferPlaybackMetaFromUrl(songData.playMusicUrl, {
+          isDownloaded: Boolean(songData.isDownloadedTrack),
+          fallbackQuality: settingsStore.setData.musicQuality || 'higher'
+        });
+      }
       if (isDownloaded) return songData.playMusicUrl;
       return await resolveCachedPlaybackUrl(songData.playMusicUrl, songData);
     }
+
+    const applyParsedMeta = (parsedData: any, fallbackFrom?: string) => {
+      if (!parsedData?.url) return;
+      songData.playbackMeta = buildPlaybackMeta({
+        url: parsedData.url,
+        br: parsedData.br,
+        type: parsedData.type,
+        encodeType: parsedData.encodeType,
+        level: parsedData.level,
+        quality: parsedData.quality || settingsStore.setData.musicQuality,
+        strategy: parsedData._strategy,
+        rawSource: parsedData.source || parsedData.platform || parsedData._strategy || 'unblock',
+        platform: parsedData.platform,
+        fallbackFrom
+      });
+    };
 
     // ==================== 自定义API最优先 ====================
     const globalSources = settingsStore.setData.enabledMusicSources || [];
@@ -115,6 +144,7 @@ export const getSongUrl = async (
           customResult.data.data.url
         ) {
           console.log('自定义API解析成功！');
+          applyParsedMeta({ ...customResult.data.data, _strategy: 'custom', source: 'custom' });
           if (isDownloaded) return customResult.data.data as any;
           return await resolveCachedPlaybackUrl(customResult.data.data.url, songData);
         } else {
@@ -144,6 +174,7 @@ export const getSongUrl = async (
         }
 
         if (res && res.data && res.data.data && res.data.data.url) {
+          applyParsedMeta(res.data.data);
           return await resolveCachedPlaybackUrl(res.data.data.url, songData);
         }
         console.warn('自定义音源解析失败，使用默认音源');
@@ -178,12 +209,23 @@ export const getSongUrl = async (
           console.log(`[getSongUrl] 备用解析后请求已失效: ${requestId}`);
           throw new Error('Request cancelled');
         }
+        if (res?.data?.data?.url) {
+          applyParsedMeta(res.data.data, 'official');
+        }
         if (isDownloaded) return res?.data?.data as any;
         const parsedUrl = res?.data?.data?.url || null;
         return await resolveCachedPlaybackUrl(parsedUrl, songData);
       }
 
       console.log('官方API解析成功！');
+      songData.playbackMeta = buildPlaybackMeta({
+        url: songDetail.url,
+        br: songDetail.br,
+        type: songDetail.type,
+        encodeType: songDetail.encodeType,
+        level: songDetail.level || settingsStore.setData.musicQuality,
+        rawSource: 'official'
+      });
       if (isDownloaded) return songDetail as any;
       return await resolveCachedPlaybackUrl(songDetail.url, songData);
     }
@@ -195,6 +237,9 @@ export const getSongUrl = async (
       console.log(`[getSongUrl] 备用解析后请求已失效: ${requestId}`);
       throw new Error('Request cancelled');
     }
+    if (res?.data?.data?.url) {
+      applyParsedMeta(res.data.data, 'official');
+    }
     if (isDownloaded) return res?.data?.data as any;
     const parsedUrl = res?.data?.data?.url || null;
     return await resolveCachedPlaybackUrl(parsedUrl, songData);
@@ -204,6 +249,9 @@ export const getSongUrl = async (
     }
     console.error('官方API请求失败，进入内置备用解析流程:', error);
     const res = await getParsingMusicUrl(numericId, cloneDeep(songData));
+    if (res?.data?.data?.url) {
+      applyParsedMeta(res.data.data, 'official');
+    }
     if (isDownloaded) return res?.data?.data as any;
     const parsedUrl = res?.data?.data?.url || null;
     return await resolveCachedPlaybackUrl(parsedUrl, songData);

@@ -36,6 +36,7 @@
   "activeLxMusicApiId": null,
   "enableGpuAcceleration": true,
   "enableDiskCache": true,
+  "enableDynamicBackground": true,
   "diskCacheDir": "",
   "diskCacheMaxSizeMB": 4096,
   "diskCacheCleanupPolicy": "lru"

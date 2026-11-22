@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import WebKit
 
 /// iOS WKWebView <-> Swift 桥接层
@@ -157,6 +158,9 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             },
             showToast: function(msg) {
               post('showToast', { msg: String(msg || '') });
+            },
+            triggerHaptic: function(style) {
+              post('triggerHaptic', { style: String(style || 'light') });
             }
           };
 
@@ -220,8 +224,40 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             if let msg = payload["msg"] as? String {
                 DispatchQueue.main.async { self.onShowToast(msg) }
             }
+        case "triggerHaptic":
+            let style = (payload["style"] as? String) ?? "light"
+            triggerNativeHaptic(style: style)
         default:
             break
+        }
+    }
+
+    internal func triggerNativeHaptic(style: String) {
+        let normalized = style.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let execute = {
+            switch normalized {
+            case "medium":
+                let generator = UIImpactFeedbackGenerator(style: .medium)
+                generator.prepare()
+                generator.impactOccurred()
+            case "selection":
+                let generator = UISelectionFeedbackGenerator()
+                generator.prepare()
+                generator.selectionChanged()
+            case "success":
+                let generator = UINotificationFeedbackGenerator()
+                generator.prepare()
+                generator.notificationOccurred(.success)
+            default:
+                let generator = UIImpactFeedbackGenerator(style: .light)
+                generator.prepare()
+                generator.impactOccurred()
+            }
+        }
+        if Thread.isMainThread {
+            execute()
+        } else {
+            DispatchQueue.main.async(execute: execute)
         }
     }
 

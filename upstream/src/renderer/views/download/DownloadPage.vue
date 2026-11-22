@@ -462,6 +462,7 @@ import { usePlayerStore } from '@/store/modules/player';
 import type { SongResult } from '@/types/music';
 import { getImgUrl } from '@/utils';
 import { getNativeIpc } from '@/utils/androidBridge';
+import { buildPlaybackMeta } from '@/utils/playbackMeta';
 
 const nativeIpc = getNativeIpc();
 
@@ -618,6 +619,11 @@ const handlePlayMusic = async (item: DownloadedItem) => {
       picUrl: dlItem.picUrl,
       // 使用本地文件协议
       playMusicUrl: getLocalFilePath(dlItem.path),
+      isDownloadedTrack: true,
+      playbackMeta: buildPlaybackMeta({
+        url: dlItem.path || dlItem.filename,
+        isDownloaded: true
+      }),
       source: 'netease' as 'netease',
       count: 0
     });

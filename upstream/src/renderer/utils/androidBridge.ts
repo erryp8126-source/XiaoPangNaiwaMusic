@@ -11,6 +11,7 @@
 export type {
   AndroidBridgeInterface,
   AndroidServerConfig,
+  HapticStyle,
   NativeCapabilities,
   NativeEventListener,
   NativeIpcAdapter
@@ -26,10 +27,12 @@ export {
   getNativeCapabilities,
   invokeAndroidAsync,
   isAndroid,
+  isAndroidAudioCached,
   offAndroidEvent,
   onAndroidEvent,
   registerAndroidBackHandler,
-  saveAndroidServerConfig
+  saveAndroidServerConfig,
+  triggerHaptic
 } from './bridge/core';
 
 export { getNativeIpc } from './bridge/ipcAdapter';

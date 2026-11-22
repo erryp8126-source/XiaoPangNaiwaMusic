@@ -1,8 +1,17 @@
 <template>
   <div
     class="mini-play-bar"
-    :class="{ 'pure-mode': pureModeEnabled, 'mini-mode': settingsStore.isMiniMode }"
+    :class="{
+      'pure-mode': pureModeEnabled,
+      'mini-mode': settingsStore.isMiniMode,
+      'has-dynamic-bg': dynamicBackgroundEnabled
+    }"
+    :style="miniBarDynamicStyle"
   >
+    <div class="mini-bar-dynamic-layer" aria-hidden="true">
+      <span class="mini-bar-orb-primary"></span>
+      <span class="mini-bar-orb-secondary"></span>
+    </div>
     <div class="mini-bar-container">
       <!-- 专辑封面 -->
       <div class="album-cover" @click="setMusicFull">
@@ -124,7 +133,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, provide, ref, useTemplateRef } from 'vue';
+import { computed, provide, ref, useTemplateRef, watch } from 'vue';
 
 import SongItem from '@/components/common/SongItem.vue';
 import { allTime, artistList, nowTime, playMusic } from '@/hooks/MusicHook';
@@ -133,10 +142,49 @@ import { audioService } from '@/services/audioService';
 import { usePlayerStore, useSettingsStore } from '@/store';
 import type { SongResult } from '@/types/music';
 import { getImgUrl } from '@/utils';
+import { triggerHaptic } from '@/utils/androidBridge';
+import {
+  DEFAULT_DYNAMIC_PALETTE,
+  type DynamicCoverPalette,
+  extractCoverPalette
+} from '@/utils/coverColorExtractor';
 
 const playerStore = usePlayerStore();
 const settingsStore = useSettingsStore();
 const { navigateToArtist } = useArtist();
+
+const dynamicBackgroundEnabled = computed(
+  () => settingsStore.setData?.enableDynamicBackground !== false
+);
+const dynamicPalette = ref<DynamicCoverPalette>(DEFAULT_DYNAMIC_PALETTE);
+let miniDesktopPaletteSeq = 0;
+
+watch(
+  [() => playMusic.value?.picUrl, dynamicBackgroundEnabled],
+  async ([picUrl, enabled]) => {
+    const seq = ++miniDesktopPaletteSeq;
+    if (!enabled || !picUrl) {
+      dynamicPalette.value = DEFAULT_DYNAMIC_PALETTE;
+      return;
+    }
+    const palette = await extractCoverPalette(getImgUrl(picUrl, '120y120'));
+    if (seq === miniDesktopPaletteSeq) {
+      dynamicPalette.value = palette;
+    }
+  },
+  { immediate: true }
+);
+
+const miniBarDynamicStyle = computed(() => {
+  const palette = dynamicPalette.value;
+  return {
+    '--mini-dark-primary': palette.primaryCss,
+    '--mini-dark-secondary': palette.secondaryCss,
+    '--mini-orb-primary': palette.orbPrimaryCss,
+    '--mini-light-primary': palette.lightTintPrimaryCss,
+    '--mini-light-secondary': palette.lightTintSecondaryCss
+  };
+});
 
 withDefaults(
   defineProps<{
@@ -209,8 +257,10 @@ const toggleFavorite = async (e: Event) => {
   let favoriteId = playMusic.value.id;
 
   if (isFavorite.value) {
+    triggerHaptic('selection');
     playerStore.removeFromFavorite(favoriteId);
   } else {
+    triggerHaptic('success');
     playerStore.addToFavorite(favoriteId);
   }
 };
@@ -309,11 +359,18 @@ const handleProgressLeave = () => {
 };
 
 // 播放控制
-const handlePrev = () => playerStore.prevPlay();
-const handleNext = () => playerStore.nextPlay();
+const handlePrev = () => {
+  triggerHaptic('light');
+  playerStore.prevPlay();
+};
+const handleNext = () => {
+  triggerHaptic('light');
+  playerStore.nextPlay();
+};
 
 const playMusicEvent = async () => {
   if (!playerStore.playMusic?.id) return;
+  triggerHaptic('light');
   try {
     await playerStore.setPlay({ ...playerStore.playMusic });
   } catch (error) {
@@ -334,6 +391,57 @@ const setMusicFull = () => {
   height: 64px;
   border-radius: 8px;
   position: relative;
+  overflow: hidden;
+  transition: background-color 0.75s ease;
+
+  &.has-dynamic-bg {
+    background-color: var(--mini-light-primary, rgba(244, 246, 250, 0.85));
+
+    .mini-bar-dynamic-layer {
+      opacity: 1;
+    }
+  }
+
+  .mini-bar-dynamic-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
+    opacity: 0;
+    transition: opacity 0.45s ease;
+
+    .mini-bar-orb-primary {
+      position: absolute;
+      left: -8%;
+      top: -60%;
+      width: 55%;
+      height: 220%;
+      border-radius: 9999px;
+      background-color: var(--mini-light-primary, rgba(255, 240, 200, 0.45));
+      filter: blur(22px);
+      opacity: 0.65;
+      transition: background-color 0.75s ease;
+    }
+
+    .mini-bar-orb-secondary {
+      position: absolute;
+      right: -8%;
+      bottom: -60%;
+      width: 50%;
+      height: 220%;
+      border-radius: 9999px;
+      background-color: var(--mini-light-secondary, rgba(210, 236, 252, 0.45));
+      filter: blur(24px);
+      opacity: 0.65;
+      transition: background-color 0.75s ease;
+    }
+  }
+
+  .mini-bar-container {
+    position: relative;
+    z-index: 1;
+  }
 
   &.mini-mode {
     @apply shadow-lg;
@@ -617,6 +725,24 @@ const setMusicFull = () => {
 
 .playlist-items {
   padding: 4px 0;
+}
+
+:global(.dark) .mini-play-bar {
+  &.has-dynamic-bg {
+    background-color: var(--mini-dark-primary, rgba(23, 31, 45, 0.9));
+  }
+
+  .mini-bar-dynamic-layer {
+    .mini-bar-orb-primary {
+      background-color: var(--mini-orb-primary, rgba(64, 96, 160, 0.5));
+      opacity: 0.34;
+    }
+
+    .mini-bar-orb-secondary {
+      background-color: var(--mini-dark-secondary, rgba(28, 38, 56, 0.85));
+      opacity: 0.5;
+    }
+  }
 }
 
 .dark {

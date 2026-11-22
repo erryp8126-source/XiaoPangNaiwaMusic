@@ -579,6 +579,7 @@ export class MusicParser {
         try {
           const result = await strategy.parse(id, data, quality, musicSources);
           if (result?.data?.data?.url) {
+            result.data.data._strategy = result.data.data._strategy || strategy.name;
             const endTime = performance.now();
             console.log(
               `解析成功，使用策略: ${strategy.name}，耗时: ${(endTime - startTime).toFixed(2)}ms`
@@ -608,6 +609,7 @@ export class MusicParser {
 
       // 如果后备方案成功，也进行缓存
       if (result?.data?.data?.url) {
+        result.data.data._strategy = result.data.data._strategy || 'unblockMusic';
         console.log('后备方案成功，缓存结果');
         await CacheManager.setCachedMusicUrl(id, result, []);
       }

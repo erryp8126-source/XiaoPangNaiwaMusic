@@ -8,8 +8,9 @@ import { playbackRequestManager } from '@/services/playbackRequestManager';
 import type { usePlayerStore } from '@/store';
 import type { Artist, ILyricText, SongResult } from '@/types/music';
 import { isAndroid, isElectron } from '@/utils';
-import { onAndroidEvent, syncAndroidPlaybackQueue } from '@/utils/androidBridge';
+import { isAndroidAudioCached, onAndroidEvent, syncAndroidPlaybackQueue } from '@/utils/androidBridge';
 import { getTextColors } from '@/utils/linearColor';
+import { inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
 import { parseLyrics } from '@/utils/yrcParser';
 
 const windowData = window as any;
@@ -101,9 +102,29 @@ export const applyNativeTrackSync = (payload: any, fromTrackTransition: boolean 
 
     if (!matchedSong) return;
 
+    const resolvedUrl = payload.url || matchedSong.playMusicUrl;
+    const isLocalUrl = Boolean(resolvedUrl?.startsWith('local://'));
+    let savedQuality = 'higher';
+    try {
+      const savedSettings = JSON.parse(localStorage.getItem('appSettings') || '{}');
+      if (savedSettings?.musicQuality) savedQuality = savedSettings.musicQuality;
+    } catch {
+      // ignore
+    }
+    const hitDiskCache =
+      isAndroid &&
+      !isLocalUrl &&
+      isAndroidAudioCached(matchedSong.id, savedQuality);
+
     const updatedSong: SongResult = {
       ...matchedSong,
-      playMusicUrl: payload.url || matchedSong.playMusicUrl,
+      playMusicUrl: resolvedUrl,
+      playbackMeta: inferPlaybackMetaFromUrl(resolvedUrl, {
+        isDownloaded: Boolean(matchedSong.isDownloadedTrack),
+        fromDiskCache: hitDiskCache,
+        fallbackQuality: savedQuality,
+        existing: matchedSong.playbackMeta
+      }),
       playLoading: false,
       isFirstPlay: false
     };

@@ -2,11 +2,13 @@ package com.xiaopang.naiwamusic.bridge
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
+import android.view.HapticFeedbackConstants
 import android.webkit.JavascriptInterface
 import android.widget.Toast
 import com.xiaopang.naiwamusic.NaiwaApp
@@ -430,6 +432,38 @@ class AndroidJsBridge(
         mainHandler.post {
             Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show()
         }
+    }
+
+    @JavascriptInterface
+    fun triggerHaptic(style: String) {
+        val feedbackConstant = when (style.lowercase().trim()) {
+            "medium" -> HapticFeedbackConstants.CONTEXT_CLICK
+            "selection" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                HapticFeedbackConstants.TEXT_HANDLE_MOVE
+            } else {
+                HapticFeedbackConstants.CLOCK_TICK
+            }
+            "success" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                HapticFeedbackConstants.CONFIRM
+            } else {
+                HapticFeedbackConstants.CONTEXT_CLICK
+            }
+            "light" -> HapticFeedbackConstants.CLOCK_TICK
+            else -> HapticFeedbackConstants.CLOCK_TICK
+        }
+        mainHandler.post {
+            runCatching {
+                // 不传入 FLAG_IGNORE_GLOBAL_SETTING，严格尊重系统触感/震动开关设置
+                activity.window?.decorView?.performHapticFeedback(feedbackConstant)
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun isAudioCached(songId: String, quality: String): Boolean {
+        if (songId.isBlank()) return false
+        val normalizedQuality = quality.ifBlank { "higher" }
+        return AudioCacheManager.isCached(activity, "song_${songId}_${normalizedQuality}")
     }
 
     @JavascriptInterface

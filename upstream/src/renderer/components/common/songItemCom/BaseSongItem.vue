@@ -2,6 +2,10 @@
   <div
     class="song-item"
     @contextmenu.prevent="handleContextMenu"
+    @touchstart.passive="handleLongPressTouchStart"
+    @touchmove.passive="handleLongPressTouchMove"
+    @touchend="handleLongPressTouchEnd"
+    @touchcancel="handleLongPressTouchEnd"
     @mouseenter="handleMouseEnter"
     @mouseleave="handleMouseLeave"
     @dblclick.stop="handleDirectPlay"
@@ -69,6 +73,9 @@ const {
   handlePlayNext,
   handleContextMenu,
   handleMenuClick,
+  handleLongPressTouchStart,
+  handleLongPressTouchMove,
+  handleLongPressTouchEnd,
   handleArtistClick,
   handleMouseEnter,
   handleMouseLeave,

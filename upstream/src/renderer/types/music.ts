@@ -1,3 +1,7 @@
+import type { PlaybackAudioMeta } from '@/utils/playbackMeta';
+
+export type { PlaybackAudioMeta, PlaybackSourceCategory } from '@/utils/playbackMeta';
+
 // 音乐平台类型
 export type Platform =
   | 'qq'
@@ -73,6 +77,8 @@ export interface SongResult {
   dt?: number;
   isFirstPlay?: boolean;
   isPodcast?: boolean;
+  isDownloadedTrack?: boolean;
+  playbackMeta?: PlaybackAudioMeta;
 }
 
 export interface Song {

@@ -75,6 +75,15 @@ object AudioCacheManager {
         }
     }
 
+    fun isCached(context: Context, cacheKey: String): Boolean {
+        if (cacheKey.isBlank()) return false
+        val cache = getCache(context) ?: return false
+        return runCatching {
+            val spans = cache.getCachedSpans(cacheKey)
+            spans.isNotEmpty() && spans.any { it.isCached && it.length > 0L }
+        }.getOrDefault(false)
+    }
+
     fun getCacheSizeBytes(context: Context): Long {
         val active = simpleCache
         if (active != null) {

@@ -7,7 +7,11 @@
         : 'bg-white/85 dark:bg-slate-800/65 ring-1 ring-sky-100/80 dark:ring-white/10 hover:bg-white dark:hover:bg-slate-800/80 shadow-naiwa-sm'
     "
     @click="onPlayMusic"
-    @contextmenu.prevent="onMenuClick"
+    @contextmenu.prevent="handleContextMenu"
+    @touchstart.passive="handleLongPressTouchStart"
+    @touchmove.passive="handleLongPressTouchMove"
+    @touchend="handleLongPressTouchEnd"
+    @touchcancel="handleLongPressTouchEnd"
   >
     <!-- Album Cover -->
     <div
@@ -132,13 +136,19 @@ const {
   toggleFavorite,
   toggleDislike,
   handlePlayNext,
+  handleContextMenu,
   handleMenuClick,
+  handleLongPressTouchStart,
+  handleLongPressTouchMove,
+  handleLongPressTouchEnd,
+  consumeLongPressClickGuard,
   handleArtistClick,
   downloadMusic,
   downloadLyric
 } = useSongItem(props);
 
 const onPlayMusic = () => {
+  if (consumeLongPressClickGuard()) return;
   emit('play', props.item);
   playMusicEvent(props.item);
 };

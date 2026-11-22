@@ -4,6 +4,7 @@
 import type { LocalMusicEntry, LocalMusicMeta } from '@/types/localMusic';
 import { SUPPORTED_AUDIO_FORMATS } from '@/types/localMusic';
 import type { ILyric, ILyricText, IWordData, SongResult } from '@/types/music';
+import { buildPlaybackMeta } from '@/utils/playbackMeta';
 import { parseLyrics as parseYrcLyrics } from '@/utils/yrcParser';
 
 /**
@@ -181,6 +182,14 @@ export function toSongResult(entry: LocalMusicEntry): SongResult {
     dt: entry.duration,
     source: 'netease' as const,
     count: 0,
+    playbackMeta: buildPlaybackMeta({
+      url: entry.filePath,
+      br:
+        entry.fileSize > 0 && entry.duration > 1000
+          ? Math.round((entry.fileSize * 8) / (entry.duration / 1000))
+          : undefined,
+      isLocal: true
+    }),
     // 内嵌歌词（如果有）
     lyric: lyric ?? undefined,
     // 本地音乐 URL 不会过期，设置一个极大的过期时间

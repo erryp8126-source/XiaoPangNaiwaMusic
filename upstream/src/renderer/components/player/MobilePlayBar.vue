@@ -9,7 +9,18 @@
     ]"
   >
     <!-- Mini模式 - 奶娃悬浮磨砂胶囊播控条 -->
-    <div v-if="!playerStore.musicFull" class="mobile-mini-controls">
+    <div
+      v-if="!playerStore.musicFull"
+      class="mobile-mini-controls"
+      :class="{ 'has-dynamic-bg': dynamicBackgroundEnabled }"
+      :style="miniDynamicStyle"
+    >
+      <!-- 封面动态弥散渐变层 -->
+      <div class="mini-dynamic-bg" aria-hidden="true">
+        <span class="mini-orb-primary"></span>
+        <span class="mini-orb-secondary"></span>
+      </div>
+
       <!-- 底部实时进度细线 -->
       <div class="mini-progress-track">
         <div class="mini-progress-fill" :style="{ width: `${progressPercent}%` }"></div>
@@ -71,6 +82,12 @@ import { allTime, artistList, nowTime, playMusic } from '@/hooks/MusicHook';
 import { usePlayerStore } from '@/store/modules/player';
 import { useSettingsStore } from '@/store/modules/settings';
 import { getImgUrl, setAnimationClass } from '@/utils';
+import { triggerHaptic } from '@/utils/androidBridge';
+import {
+  DEFAULT_DYNAMIC_PALETTE,
+  type DynamicCoverPalette,
+  extractCoverPalette
+} from '@/utils/coverColorExtractor';
 
 const shouldShowMobileMenu = inject('shouldShowMobileMenu') as Ref<boolean>;
 
@@ -80,22 +97,59 @@ const settingsStore = useSettingsStore();
 const play = computed(() => playerStore.isPlay);
 const background = ref('#131926');
 
+const dynamicBackgroundEnabled = computed(
+  () => settingsStore.setData?.enableDynamicBackground !== false
+);
+const dynamicPalette = ref<DynamicCoverPalette>(DEFAULT_DYNAMIC_PALETTE);
+let miniPaletteSeq = 0;
+
+watch(
+  [() => playMusic.value?.picUrl, dynamicBackgroundEnabled],
+  async ([picUrl, enabled]) => {
+    const seq = ++miniPaletteSeq;
+    if (!enabled || !picUrl) {
+      dynamicPalette.value = DEFAULT_DYNAMIC_PALETTE;
+      return;
+    }
+    const palette = await extractCoverPalette(getImgUrl(picUrl, '120y120'));
+    if (seq === miniPaletteSeq) {
+      dynamicPalette.value = palette;
+    }
+  },
+  { immediate: true }
+);
+
+const miniDynamicStyle = computed(() => {
+  const palette = dynamicPalette.value;
+  return {
+    '--mini-dark-primary': palette.primaryCss,
+    '--mini-dark-secondary': palette.secondaryCss,
+    '--mini-orb-primary': palette.orbPrimaryCss,
+    '--mini-orb-secondary': palette.orbSecondaryCss,
+    '--mini-light-primary': palette.lightTintPrimaryCss,
+    '--mini-light-secondary': palette.lightTintSecondaryCss
+  };
+});
+
 const progressPercent = computed(() => {
   if (!allTime.value || allTime.value <= 0) return 0;
   return Math.min(100, Math.max(0, (nowTime.value / allTime.value) * 100));
 });
 
 function handleNext() {
+  triggerHaptic('medium');
   playerStore.nextPlay();
 }
 
 function handlePrev() {
+  triggerHaptic('medium');
   playerStore.prevPlay();
 }
 
 const MusicFullRef = ref<any>(null);
 
 const setMusicFull = () => {
+  triggerHaptic('light');
   playerStore.setMusicFull(!playerStore.musicFull);
   if (playerStore.musicFull) {
     settingsStore.showArtistDrawer = false;
@@ -103,11 +157,13 @@ const setMusicFull = () => {
 };
 
 const openPlayListDrawer = () => {
+  triggerHaptic('selection');
   playerStore.setPlayListDrawerVisible(true);
 };
 
 const playMusicEvent = async () => {
   if (!playMusic.value?.id) return;
+  triggerHaptic('light');
   try {
     await playerStore.setPlay({ ...playMusic.value });
   } catch (error) {
@@ -162,17 +218,63 @@ watch(
   .mobile-mini-controls {
     @apply relative flex items-center justify-between pl-2 pr-2.5 h-[58px] overflow-hidden;
     border-radius: 24px;
-    background: rgba(255, 255, 255, 0.88);
+    background-color: rgba(255, 255, 255, 0.9);
     backdrop-filter: blur(24px) saturate(180%);
     -webkit-backdrop-filter: blur(24px) saturate(180%);
     border: 1px solid rgba(255, 255, 255, 0.94);
     box-shadow:
       0 10px 30px rgba(72, 126, 162, 0.16),
       0 2px 8px rgba(232, 146, 0, 0.09);
+    transition: background-color 0.75s ease, border-color 0.6s ease;
+
+    &.has-dynamic-bg {
+      background-color: var(--mini-light-primary, rgba(255, 255, 255, 0.9));
+
+      .mini-dynamic-bg {
+        opacity: 1;
+      }
+    }
+  }
+
+  .mini-dynamic-bg {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+
+    .mini-orb-primary {
+      position: absolute;
+      left: -10%;
+      top: -65%;
+      width: 58%;
+      height: 220%;
+      border-radius: 9999px;
+      background-color: var(--mini-light-primary, rgba(255, 240, 200, 0.45));
+      filter: blur(24px);
+      opacity: 0.7;
+      transition: background-color 0.75s ease;
+    }
+
+    .mini-orb-secondary {
+      position: absolute;
+      right: -8%;
+      bottom: -65%;
+      width: 52%;
+      height: 220%;
+      border-radius: 9999px;
+      background-color: var(--mini-light-secondary, rgba(210, 236, 252, 0.45));
+      filter: blur(26px);
+      opacity: 0.7;
+      transition: background-color 0.75s ease;
+    }
   }
 
   .mini-progress-track {
     position: absolute;
+    z-index: 2;
     left: 20px;
     right: 20px;
     bottom: 0;
@@ -191,7 +293,7 @@ watch(
   }
 
   .mini-song-info {
-    @apply flex items-center flex-1 min-w-0 cursor-pointer py-1;
+    @apply relative z-[1] flex items-center flex-1 min-w-0 cursor-pointer py-1;
 
     .mini-cover-ring {
       @apply relative w-[44px] h-[44px] rounded-full flex-shrink-0 p-[2.5px];
@@ -265,7 +367,7 @@ watch(
   }
 
   .mini-playback-controls {
-    @apply flex items-center gap-1.5 ml-2 flex-shrink-0;
+    @apply relative z-[1] flex items-center gap-1.5 ml-2 flex-shrink-0;
 
     .mini-play-btn {
       @apply w-9 h-9 rounded-full flex items-center justify-center text-white text-[19px];
@@ -284,11 +386,27 @@ watch(
 
 :global(.dark) .mobile-play-bar {
   .mobile-mini-controls {
-    background: rgba(23, 31, 45, 0.88);
-    border-color: rgba(255, 255, 255, 0.1);
+    background-color: rgba(23, 31, 45, 0.9);
+    border-color: rgba(255, 255, 255, 0.12);
     box-shadow:
       0 12px 34px rgba(0, 0, 0, 0.52),
       0 0 0 0.5px rgba(255, 197, 51, 0.12);
+
+    &.has-dynamic-bg {
+      background-color: var(--mini-dark-primary, rgba(23, 31, 45, 0.9));
+    }
+  }
+
+  .mini-dynamic-bg {
+    .mini-orb-primary {
+      background-color: var(--mini-orb-primary, rgba(64, 96, 160, 0.55));
+      opacity: 0.34;
+    }
+
+    .mini-orb-secondary {
+      background-color: var(--mini-dark-secondary, rgba(28, 38, 56, 0.85));
+      opacity: 0.52;
+    }
   }
 
   .mini-progress-track {

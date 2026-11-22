@@ -91,6 +91,24 @@
               <div class="h-px bg-slate-800 my-5"></div>
             </div>
 
+            <!-- 封面动态弥散背景开关 -->
+            <div class="mb-5">
+              <div
+                class="flex items-center justify-between px-4 py-3 rounded-2xl bg-slate-800/90 border border-slate-700/80"
+              >
+                <div class="pr-3">
+                  <div class="text-sm font-semibold text-white">动态背景</div>
+                  <div class="text-xs text-slate-400 mt-0.5">
+                    随专辑封面主色调平滑渐变播放页与迷你播放条背景
+                  </div>
+                </div>
+                <n-switch
+                  :value="dynamicBackgroundEnabled"
+                  @update:value="toggleDynamicBackground"
+                />
+              </div>
+            </div>
+
             <!-- 播放速度 -->
             <div class="mb-6">
               <div class="flex items-center justify-between mb-3">
@@ -288,15 +306,30 @@ import EqControl from '@/components/EQControl.vue';
 import { useDownload } from '@/hooks/useDownload';
 import { audioService } from '@/services/audioService';
 import { usePlayerStore } from '@/store/modules/player';
+import { useSettingsStore } from '@/store/modules/settings';
 import { isAndroid } from '@/utils';
-import { getNativeCapabilities, registerAndroidBackHandler } from '@/utils/androidBridge';
+import {
+  getNativeCapabilities,
+  registerAndroidBackHandler,
+  triggerHaptic
+} from '@/utils/androidBridge';
 
 const { t } = useI18n();
 const router = useRouter();
 const playerStore = usePlayerStore();
+const settingsStore = useSettingsStore();
 const { sleepTimer, playbackRate } = storeToRefs(playerStore);
 const { downloadMusic } = useDownload();
 const nativeCapabilities = getNativeCapabilities();
+
+const dynamicBackgroundEnabled = computed(
+  () => settingsStore.setData?.enableDynamicBackground !== false
+);
+
+const toggleDynamicBackground = (val: boolean) => {
+  triggerHaptic('selection');
+  settingsStore.setSetData({ enableDynamicBackground: val });
+};
 
 const handleOpenDownloads = () => {
   close();
