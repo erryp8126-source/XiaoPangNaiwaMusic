@@ -18,7 +18,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
     private let onPickLocalAudioSources: (@escaping ([String: Any]) -> Void) -> Void
     private let callbackDispatcher: (String, Bool, String) -> Void
 
-    private let asyncQueue = DispatchQueue(label: "com.alger.musicplayer.ios.bridge", attributes: .concurrent)
+    private let asyncQueue = DispatchQueue(label: "com.xiaopang.naiwamusic.ios.bridge", attributes: .concurrent)
 
     init(
         prefs: AppPrefs,

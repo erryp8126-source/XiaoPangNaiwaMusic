@@ -1,17 +1,15 @@
-import builtinLxYuningxiScript from '@/assets/lx-sources/lx-yuningxi-pro.js?raw';
-import { parseScriptInfo } from '@/services/LxMusicSourceRunner';
-import type { LxMusicScriptConfig, LxSourceKey } from '@/types/lxMusic';
+import type { LxMusicScriptConfig } from '@/types/lxMusic';
 import type { Platform } from '@/types/music';
 
 /**
- * 预装五源合一落雪音源：lx-玉宁熙-Pro v1.2.5（来自 guoyue2010/lxmusic- V261117）
- * 支持 wy(网易云) / tx(QQ) / kw(酷我) / kg(酷狗) / mg(咪咕)
+ * 默认启用的内置合规解灰通道（不包含任何混淆或外连第三方黑盒脚本）
+ * 用户如需使用落雪（LX Music）自定义音源，请在「设置 → 播放 → 音源设置」中自行导入本地 .js 脚本或自建模板。
  */
-export const BUILTIN_LX_YUNINGXI_ID = 'builtin_lx_yuningxi_pro_v1_2_5';
-export const BUILTIN_SOURCES_PRESET_VERSION = '2026-11-22-lx-yuningxi-1.2.5-pyncmd';
+export const BUILTIN_SOURCES_PRESET_VERSION = '2026-11-22-clean-sources-v2-pyncmd';
+
+const REMOVED_LEGACY_BUILTIN_LX_IDS = new Set(['builtin_lx_yuningxi_pro_v1_2_5']);
 
 export const DEFAULT_ENABLED_MUSIC_SOURCES: Platform[] = [
-  'lxMusic',
   'pyncmd',
   'kuwo',
   'kugou',
@@ -19,57 +17,67 @@ export const DEFAULT_ENABLED_MUSIC_SOURCES: Platform[] = [
   'gdmusic'
 ];
 
-const BUILTIN_YUNINGXI_SOURCES: LxSourceKey[] = ['wy', 'tx', 'kw', 'kg', 'mg'];
+/**
+ * 透明可读的自建 LX Music 音源脚本最小示例模板（仅作文档/本地导入参考，默认不自动激活）
+ */
+export const CUSTOM_LX_SCRIPT_TEMPLATE = `/*!
+ * @name 自建音源模板 (示例)
+ * @description 请替换为您的自建音源解析服务地址后通过本地文件导入
+ * @version 1.0.0
+ * @author custom
+ */
+const { EVENT_NAMES, request, on, send } = globalThis.lx;
 
-export const createBuiltinLxYuningxiConfig = (): LxMusicScriptConfig => {
-  const info = parseScriptInfo(builtinLxYuningxiScript);
-  return {
-    id: BUILTIN_LX_YUNINGXI_ID,
-    name: info.name || 'lx-玉宁熙-Pro',
-    script: builtinLxYuningxiScript,
-    info,
-    sources: [...BUILTIN_YUNINGXI_SOURCES],
-    enabled: true,
-    createdAt: 1795200000000
-  };
-};
+on(EVENT_NAMES.request, ({ source, action, info }) => {
+  if (action !== 'musicUrl') return Promise.reject(new Error('Unsupported action'));
+  return new Promise((resolve, reject) => {
+    const endpoint = 'https://your-music-api.example.com/url';
+    request(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: { source, songmid: info.musicInfo.songmid, quality: info.type }
+    }, (err, resp) => {
+      if (err) return reject(err);
+      const url = resp?.body?.url;
+      return url ? resolve(url) : reject(new Error('No audio url returned'));
+    });
+  });
+});
+
+send(EVENT_NAMES.inited, {
+  openDevTools: false,
+  sources: {
+    wy: { name: '网易云', type: 'music', actions: ['musicUrl'], qualitys: ['128k', '320k', 'flac'] }
+  }
+});
+`;
 
 /**
- * 预装默认音源与一次性老版本升级迁移：
- * - 首次启动或老版本升级时自动预装并激活 lx-玉宁熙-Pro，同时默认开启 lxMusic + pyncmd
- * - 迁移完成后写入版本号标记，后续完全尊重用户在「音源设置」中的自定义勾选/删除/切换
+ * 默认音源初始化与升级清理：
+ * - 自动移除旧版本曾预装的混淆黑盒脚本（若存在），避免残留外连逻辑
+ * - 保留用户自行导入的合法自定义脚本与设置，并确保默认开启 pyncmd 等内置通道
  */
 export const applyBuiltinMusicSourceDefaults = <T extends Record<string, any>>(settings: T): T => {
   const next: Record<string, any> = { ...settings };
-  const existingScripts: LxMusicScriptConfig[] = Array.isArray(next.lxMusicScripts)
+  const rawScripts: LxMusicScriptConfig[] = Array.isArray(next.lxMusicScripts)
     ? [...next.lxMusicScripts]
     : [];
 
+  const cleanedScripts = rawScripts.filter(
+    (s) => s && !REMOVED_LEGACY_BUILTIN_LX_IDS.has(String(s.id || ''))
+  );
+  const removedLegacy = cleanedScripts.length !== rawScripts.length;
+  if (removedLegacy) {
+    next.lxMusicScripts = cleanedScripts;
+    if (REMOVED_LEGACY_BUILTIN_LX_IDS.has(String(next.activeLxMusicApiId || ''))) {
+      next.activeLxMusicApiId = cleanedScripts[0]?.id ?? null;
+    }
+  }
+
   const needsPresetSeed =
-    next.builtinSourcesPresetVersion !== BUILTIN_SOURCES_PRESET_VERSION;
+    removedLegacy || next.builtinSourcesPresetVersion !== BUILTIN_SOURCES_PRESET_VERSION;
 
   if (needsPresetSeed) {
-    const builtinConfig = createBuiltinLxYuningxiConfig();
-    const hasBuiltin = existingScripts.some(
-      (s) =>
-        s &&
-        (s.id === BUILTIN_LX_YUNINGXI_ID ||
-          (s.name === builtinConfig.name && s.info?.version === builtinConfig.info.version))
-    );
-
-    if (!hasBuiltin) {
-      existingScripts.unshift(builtinConfig);
-    }
-    next.lxMusicScripts = existingScripts;
-
-    const activeExists = existingScripts.some((s) => s && s.id === next.activeLxMusicApiId);
-    if (!next.activeLxMusicApiId || !activeExists) {
-      next.activeLxMusicApiId =
-        existingScripts.find((s) => s.id === BUILTIN_LX_YUNINGXI_ID)?.id ||
-        existingScripts[0]?.id ||
-        null;
-    }
-
     if (next.enableMusicUnblock === undefined || next.enableMusicUnblock === null) {
       next.enableMusicUnblock = true;
     }
@@ -78,14 +86,17 @@ export const applyBuiltinMusicSourceDefaults = <T extends Record<string, any>>(s
       ? next.enabledMusicSources.filter((s: any) => typeof s === 'string' && s.trim())
       : [...DEFAULT_ENABLED_MUSIC_SOURCES];
 
+    const hasUserLxScript = Boolean(
+      next.activeLxMusicApiId &&
+        cleanedScripts.some((s) => s && s.id === next.activeLxMusicApiId)
+    );
+
     const mergedSources: string[] = [];
-    if (next.activeLxMusicApiId && !currentSources.includes('lxMusic')) {
-      mergedSources.push('lxMusic');
-    }
     if (!currentSources.includes('pyncmd')) {
       mergedSources.push('pyncmd');
     }
     for (const s of currentSources) {
+      if (s === 'lxMusic' && !hasUserLxScript) continue;
       if (!mergedSources.includes(s)) {
         mergedSources.push(s);
       }

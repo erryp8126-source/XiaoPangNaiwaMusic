@@ -1,5 +1,3 @@
-import axios from 'axios';
-
 export interface Donor {
   id: number;
   name: string;
@@ -12,9 +10,8 @@ export interface Donor {
 }
 
 /**
- * 获取捐赠列表
+ * 捐赠列表接口已禁用（移除上游明文 HTTP 外部依赖）
  */
 export const getDonationList = async (): Promise<Donor[]> => {
-  const { data } = await axios.get('http://donate.alger.fun/api/donations');
-  return data;
+  return [];
 };

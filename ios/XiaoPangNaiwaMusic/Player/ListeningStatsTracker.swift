@@ -22,7 +22,8 @@ final class ListeningStatsTracker {
         var artists: [String: Int64]
     }
 
-    private let defaultsKey = "alger_listening_stats_v1"
+    private let defaultsKey = "xiaopang_listening_stats_v1"
+    private let legacyDefaultsKey = "alger_listening_stats_v1"
     private let lock = NSLock()
     private let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -42,13 +43,23 @@ final class ListeningStatsTracker {
     private var lastCountedKey = ""
 
     private init() {
-        if let raw = UserDefaults.standard.string(forKey: defaultsKey),
+        let defaults = UserDefaults.standard
+        let currentRaw = defaults.string(forKey: defaultsKey)
+        let legacyRaw = (currentRaw == nil || currentRaw?.isEmpty == true)
+            ? defaults.string(forKey: legacyDefaultsKey)
+            : nil
+
+        if let raw = (currentRaw?.isEmpty == false ? currentRaw : legacyRaw),
            let data = raw.data(using: .utf8),
            var decoded = try? JSONDecoder().decode(StatsPayload.self, from: data) {
             if decoded.hourlySeconds.count < 24 {
                 decoded.hourlySeconds.append(contentsOf: Array(repeating: 0, count: 24 - decoded.hourlySeconds.count))
             }
             self.payload = decoded
+            // 兼容老版本：首次从旧 key 读到数据后平滑迁移写入新 key，禁止清空老用户数据
+            if legacyRaw != nil {
+                defaults.set(raw, forKey: defaultsKey)
+            }
         } else {
             self.payload = StatsPayload(
                 totalSeconds: 0,

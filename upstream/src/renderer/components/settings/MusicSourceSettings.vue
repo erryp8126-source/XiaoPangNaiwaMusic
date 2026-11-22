@@ -307,7 +307,7 @@ const props = defineProps({
   },
   sources: {
     type: Array as () => Platform[],
-    default: () => ['lxMusic', 'pyncmd', 'kuwo', 'kugou', 'migu', 'gdmusic'] as Platform[]
+    default: () => ['pyncmd', 'kuwo', 'kugou', 'migu', 'gdmusic'] as Platform[]
   }
 });
 

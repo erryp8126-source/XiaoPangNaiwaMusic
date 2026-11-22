@@ -71,12 +71,12 @@ const { t } = useI18n();
 
 const message = useMessage();
 const copyText = () => {
-  navigator.clipboard.writeText('AlgerMusic');
+  navigator.clipboard.writeText('XiaoPangNaiwaMusic');
   message.success(t('common.copySuccess'));
 };
 
 const toDonateList = () => {
-  window.open('http://donate.alger.fun/download', '_blank');
+  window.open('https://github.com/erryp8126-source/XiaoPangNaiwaMusic', '_blank');
 };
 
 defineProps({

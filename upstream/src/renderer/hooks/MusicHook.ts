@@ -186,7 +186,7 @@ const setupAndroidBackgroundSync = () => {
         currentIndex: curIdx,
         playMode: store.playMode ?? 0,
         musicQuality: settingsStore.setData?.musicQuality || 'higher',
-        unblockSources: settingsStore.setData?.enabledMusicSources || ['lxMusic', 'pyncmd', 'kuwo', 'kugou', 'migu', 'gdmusic'],
+        unblockSources: settingsStore.setData?.enabledMusicSources || ['pyncmd', 'kuwo', 'kugou', 'migu', 'gdmusic'],
         isFm: Boolean(store.isFmPlaying),
         stopAfterCurrent,
         cookie: rawCookie,

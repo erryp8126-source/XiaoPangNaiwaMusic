@@ -9,7 +9,7 @@
     :mask-closable="false"
   >
     <n-drawer-content
-      title="欢迎使用 AlgerMusicPlayer"
+      title="欢迎使用小庞奶娃音乐"
       closable
       :native-scrollbar="false"
       class="mac-style-drawer"
@@ -19,27 +19,29 @@
           <div class="warning-message">
             <h3>获取完整体验</h3>
             <p class="platform-support">
-              <span> <i class="ri-window-line mr-1"></i>Windows 10+ </span>
-              <span> <i class="ri-apple-line mr-1"></i>macOS </span>
-              <span> <i class="ri-ubuntu-line mr-1"></i>Linux </span>
               <span> <i class="ri-android-line mr-1"></i>Android </span>
+              <span> <i class="ri-apple-line mr-1"></i>iOS </span>
+              <span> <i class="ri-global-line mr-1"></i>Safari PWA </span>
             </p>
             <p class="description">
-              下载桌面应用以获得最佳音乐体验，包含完整功能与更高音质。
-              目前无iOS版本，请使用安卓应用或网页版。
+              可在 GitHub Releases 获取最新 Android APK / iOS IPA 安装包，或直接使用 Safari PWA。
             </p>
           </div>
 
           <div class="action-links">
             <a
-              href="https://mp.weixin.qq.com/s/9pr1XQB36gShM_-TG2LBdg"
+              href="https://github.com/erryp8126-source/XiaoPangNaiwaMusic"
               target="_blank"
               class="doc-link"
             >
-              <i class="ri-file-text-line mr-1"></i> 查看使用文档
+              <i class="ri-github-line mr-1"></i> 项目主页
             </a>
-            <a href="http://donate.alger.fun/download" target="_blank" class="download-link">
-              <i class="ri-download-2-line mr-1"></i> 立即下载
+            <a
+              href="https://github.com/erryp8126-source/XiaoPangNaiwaMusic/releases/latest"
+              target="_blank"
+              class="download-link"
+            >
+              <i class="ri-download-2-line mr-1"></i> 前往下载
             </a>
           </div>
 
@@ -104,24 +106,9 @@ const markAsDonated = () => {
   localStorage.setItem('trafficDonated4Never', '1');
   showDrawer.value = false;
 };
-// 组件挂载时检查是否需要显示
+// 已禁用上游自动推广弹窗，仅保留兼容组件导出
 onMounted(() => {
-  // 优先判断是否永久不再提示
-  if (localStorage.getItem('trafficDonated4Never')) return;
-
-  // 判断一天后提醒
-  const remindLaterTime = localStorage.getItem('trafficDonated4RemindLater');
-  if (remindLaterTime) {
-    const lastRemind = new Date(remindLaterTime);
-    const now = new Date();
-    const hoursDiff = (now.getTime() - lastRemind.getTime()) / (1000 * 60 * 60);
-    if (hoursDiff < 24) return;
-  }
-
-  // 延迟20秒显示
-  setTimeout(() => {
-    showDrawer.value = true;
-  }, 20000);
+  showDrawer.value = false;
 });
 </script>
 

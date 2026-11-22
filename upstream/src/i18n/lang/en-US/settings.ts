@@ -281,7 +281,7 @@ export default {
     manualUpdate: 'Manual Update',
     gotoGithub: 'Go to Github',
     author: 'Author',
-    authorDesc: 'algerkong Give a star🌟',
+    authorDesc: 'XiaoPangNaiwaMusic · Give a star🌟',
     messages: {
       checkError: 'Failed to check for updates, please try again later'
     }

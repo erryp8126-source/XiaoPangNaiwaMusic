@@ -3,6 +3,9 @@
   "version": "5.1.4",
   "private": true,
   "description": "小庞奶娃音乐 Web / Safari PWA + Netlify Serverless Music API",
+  "engines": {
+    "node": ">=22.6.0"
+  },
   "scripts": {
     "test:security": "node --test tests/security.test.mjs"
   },
@@ -14,6 +17,8 @@
     "@netlify/functions": "^6.1.1"
   },
   "overrides": {
-    "basic-ftp": "^6.2.6"
+    "basic-ftp": "^6.2.6",
+    "file-type": "^21.3.4",
+    "music-metadata": "^12.8.0"
   }
 }

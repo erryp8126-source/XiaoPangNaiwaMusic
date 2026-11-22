@@ -406,7 +406,7 @@ export function syncAndroidPlaybackQueue(params: {
         playMode: params.playMode ?? 0,
         currentIndex: Math.max(0, params.currentIndex ?? 0),
         musicQuality: params.musicQuality || 'higher',
-        unblockSources: params.unblockSources || ['lxMusic', 'pyncmd', 'kuwo', 'kugou', 'migu', 'gdmusic'],
+        unblockSources: params.unblockSources || ['pyncmd', 'kuwo', 'kugou', 'migu', 'gdmusic'],
         isFm: Boolean(params.isFm),
         stopAfterCurrent: Boolean(params.stopAfterCurrent),
         cookie: params.cookie || '',

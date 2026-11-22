@@ -25,10 +25,6 @@ enum SafeHttpGuard {
         "bilivideo.com",
         "bilivideo.cn",
         "hdslb.com",
-        // 预装落雪音源（lx-玉宁熙-Pro）接口域名
-        "wwwweb.top",
-        "yuafeng.cn",
-        "zddyr.top",
         // 云同步与官方服务域名
         "supabase.co",
         "github.com",

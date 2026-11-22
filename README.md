@@ -132,9 +132,16 @@ XiaoPangNaiwaMusic/
 
 ## 构建与安装指南
 
+### 安全与运行态测试
+- 需要 **Node.js `>= 22.6`**（推荐使用 **Node.js 24**，与 `.github/workflows/ci-verify.yml` 一致，利用原生 TypeScript strip-types 运行 `.ts`/`.mts` 模块测试）：
+  ```bash
+  npm ci
+  npm run test:security
+  ```
+
 ### Android 端（`.apk`）
 - **直接安装**：前往 [Releases 页面](https://github.com/erryp8126-source/XiaoPangNaiwaMusic/releases/latest) 下载最新版 `.apk` 直接安装（支持 Android 8.0+）。
-- **本地构建**（Windows，需 Node.js 18+、JDK 17、Android SDK API 35）：
+- **本地构建**（Windows，需 Node.js 22.6+、JDK 17、Android SDK API 35）：
   ```powershell
   .\build_apk.ps1
   ```

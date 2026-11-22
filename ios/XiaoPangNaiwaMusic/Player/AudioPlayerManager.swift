@@ -23,7 +23,7 @@ final class AudioPlayerManager: NSObject {
 
     private let ncmClient: NeteaseApiClient
     private let unblockEngine: MusicUnblockEngine
-    private let resolveQueue = DispatchQueue(label: "com.alger.musicplayer.ios.resolve", qos: .userInitiated)
+    private let resolveQueue = DispatchQueue(label: "com.xiaopang.naiwamusic.ios.resolve", qos: .userInitiated)
 
     var eventEmitter: ((String, String) -> Void)?
     var isAppInForeground: Bool = true

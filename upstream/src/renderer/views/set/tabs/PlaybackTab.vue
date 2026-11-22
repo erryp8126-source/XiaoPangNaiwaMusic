@@ -168,7 +168,7 @@ import SettingItem from '../SettingItem.vue';
 import SettingSection from '../SettingSection.vue';
 import SSelect from '../SSelect.vue';
 
-const ALL_PLATFORMS: Platform[] = ['lxMusic', 'pyncmd', 'kuwo', 'kugou', 'migu', 'gdmusic'];
+const ALL_PLATFORMS: Platform[] = ['pyncmd', 'kuwo', 'kugou', 'migu', 'gdmusic'];
 
 const memberLinks = [
   { name: '网易云音乐会员', url: 'https://music.163.com/store/vip' },

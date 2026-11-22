@@ -273,7 +273,7 @@ export default {
     manualUpdate: '官網更新',
     gotoGithub: '前往 Github',
     author: '作者',
-    authorDesc: 'algerkong 點個star🌟呗',
+    authorDesc: '小龐奶娃音樂 · 點個star🌟唄',
     messages: {
       checkError: '檢查更新失敗，請稍後重試'
     }

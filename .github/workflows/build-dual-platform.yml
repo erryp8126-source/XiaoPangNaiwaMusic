@@ -32,9 +32,11 @@ jobs:
         with:
           node-version: 24
 
-      - name: Install root API dependencies & run security regression tests
+      - name: Install root API dependencies, audit & run security regression tests
         run: |
           npm ci --no-audit --no-fund
+          npm audit --omit=dev --audit-level=high
+          npm --prefix upstream audit --omit=dev --audit-level=high
           npm run test:security
 
   build-android:

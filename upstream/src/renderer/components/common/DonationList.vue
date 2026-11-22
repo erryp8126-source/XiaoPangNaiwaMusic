@@ -226,7 +226,7 @@ const fetchDonors = async () => {
 };
 
 const toDonateList = () => {
-  window.open('http://donate.alger.fun/download', '_blank');
+  window.open('https://github.com/erryp8126-source/XiaoPangNaiwaMusic', '_blank');
 };
 
 onMounted(() => fetchDonors());

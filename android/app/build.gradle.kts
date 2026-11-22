@@ -1,3 +1,4 @@
+import org.gradle.api.GradleException
 import java.util.Properties
 
 plugins {
@@ -24,12 +25,15 @@ val hasReleaseKeystore = !releaseStorePath.isNullOrBlank() &&
   !releaseKeyPassword.isNullOrBlank() &&
   file(releaseStorePath).exists()
 
+val allowDebugSigning =
+  (project.findProperty("allowDebugSigning")?.toString()?.equals("true", ignoreCase = true) == true)
+
 android {
-  namespace = "com.alger.musicplayer"
+  namespace = "com.xiaopang.naiwamusic"
   compileSdk = 35
 
   defaultConfig {
-    applicationId = "com.alger.musicplayer"
+    applicationId = "com.xiaopang.naiwamusic"
     minSdk = 26
     targetSdk = 35
     versionCode = 51400
@@ -51,14 +55,18 @@ android {
 
   buildTypes {
     release {
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-      // 优先使用固定正式签名证书（本地与 GitHub Actions 签名永久一致，支持直接覆盖升级）；
-      // 若第三方克隆构建未配置 keystore，则优雅回退到 debug 签名
-      signingConfig = if (hasReleaseKeystore) {
-        signingConfigs.getByName("release")
-      } else {
-        signingConfigs.getByName("debug")
+      signingConfig = when {
+        hasReleaseKeystore -> signingConfigs.getByName("release")
+        allowDebugSigning -> {
+          logger.warn(
+            "[XiaoPangNaiwaMusic] Using debug signing for Release build (-PallowDebugSigning=true). Do NOT distribute publicly."
+          )
+          signingConfigs.getByName("debug")
+        }
+        else -> null
       }
     }
     debug {
@@ -81,6 +89,21 @@ android {
     resources {
       excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
+  }
+}
+
+gradle.taskGraph.whenReady {
+  val isReleaseBuildRequested = allTasks.any { task ->
+    task.project == project &&
+      (task.name.equals("assembleRelease", ignoreCase = true) ||
+        task.name.equals("bundleRelease", ignoreCase = true) ||
+        task.name.equals("packageRelease", ignoreCase = true))
+  }
+  if (isReleaseBuildRequested && !hasReleaseKeystore && !allowDebugSigning) {
+    throw GradleException(
+      "Release build aborted: missing release keystore (configure android/keystore.properties or ANDROID_KEYSTORE_PATH/PASSWORD/ALIAS env vars). " +
+        "For local debug verification only, pass -PallowDebugSigning=true."
+    )
   }
 }
 

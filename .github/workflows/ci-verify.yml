@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   security-tests:
-    name: Security & Runtime Tests
+    name: Security, Audit & Runtime Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source
@@ -30,13 +30,15 @@ jobs:
         with:
           node-version: 24
 
-      - name: Install root dependencies & run runtime security tests
+      - name: Install root dependencies, audit & run runtime security tests
         run: |
           npm ci --no-audit --no-fund
+          npm audit --omit=dev --audit-level=high
+          npm --prefix upstream audit --omit=dev --audit-level=high
           npm run test:security
 
   verify-android:
-    name: Verify Android Build & Unit Tests
+    name: Verify Android Build, Signing Gate & Unit Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source
@@ -71,11 +73,21 @@ jobs:
           npx vite build --outDir "${{ github.workspace }}/android/app/src/main/assets/www" --emptyOutDir
           test -f "${{ github.workspace }}/android/app/src/main/assets/www/index.html"
 
-      - name: Run Android unit tests & Release build
+      - name: Verify unsigned Release build is blocked without -PallowDebugSigning=true
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew testDebugUnitTest assembleRelease --no-daemon
+          if ./gradlew assembleRelease --no-daemon > /tmp/unsigned_release.log 2>&1; then
+            echo "ERROR: assembleRelease succeeded without release keystore!"
+            cat /tmp/unsigned_release.log
+            exit 1
+          fi
+          grep -i "Release build aborted" /tmp/unsigned_release.log
+
+      - name: Run Android unit tests & R8 Release build (-PallowDebugSigning=true)
+        working-directory: android
+        run: |
+          ./gradlew testDebugUnitTest assembleRelease -PallowDebugSigning=true --no-daemon
 
   verify-ios:
     name: Verify iOS xcodegen + xcodebuild + Simulator Tests
@@ -125,19 +137,6 @@ jobs:
         working-directory: ios
         run: |
           unset RUNNER_TRACKING_ID
-          xcodebuild \
-            -project XiaoPangNaiwaMusic.xcodeproj \
-            -target XiaoPangNaiwaMusicTests \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            SYMROOT="$PWD/build/SimProducts" \
-            ARCHS=arm64 \
-            ONLY_ACTIVE_ARCH=YES \
-            CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=YES \
-            build </dev/null > build/sim_build.log 2>&1
-          tail -n 20 build/sim_build.log
           SIM_UDID=$(xcrun simctl list devices available -j | node -e "
             const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
             const runtimes = Object.keys(data.devices || {}).filter(r => r.includes('iOS')).sort().reverse();
@@ -149,17 +148,25 @@ jobs:
             process.exit(1);
           ")
           echo "Selected iOS Simulator UDID: $SIM_UDID"
-          XCTEST_BIN=$(xcrun --sdk iphonesimulator --find xctest)
-          TEST_BUNDLE="$PWD/build/SimProducts/Debug-iphonesimulator/XiaoPangNaiwaMusicTests.xctest"
-          test -d "$TEST_BUNDLE"
-          echo "[1/3] Booting simulator $SIM_UDID..."
-          perl -e 'alarm shift; exec @ARGV' 25 xcrun simctl boot "$SIM_UDID" </dev/null >/dev/null 2>&1 || true
-          echo "[2/3] Spawning xctest in simulator..."
           set +e
-          perl -e 'alarm shift; exec @ARGV' 35 xcrun simctl spawn "$SIM_UDID" "$XCTEST_BIN" "$TEST_BUNDLE" </dev/null > build/sim_xctest.log 2>&1
+          xcodebuild \
+            -project XiaoPangNaiwaMusic.xcodeproj \
+            -scheme XiaoPangNaiwaMusicTests \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            -derivedDataPath build/SimDerivedData \
+            -parallel-testing-enabled NO \
+            -disable-concurrent-destination-testing \
+            -maximum-concurrent-test-simulator-destinations 1 \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 30 \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=YES \
+            test </dev/null > build/sim_xctest.log 2>&1
           TEST_EXIT=$?
           set -e
-          cat build/sim_xctest.log
-          echo "[3/3] xctest exited with code $TEST_EXIT; shutting down simulator..."
-          perl -e 'alarm shift; exec @ARGV' 10 xcrun simctl shutdown all </dev/null >/dev/null 2>&1 || true
+          grep -E "Test Suite|Test Case|Executed|TEST SUCCEEDED|TEST FAILED|error:" build/sim_xctest.log || tail -n 80 build/sim_xctest.log
+          xcrun simctl shutdown all </dev/null >/dev/null 2>&1 || true
           exit $TEST_EXIT

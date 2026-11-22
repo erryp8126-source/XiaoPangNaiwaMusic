@@ -30,7 +30,7 @@ final class LocalMusicAndDownloadManager: NSObject, URLSessionDownloadDelegate {
     private let portProvider: () -> Int
     private let tokenProvider: () -> String
     private let eventEmitter: (String, String) -> Void
-    private let downloadQueue = DispatchQueue(label: "com.alger.musicplayer.download", qos: .utility)
+    private let downloadQueue = DispatchQueue(label: "com.xiaopang.naiwamusic.download", qos: .utility)
     private let delegateQueue: OperationQueue
     private let redirectDelegate: SafeRedirectSessionDelegate
     private var downloadSession: URLSession!
@@ -47,7 +47,7 @@ final class LocalMusicAndDownloadManager: NSObject, URLSessionDownloadDelegate {
         self.tokenProvider = tokenProvider
         self.eventEmitter = eventEmitter
         let opQueue = OperationQueue()
-        opQueue.name = "com.alger.musicplayer.download.delegate"
+        opQueue.name = "com.xiaopang.naiwamusic.download.delegate"
         opQueue.maxConcurrentOperationCount = 1
         opQueue.qualityOfService = .utility
         self.delegateQueue = opQueue

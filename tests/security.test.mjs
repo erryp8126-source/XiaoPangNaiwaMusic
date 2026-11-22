@@ -5,7 +5,6 @@ import fs from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
 import path from "node:path";
-import vm from "node:vm";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -522,9 +521,9 @@ test("SSRF redirect guard: local HTTP server 302 -> http://127.0.0.1 and metadat
 });
 
 test("repo security invariants: P0 local file narrowing, fail-closed tokens, SSRF redirect guards, Supabase rate-limits, CI", () => {
-  // 1. Android local file narrowing & LocalAudioRegistry
+  // 1. Android local file narrowing & LocalAudioRegistry & playback SSRF Dns
   const androidServer = fs.readFileSync(
-    path.join(repoRoot, "android/app/src/main/kotlin/com/alger/musicplayer/server/EmbeddedHttpServer.kt"),
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/EmbeddedHttpServer.kt"),
     "utf-8"
   );
   assert.match(androidServer, /x-alger-token/);
@@ -536,7 +535,7 @@ test("repo security invariants: P0 local file narrowing, fail-closed tokens, SSR
   assert.doesNotMatch(androidServer, /getExternalStorageDirectory/);
   assert.doesNotMatch(androidServer, /session\.headers\["origin"\]\s*\?:\s*"\*"/);
   assert.equal(
-    fs.existsSync(path.join(repoRoot, "android/app/src/main/kotlin/com/alger/musicplayer/local/LocalAudioRegistry.kt")),
+    fs.existsSync(path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/local/LocalAudioRegistry.kt")),
     true
   );
 
@@ -558,19 +557,30 @@ test("repo security invariants: P0 local file narrowing, fail-closed tokens, SSR
     "MainViewController must ensure LocalHttpServer is ready before setupWebView()"
   );
 
-  // 3. Android & iOS SSRF redirect guards + domain allowlists
+  // 3. Android & iOS SSRF redirect guards + domain allowlists + playback public-IP Dns
   const androidGuard = fs.readFileSync(
-    path.join(repoRoot, "android/app/src/main/kotlin/com/alger/musicplayer/server/SafeHttpGuard.kt"),
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/SafeHttpGuard.kt"),
     "utf-8"
   );
   assert.match(androidGuard, /InetAddress\.getAllByName/);
   assert.match(androidGuard, /isMulticastAddress/);
   assert.match(androidGuard, /executeWithSafeRedirects/);
+  assert.match(androidGuard, /fun createPublicIpOnlyDns/);
+
+  const androidPlayback = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/player/MusicPlaybackService.kt"),
+    "utf-8"
+  );
+  assert.match(
+    androidPlayback,
+    /\.dns\(SafeHttpGuard\.createPublicIpOnlyDns\(\)\)/,
+    "MusicPlaybackService httpClient must attach public-IP Dns guard"
+  );
 
   for (const ktPath of [
-    "android/app/src/main/kotlin/com/alger/musicplayer/server/MusicUnblockEngine.kt",
-    "android/app/src/main/kotlin/com/alger/musicplayer/server/NeteaseApiClient.kt",
-    "android/app/src/main/kotlin/com/alger/musicplayer/download/NativeDownloadManager.kt",
+    "android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/MusicUnblockEngine.kt",
+    "android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/NeteaseApiClient.kt",
+    "android/app/src/main/kotlin/com/xiaopang/naiwamusic/download/NativeDownloadManager.kt",
   ]) {
     const src = fs.readFileSync(path.join(repoRoot, ktPath), "utf-8");
     assert.match(src, /followRedirects\(false\)/, `${ktPath} must disable automatic redirects`);
@@ -602,12 +612,13 @@ test("repo security invariants: P0 local file narrowing, fail-closed tokens, SSR
   assert.match(schemaSql, /x-forwarded-for/i);
   assert.match(schemaSql, /rate_limit_exceeded/i);
 
-  // CI & repo hygiene invariants
+  // CI, build hardening, package migration & repo hygiene invariants
   const workflow = fs.readFileSync(
     path.join(repoRoot, ".github/workflows/build-dual-platform.yml"),
     "utf-8"
   );
   assert.match(workflow, /^permissions:\r?\n\s+contents: read$/m);
+  assert.match(workflow, /npm audit --omit=dev --audit-level=high/);
   assert.equal(fs.existsSync(path.join(repoRoot, "ci")), false, "Dead ci/ directory must remain removed");
   assert.equal(
     fs.existsSync(path.join(repoRoot, "upstream/package-lock.json")),
@@ -620,80 +631,67 @@ test("repo security invariants: P0 local file narrowing, fail-closed tokens, SSR
   assert.notEqual(netlifyTomlBuf[0], 0xef, "netlify.toml must not start with UTF-8 BOM");
   assert.match(netlifyTomlBuf.toString("utf-8"), /\bnpm ci\b/);
   assert.equal(fs.existsSync(path.join(repoRoot, ".github/dependabot.yml")), true);
+
+  const rootPkg = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf-8"));
+  assert.match(rootPkg.engines?.node || "", />=22\.6/, "package.json engines.node must specify >=22.6");
+
+  const gradleKts = fs.readFileSync(path.join(repoRoot, "android/app/build.gradle.kts"), "utf-8");
+  assert.match(gradleKts, /namespace\s*=\s*"com\.xiaopang\.naiwamusic"/);
+  assert.match(gradleKts, /applicationId\s*=\s*"com\.xiaopang\.naiwamusic"/);
+  assert.match(gradleKts, /isMinifyEnabled\s*=\s*true/);
+  assert.match(gradleKts, /isShrinkResources\s*=\s*true/);
+  assert.match(gradleKts, /GradleException/);
+
+  const manifestXml = fs.readFileSync(path.join(repoRoot, "android/app/src/main/AndroidManifest.xml"), "utf-8");
+  assert.match(manifestXml, /android:name="\.NaiwaApp"/);
+  assert.match(manifestXml, /Theme\.XiaoPangNaiwaMusic/);
+
+  const iosProjectYml = fs.readFileSync(path.join(repoRoot, "ios/project.yml"), "utf-8");
+  assert.match(iosProjectYml, /bundleIdPrefix:\s*com\.xiaopang/);
+  assert.match(iosProjectYml, /PRODUCT_BUNDLE_IDENTIFIER:\s*com\.xiaopang\.naiwamusic/);
+
+  const iosStats = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Player/ListeningStatsTracker.swift"),
+    "utf-8"
+  );
+  assert.match(iosStats, /xiaopang_listening_stats_v1/);
+  assert.match(iosStats, /alger_listening_stats_v1/, "Must preserve legacy key migration for existing iOS users");
 });
 
-test("builtin music sources: pre-installed lx-玉宁熙-Pro (5-in-1) & default pyncmd across all platforms", () => {
-  const scriptPath = path.join(repoRoot, "upstream/src/renderer/assets/lx-sources/lx-yuningxi-pro.js");
-  assert.equal(fs.existsSync(scriptPath), true, "Pre-installed lx-yuningxi-pro.js must exist");
-  const script = fs.readFileSync(scriptPath, "utf-8");
-  assert.match(script, /@name\s+lx-玉宁熙-Pro/);
-  assert.match(script, /@version\s+v1\.2\.5/);
-
-  let initedData = null;
-  let hasRequestHandler = false;
-  const ctx = vm.createContext({
-    globalThis: null,
-    console,
-    setTimeout: () => 0,
-    clearTimeout: () => {},
-    Map,
-    Set,
-    Date,
-    URL,
-    URLSearchParams,
-    encodeURIComponent,
-    decodeURIComponent,
-    JSON,
-    Math,
-    Promise,
-    Error,
-    RegExp,
-    Array,
-    Object,
-    String,
-    Number,
-    Boolean,
-    parseInt,
-    parseFloat,
-    isNaN,
-    TextEncoder,
-    TextDecoder,
-  });
-  ctx.globalThis = ctx;
-  ctx.lx = {
-    version: "2.8.0",
-    env: "desktop",
-    appInfo: { version: "2.8.0", versionNum: 208, locale: "zh-cn" },
-    currentScriptInfo: { name: "lx-玉宁熙-Pro", version: "v1.2.5", rawScript: script },
-    EVENT_NAMES: { inited: "inited", request: "request", updateAlert: "updateAlert" },
-    on: (ev) => {
-      if (ev === "request") hasRequestHandler = true;
-    },
-    send: (ev, data) => {
-      if (ev === "inited") initedData = data;
-    },
-    request: () => () => {},
-    utils: {
-      buffer: {
-        from: (d) => (typeof d === "string" ? new TextEncoder().encode(d) : new Uint8Array(d)),
-        bufToString: (b) => new TextDecoder().decode(b),
-      },
-      crypto: {},
-    },
-  };
-  vm.runInContext(`"use strict";\nconst lx = globalThis.lx;\n${script}\n`, ctx);
-  assert.equal(hasRequestHandler, true, "lx-玉宁熙-Pro must register request handler");
-  assert.ok(initedData?.sources, "lx-玉宁熙-Pro must emit inited sources");
-  for (const key of ["wy", "tx", "kw", "kg", "mg"]) {
-    assert.ok(initedData.sources[key], `lx-玉宁熙-Pro must expose 5-in-1 source "${key}"`);
-  }
+test("builtin music sources & de-branding: no obfuscated black-box script, default pyncmd, no plaintext donate links", () => {
+  const obfuscatedPath = path.join(repoRoot, "upstream/src/renderer/assets/lx-sources/lx-yuningxi-pro.js");
+  assert.equal(fs.existsSync(obfuscatedPath), false, "Obfuscated lx-yuningxi-pro.js must be removed");
 
   const setJson = JSON.parse(fs.readFileSync(path.join(repoRoot, "upstream/src/main/set.json"), "utf-8"));
-  assert.ok(setJson.enabledMusicSources.includes("lxMusic"), "set.json must enable lxMusic by default");
   assert.ok(setJson.enabledMusicSources.includes("pyncmd"), "set.json must enable pyncmd by default");
+  assert.equal(
+    setJson.enabledMusicSources.includes("lxMusic"),
+    false,
+    "set.json should not force-enable lxMusic without user-imported script"
+  );
+
+  const upstreamPkg = JSON.parse(fs.readFileSync(path.join(repoRoot, "upstream/package.json"), "utf-8"));
+  assert.equal(upstreamPkg.name, "xiaopang-naiwa-music");
+  assert.equal(upstreamPkg.homepage, "https://github.com/erryp8126-source/XiaoPangNaiwaMusic");
+  assert.equal(upstreamPkg.build?.publish?.[0]?.owner, "erryp8126-source");
+  assert.equal(upstreamPkg.build?.publish?.[0]?.repo, "XiaoPangNaiwaMusic");
+  assert.equal(upstreamPkg.overrides?.["basic-ftp"], "^6.2.6");
+
+  for (const relPath of [
+    "upstream/src/renderer/api/donation.ts",
+    "upstream/src/renderer/components/Coffee.vue",
+    "upstream/src/renderer/components/TrafficWarningDrawer.vue",
+    "upstream/src/renderer/components/common/DonationList.vue",
+    "upstream/src/renderer/components/common/MobileUpdateModal.vue",
+    "upstream/src/shared/appUpdate.ts",
+  ]) {
+    const text = fs.readFileSync(path.join(repoRoot, relPath), "utf-8");
+    assert.doesNotMatch(text, /donate\.alger\.fun/i, `${relPath} must not contain donate.alger.fun`);
+    assert.doesNotMatch(text, /algerkong\/AlgerMusicPlayer/i, `${relPath} must not point to upstream repo`);
+  }
 
   const androidUnblock = fs.readFileSync(
-    path.join(repoRoot, "android/app/src/main/kotlin/com/alger/musicplayer/server/MusicUnblockEngine.kt"),
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/MusicUnblockEngine.kt"),
     "utf-8"
   );
   assert.match(androidUnblock, /private fun searchPyncmd/);
@@ -753,7 +751,7 @@ test("batch 3 invariants: iOS download delegate, local picker & SHA-256 IDs, int
 
   // 4. Android bridge capability declaration + frontend capability gating
   const androidBridgeKt = fs.readFileSync(
-    path.join(repoRoot, "android/app/src/main/kotlin/com/alger/musicplayer/bridge/AndroidJsBridge.kt"),
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/bridge/AndroidJsBridge.kt"),
     "utf-8"
   );
   assert.match(androidBridgeKt, /fun getCapabilities\(\): String/);
@@ -775,8 +773,8 @@ test("batch 3 invariants: iOS download delegate, local picker & SHA-256 IDs, int
     "upstream/src/renderer/utils/bridge/ipcAdapter.ts",
     "upstream/src/renderer/utils/bridge/nativeHowl.ts",
     "upstream/src/renderer/utils/bridge/windowApi.ts",
-    "android/app/src/main/kotlin/com/alger/musicplayer/lyric/LyricParser.kt",
-    "android/app/src/main/kotlin/com/alger/musicplayer/lyric/FloatingLyricViews.kt",
+    "android/app/src/main/kotlin/com/xiaopang/naiwamusic/lyric/LyricParser.kt",
+    "android/app/src/main/kotlin/com/xiaopang/naiwamusic/lyric/FloatingLyricViews.kt",
   ]) {
     assert.equal(fs.existsSync(path.join(repoRoot, splitFile)), true, `${splitFile} must exist`);
   }

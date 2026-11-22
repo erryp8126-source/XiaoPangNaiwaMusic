@@ -16,7 +16,7 @@ final class LocalHttpServer {
 
     private let ncmClient: NeteaseApiClient
     private let unblockEngine: MusicUnblockEngine
-    private let queue = DispatchQueue(label: "com.alger.musicplayer.httpserver", attributes: .concurrent)
+    private let queue = DispatchQueue(label: "com.xiaopang.naiwamusic.httpserver", attributes: .concurrent)
 
     let authToken: String
     private var listener: NWListener?
