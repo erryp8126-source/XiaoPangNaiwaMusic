@@ -1,6 +1,8 @@
 package com.xiaopang.naiwamusic.bridge
 
 import android.content.Intent
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -43,6 +45,29 @@ class AndroidJsBridge(
 ) {
     companion object {
         private const val TAG = "AndroidJsBridge"
+
+        internal fun isExternalAudioDeviceType(type: Int): Boolean {
+            return when (type) {
+                AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+                AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                AudioDeviceInfo.TYPE_USB_HEADSET,
+                AudioDeviceInfo.TYPE_USB_DEVICE,
+                AudioDeviceInfo.TYPE_AUX_LINE,
+                AudioDeviceInfo.TYPE_LINE_ANALOG,
+                AudioDeviceInfo.TYPE_LINE_DIGITAL -> true
+                else -> {
+                    val isHearingAid = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                        type == AudioDeviceInfo.TYPE_HEARING_AID
+                    val isBleAudio = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                        (type == AudioDeviceInfo.TYPE_BLE_HEADSET || type == AudioDeviceInfo.TYPE_BLE_SPEAKER)
+                    val isBleBroadcast = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                        type == AudioDeviceInfo.TYPE_BLE_BROADCAST
+                    isHearingAid || isBleAudio || isBleBroadcast
+                }
+            }
+        }
     }
 
     private val gson = Gson()
@@ -476,6 +501,16 @@ class AndroidJsBridge(
                 activity.window?.decorView?.performHapticFeedback(feedbackConstant)
             }
         }
+    }
+
+    @JavascriptInterface
+    fun isAudioOutputExternal(): Boolean {
+        return runCatching {
+            val audioManager = activity.getSystemService(AudioManager::class.java) ?: return false
+            audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { device ->
+                isExternalAudioDeviceType(device.type)
+            }
+        }.getOrDefault(false)
     }
 
     @JavascriptInterface

@@ -5,12 +5,13 @@
     :class="[
       setAnimationClass('animate__fadeInUp'),
       playerStore.musicFull ? 'play-bar-expanded' : 'play-bar-mini',
-      shouldShowMobileMenu ? 'is-menu-show' : 'is-menu-hide'
+      shouldShowMobileMenu ? 'is-menu-show' : 'is-menu-hide',
+      isImmersiveHomeActive && !playerStore.musicFull ? 'is-immersive-hidden' : ''
     ]"
   >
-    <!-- Mini模式 - 奶娃悬浮磨砂胶囊播控条 -->
+    <!-- Mini模式 - 奶娃悬浮磨砂胶囊播控条（沉浸黑胶首页激活时自动隐藏，避免双播控条冲突） -->
     <div
-      v-if="!playerStore.musicFull"
+      v-if="!playerStore.musicFull && !isImmersiveHomeActive"
       class="mobile-mini-controls"
       :class="{ 'has-dynamic-bg': dynamicBackgroundEnabled }"
       :style="miniDynamicStyle"
@@ -90,6 +91,7 @@ import {
 } from '@/utils/coverColorExtractor';
 
 const shouldShowMobileMenu = inject('shouldShowMobileMenu') as Ref<boolean>;
+const isImmersiveHomeActive = inject<Ref<boolean>>('isImmersiveHomeActive', ref(false));
 
 const playerStore = usePlayerStore();
 const settingsStore = useSettingsStore();
@@ -213,6 +215,10 @@ watch(
 
   &.play-bar-mini {
     @apply px-3.5;
+  }
+
+  &.is-immersive-hidden {
+    pointer-events: none;
   }
 
   .mobile-mini-controls {

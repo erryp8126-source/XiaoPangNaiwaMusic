@@ -7,6 +7,12 @@ import homeRouter from '@/router/home';
 import { applyBuiltinMusicSourceDefaults } from '@/services/builtinLxSources';
 import { useMenuStore } from '@/store/modules/menu';
 import { isElectron } from '@/utils';
+import { isAndroid } from '@/utils/androidBridge';
+import {
+  getEffectiveLaunchAutoPlayMode,
+  getEffectiveLaunchHomeMode,
+  type LaunchHomeMode
+} from '@/utils/launchPolicy';
 import {
   applyTheme,
   getCurrentTheme,
@@ -72,6 +78,11 @@ export const useSettingsStore = defineStore('settings', () => {
       mergeWith({}, setDataDefault, savedSettings, customizer)
     );
 
+    // 规范化启动首页模式与“打开即自动播放”策略（原生端默认沉浸黑胶 + 始终自动播放）
+    mergedSettings.launchHomeMode = getEffectiveLaunchHomeMode(mergedSettings);
+    mergedSettings.launchAutoPlayMode = getEffectiveLaunchAutoPlayMode(mergedSettings, isAndroid());
+    mergedSettings.autoPlay = mergedSettings.launchAutoPlayMode !== 'off';
+
     // 更新设置并返回
     setSetData(mergedSettings);
     return mergedSettings;
@@ -79,6 +90,22 @@ export const useSettingsStore = defineStore('settings', () => {
 
   // 初始化 setData
   setData.value = getInitialSettings();
+
+  // 当前会话首页视图模式（默认遵循 launchHomeMode；支持一键在「心动」与「发现」之间切换）
+  const homeDisplayMode = ref<LaunchHomeMode>(getEffectiveLaunchHomeMode(setData.value));
+
+  const setHomeDisplayMode = (mode: LaunchHomeMode) => {
+    homeDisplayMode.value = mode === 'classic' ? 'classic' : 'immersive';
+  };
+
+  watch(
+    () => setData.value?.launchHomeMode,
+    (nextMode) => {
+      if (nextMode === 'immersive' || nextMode === 'classic') {
+        homeDisplayMode.value = nextMode;
+      }
+    }
+  );
 
   /**
    * 保存导入的自定义API插件
@@ -299,7 +326,9 @@ export const useSettingsStore = defineStore('settings', () => {
     currentArtistId,
     systemFonts,
     showDownloadDrawer,
+    homeDisplayMode,
     setSetData,
+    setHomeDisplayMode,
     toggleTheme,
     setAutoTheme,
     setMiniMode,

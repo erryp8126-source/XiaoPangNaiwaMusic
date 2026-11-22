@@ -56,6 +56,7 @@ export interface AndroidBridgeInterface {
   openExternalUrl(url: string): void;
   showToast(msg: string): void;
   triggerHaptic?(style: string): void;
+  isAudioOutputExternal?(): boolean;
   isAudioCached?(songId: string, quality: string): boolean;
   getOfflinePlayableIds?(): string;
   exitApp?(): void;

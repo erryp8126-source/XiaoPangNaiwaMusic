@@ -1,3 +1,4 @@
+import AVFoundation
 import UIKit
 import WebKit
 import UniformTypeIdentifiers
@@ -14,6 +15,13 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     private var jsBridge: IOSJsBridge!
     private var isDarkStatusBar: Bool = false
     private var activeDocumentPicker: ActiveDocumentPicker?
+    private var audioRouteObserver: NSObjectProtocol?
+
+    deinit {
+        if let observer = audioRouteObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
 
     init(services: AppServices) {
         self.services = services
@@ -109,6 +117,20 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         services.onStorageEvent = { [weak self] channel, payloadJson in
             self?.pushEventToJs(channel: channel, payloadJson: payloadJson)
         }
+        audioRouteObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.syncAudioOutputExternalState()
+        }
+    }
+
+    private func syncAudioOutputExternalState() {
+        guard webView != nil, jsBridge != nil else { return }
+        let isExt = jsBridge.isAudioOutputExternal()
+        let js = "window.__algerUpdateIosAudioOutputExternal && window.__algerUpdateIosAudioOutputExternal(\(isExt ? "true" : "false"));"
+        webView.evaluateJavaScript(js, completionHandler: nil)
     }
 
     private func loadLocalApp() {
@@ -168,6 +190,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         injectSafeAreaCssVars()
+        syncAudioOutputExternalState()
     }
 
     func webView(

@@ -29,6 +29,7 @@ export {
   invokeAndroidAsync,
   isAndroid,
   isAndroidAudioCached,
+  isExternalAudioOutputConnected,
   offAndroidEvent,
   onAndroidEvent,
   registerAndroidBackHandler,

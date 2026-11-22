@@ -1,15 +1,23 @@
 <template>
-  <div id="layout-main" class="mobile-layout mobile naiwa-canvas" :class="{ 'has-safe-area': isPhone }">
-    <!-- 顶部头部 -->
-    <mobile-header />
+  <div
+    id="layout-main"
+    class="mobile-layout mobile naiwa-canvas"
+    :class="{ 'has-safe-area': isPhone, 'is-immersive-home': isImmersiveHomeActive }"
+  >
+    <!-- 顶部头部（沉浸黑胶首页激活时隐藏，由沉浸页内置极简顶栏接管） -->
+    <mobile-header v-if="!isImmersiveHomeActive" />
 
     <!-- 离线轻提示条 -->
-    <offline-banner />
+    <offline-banner v-if="!isImmersiveHomeActive" />
 
     <!-- 主内容区域 -->
     <div
       class="mobile-content"
-      :class="{ 'has-bottom-menu': shouldShowBottomMenu, 'has-player': isPlay }"
+      :class="{
+        'has-bottom-menu': shouldShowBottomMenu,
+        'has-player': isPlay && !isImmersiveHomeActive,
+        'is-immersive-content': isImmersiveHomeActive
+      }"
     >
       <router-view v-slot="{ Component }" class="mobile-page">
         <keep-alive :include="keepAliveInclude">
@@ -18,11 +26,15 @@
       </router-view>
     </div>
 
-    <!-- 底部悬浮播放条 -->
+    <!-- 底部悬浮播放条（沉浸黑胶首页激活时内部自动隐藏迷你条，仅保留全屏弹窗能力） -->
     <mobile-play-bar v-if="isPlay" />
 
-    <!-- 底部悬浮磨砂胶囊导航栏 -->
-    <div v-if="shouldShowBottomMenu" class="mobile-bottom-menu">
+    <!-- 底部悬浮磨砂胶囊导航栏（沉浸黑胶首页激活时自动切为深色透明风格） -->
+    <div
+      v-if="shouldShowBottomMenu"
+      class="mobile-bottom-menu"
+      :class="{ 'is-immersive-dark': isImmersiveHomeActive }"
+    >
       <app-menu class="mobile-menu" :menus="menuStore.menus" />
     </div>
     <!-- 其他弹窗/抽屉 -->
@@ -40,6 +52,7 @@ import homeRouter from '@/router/home';
 import otherRouter from '@/router/other';
 import { useMenuStore } from '@/store/modules/menu';
 import { usePlayerStore } from '@/store/modules/player';
+import { useSettingsStore } from '@/store/modules/settings';
 
 import AppMenu from './components/AppMenu.vue';
 import MobileHeader from './components/MobileHeader.vue';
@@ -56,6 +69,19 @@ const props = defineProps<{
 const route = useRoute();
 const playerStore = usePlayerStore();
 const menuStore = useMenuStore();
+const settingsStore = useSettingsStore();
+
+// 沉浸黑胶首页激活态（移动端在首页且处于沉浸模式、未覆盖全屏播放抽屉时生效）
+const isImmersiveHomeActive = computed(
+  () =>
+    settingsStore.isMobile &&
+    route.path === '/' &&
+    settingsStore.homeDisplayMode === 'immersive' &&
+    !playerStore.musicFull
+);
+
+// 提供给 MobilePlayBar / AppMenu 联动隐藏迷你条与深色透明底栏
+provide('isImmersiveHomeActive', isImmersiveHomeActive);
 
 // 提供是否有安全区域
 provide('hasSafeArea', props.isPhone);
@@ -106,6 +132,10 @@ provide('openPlaylistDrawer', openPlaylistDrawer);
 
 .mobile-content {
   @apply flex-1 overflow-auto;
+
+  &.is-immersive-content {
+    overflow: hidden;
+  }
 }
 
 .mobile-page {
@@ -127,6 +157,15 @@ provide('openPlaylistDrawer', openPlaylistDrawer);
     rgba(246, 250, 253, 0.55) 55%,
     transparent 100%
   );
+
+  &.is-immersive-dark {
+    background: linear-gradient(
+      to top,
+      rgba(6, 9, 16, 0.88) 0%,
+      rgba(6, 9, 16, 0.44) 60%,
+      transparent 100%
+    );
+  }
 }
 
 :global(.dark) .mobile-bottom-menu {

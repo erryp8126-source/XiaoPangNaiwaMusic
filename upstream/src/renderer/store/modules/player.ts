@@ -42,7 +42,8 @@ export const usePlayerStore = defineStore('player', () => {
     playbackRate,
     volume,
     userPlayIntent,
-    isFmPlaying
+    isFmPlaying,
+    isSeedingLaunchTrack
   } = storeToRefs(playerCore);
 
   const { playList, playListIndex, playMode, originalPlayList, playListDrawerVisible } =
@@ -75,8 +76,8 @@ export const usePlayerStore = defineStore('player', () => {
     const playHistoryStore = usePlayHistoryStore();
     playHistoryStore.migrateFromLocalStorage();
 
-    await playerCore.initializePlayState();
     await playlist.initializePlaylist();
+    await playerCore.initializePlayState();
   };
 
   /**
@@ -98,6 +99,7 @@ export const usePlayerStore = defineStore('player', () => {
     volume,
     userPlayIntent,
     isFmPlaying,
+    isSeedingLaunchTrack,
 
     // PlayerCore - Computed
     currentSong,
@@ -118,6 +120,7 @@ export const usePlayerStore = defineStore('player', () => {
     checkPlaybackState: playerCore.checkPlaybackState,
     cancelPlaybackCheck: playerCore.cancelPlaybackCheck,
     reparseCurrentSong: playerCore.reparseCurrentSong,
+    seedInitialLaunchTrack: playerCore.seedInitialLaunchTrack,
 
     // ========== 播放列表管理 (Playlist) ==========
     playList,

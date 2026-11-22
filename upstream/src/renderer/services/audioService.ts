@@ -10,6 +10,7 @@ import {
   onAndroidEvent,
   syncNativeAudioEnhancement
 } from '@/utils/androidBridge';
+import { isAutoplayBlockedError } from '@/utils/launchPolicy';
 
 class AudioService {
   private currentSound: Howl | null = null;
@@ -645,10 +646,13 @@ class AudioService {
             this.restoreSavedAudioDevice();
           }
 
-          // 恢复上下文状态
+          // 恢复上下文状态（Web / Safari PWA 无用户手势时 resume 可能挂起，限时防阻塞）
           if (Howler.ctx.state === 'suspended') {
             console.log('audioService: 恢复暂停的音频上下文');
-            await Howler.ctx.resume();
+            await Promise.race([
+              Howler.ctx.resume().catch(() => {}),
+              new Promise((r) => setTimeout(r, 250))
+            ]);
           }
 
           // 非热切换模式下，先停止并清理现有的音频实例
@@ -722,6 +726,19 @@ class AudioService {
             });
 
             newSound.on('playerror', (_, error) => {
+              // 网页版 / Safari PWA 自动播放被浏览器策略拦截（NotAllowedError）：静默停在待播态，绝不重试也不报错
+              if (isAutoplayBlockedError(error)) {
+                console.info('[audioService] Autoplay blocked by browser policy, staying paused ready-to-play');
+                try {
+                  newSound.pause();
+                } catch {
+                  // ignore
+                }
+                this.releaseOperationLock();
+                this.emit('autoplay_blocked', { track, error });
+                resolve(newSound);
+                return;
+              }
               console.error('Audio play error:', error);
               this.emit('playerror', { track, error });
               if (retryCount < maxRetries) {
@@ -804,7 +821,16 @@ class AudioService {
                       console.log('audioService: 音频完全初始化，isPlay =', isPlay);
                       if (isPlay) {
                         console.log('audioService: 开始播放');
-                        this.currentSound.play();
+                        try {
+                          this.currentSound.play();
+                        } catch (playErr) {
+                          if (isAutoplayBlockedError(playErr)) {
+                            console.info('[audioService] Synchronous autoplay blocked, staying paused');
+                            this.emit('autoplay_blocked', { track, error: playErr });
+                          } else {
+                            throw playErr;
+                          }
+                        }
                       }
                     }
 

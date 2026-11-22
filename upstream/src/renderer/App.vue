@@ -221,13 +221,23 @@ const naiveThemeOverrides = computed(() =>
   theme.value === 'dark' ? darkThemeOverrides : lightThemeOverrides
 );
 
-// 同步 Android 系统状态栏与导航栏图标颜色
+// 同步 Android / iOS 系统状态栏与导航栏图标颜色（沉浸黑胶首页强制深底亮图标）
 if (isAndroid) {
   watch(
-    () => [settingsStore.theme, playerStore.musicFull],
-    ([currentTheme, isFull]) => {
+    () => [
+      settingsStore.theme,
+      playerStore.musicFull,
+      settingsStore.isMobile,
+      settingsStore.homeDisplayMode,
+      router.currentRoute.value.path
+    ],
+    ([currentTheme, isFull, mobileFlag, homeMode, currentPath]) => {
       try {
-        (window as any).AlgerAndroid?.setStatusBarStyle?.(currentTheme === 'dark' || Boolean(isFull));
+        const isImmersiveHome =
+          Boolean(mobileFlag) && currentPath === '/' && homeMode === 'immersive';
+        (window as any).AlgerAndroid?.setStatusBarStyle?.(
+          currentTheme === 'dark' || Boolean(isFull) || isImmersiveHome
+        );
       } catch {
         // ignore
       }
@@ -354,13 +364,8 @@ onMounted(async () => {
 
   // 初始化 MusicHook，注入 playerStore
   initMusicHook(playerStore);
-  // 初始化播放状态
-  await playerStore.initializePlayState();
 
-  // 初始化音频设备变化监听器
-  playerCoreStore.initAudioDeviceListener();
-
-  // 初始化用户自行导入并激活的落雪自定义音源（仅原生端启用）
+  // 初始化用户自行导入并激活的落雪自定义音源（仅原生端启用，需在冷启动自动播放前就绪）
   const activeLxApiId = settingsStore.setData?.activeLxMusicApiId;
   if (isNative && activeLxApiId) {
     const lxMusicScripts = settingsStore.setData?.lxMusicScripts || [];
@@ -374,6 +379,12 @@ onMounted(async () => {
       }
     }
   }
+
+  // 初始化播放状态（冷启动续播 / 首次拉取首曲填充黑胶 / 按策略自动播放）
+  await playerStore.initializePlayState();
+
+  // 初始化音频设备变化监听器
+  playerCoreStore.initAudioDeviceListener();
 
   // 如果有正在播放的音乐，则初始化音频监听器
   if (playerStore.playMusic && playerStore.playMusic.id) {

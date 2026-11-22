@@ -18,6 +18,21 @@ export function triggerHaptic(style: HapticStyle = 'light'): void {
 }
 
 /**
+ * 检测当前是否连接了外部音频输出设备（有线耳机 / 蓝牙耳机 / AirPlay / USB 音频等）
+ * - Android 原生：AudioManager.getDevices(GET_DEVICES_OUTPUTS)
+ * - iOS 原生：AVAudioSession.sharedInstance().currentRoute.outputs
+ * - Web / 非原生环境返回 false
+ */
+export function isExternalAudioOutputConnected(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return Boolean(window.AlgerAndroid?.isAudioOutputExternal?.());
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 查询 Android 原生 SimpleCache 是否已缓存指定曲目与音质
  */
 export function isAndroidAudioCached(songId: string | number, quality: string = 'higher'): boolean {

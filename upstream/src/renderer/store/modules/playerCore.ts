@@ -13,7 +13,17 @@ import { SongSourceConfigManager } from '@/services/SongSourceConfigManager';
 import type { AudioOutputDevice } from '@/types/audio';
 import type { Platform, SongResult } from '@/types/music';
 import { getImgUrl } from '@/utils';
-import { getNativeCapabilities, isAndroid, isAndroidAudioCached } from '@/utils/androidBridge';
+import {
+  getNativeCapabilities,
+  isAndroid,
+  isAndroidAudioCached,
+  isExternalAudioOutputConnected
+} from '@/utils/androidBridge';
+import {
+  getEffectiveLaunchAutoPlayMode,
+  isAutoplayBlockedError,
+  shouldAutoPlayOnLaunch
+} from '@/utils/launchPolicy';
 import { getImageLinearBackground } from '@/utils/linearColor';
 import {
   classifyPlaybackFailure,
@@ -45,6 +55,7 @@ export const usePlayerCoreStore = defineStore(
     const volume = ref(1);
     const userPlayIntent = ref(false); // 用户是否想要播放
     const isFmPlaying = ref(false); // 是否正在播放私人FM
+    const isSeedingLaunchTrack = ref(false); // 首次打开无历史记录时正在拉取推荐首曲
     const lastPlaybackError = ref('');
     const lastFailureCode = ref<string>('');
 
@@ -58,6 +69,22 @@ export const usePlayerCoreStore = defineStore(
     let checkPlaybackRetryCount = 0;
     const MAX_CHECKPLAYBACK_RETRIES = MAX_SINGLE_TRACK_RETRIES; // 严格限制单曲最大重试 <= 2 次
     let scrobbleTimer: number | null = null;
+    let seedLaunchPromise: Promise<boolean> | null = null;
+
+    // 监听 Web / Safari PWA 自动播放策略拦截事件：静默停在待播态，绝不弹出报错提示
+    audioService.on('autoplay_blocked', () => {
+      if (checkPlayTime) {
+        clearTimeout(checkPlayTime);
+        checkPlayTime = null;
+      }
+      checkPlaybackRetryCount = 0;
+      play.value = false;
+      isPlay.value = false;
+      userPlayIntent.value = false;
+      if (playMusic.value) {
+        playMusic.value.playLoading = false;
+      }
+    });
 
     // ==================== Computed ====================
     const currentSong = computed(() => playMusic.value);
@@ -158,6 +185,17 @@ export const usePlayerCoreStore = defineStore(
       };
 
       const onPlayErrorHandler = async (err?: any) => {
+        // 网页版 / Safari PWA 自动播放策略拦截：静默退回待播态，不报错也不切歌
+        if (isAutoplayBlockedError(err?.error ?? err)) {
+          audioService.off('play', onPlayHandler);
+          audioService.off('playerror', onPlayErrorHandler);
+          cancelPlaybackCheck();
+          if (playMusic.value) {
+            playMusic.value.playLoading = false;
+          }
+          setPlayMusic(false);
+          return;
+        }
         console.log('播放错误事件触发，检查是否需要重新获取URL');
         audioService.off('play', onPlayHandler);
         audioService.off('playerror', onPlayErrorHandler);
@@ -580,6 +618,16 @@ export const usePlayerCoreStore = defineStore(
           return false;
         }
       } catch (error) {
+        if (isAutoplayBlockedError(error)) {
+          console.info('[handlePlayMusic] Browser autoplay blocked, staying paused ready-to-play');
+          if (playMusic.value) {
+            playMusic.value.playLoading = false;
+          }
+          setIsPlay(false);
+          userPlayIntent.value = false;
+          playbackRequestManager.failRequest(requestId);
+          return false;
+        }
         console.error('处理播放音乐失败:', error);
         const diagnosis = classifyPlaybackFailure({
           error,
@@ -695,6 +743,15 @@ export const usePlayerCoreStore = defineStore(
 
         return newSound;
       } catch (error) {
+        if (isAutoplayBlockedError(error)) {
+          console.info('[playAudio] Browser autoplay blocked, staying paused ready-to-play');
+          if (playMusic.value) {
+            playMusic.value.playLoading = false;
+          }
+          setIsPlay(false);
+          userPlayIntent.value = false;
+          return null;
+        }
         console.error('播放音频失败:', error);
 
         const errorMsg = error instanceof Error ? error.message : String(error);
@@ -834,6 +891,161 @@ export const usePlayerCoreStore = defineStore(
       }
     };
 
+    const normalizeSeedSong = (raw: any): SongResult | null => {
+      if (!raw || !raw.id) return null;
+      const ar = raw.ar || raw.artists || raw.song?.artists || [];
+      const al = raw.al || raw.album || raw.song?.album || {};
+      const picUrl = raw.picUrl || al?.picUrl || '';
+      const dt = Number(raw.dt || raw.duration || raw.song?.duration || 0);
+      return {
+        ...raw,
+        id: raw.id,
+        name: raw.name || '未知歌曲',
+        picUrl,
+        ar,
+        al: { ...al, picUrl: al?.picUrl || picUrl },
+        dt,
+        source: 'netease',
+        song: raw.song || {
+          ...raw,
+          artists: ar,
+          album: { ...al, picUrl: al?.picUrl || picUrl },
+          duration: dt
+        },
+        playLoading: false,
+        isFirstPlay: true
+      } as SongResult;
+    };
+
+    /**
+     * 新用户首次打开无历史记录时，自动拉取每日推荐 / 私人 FM / 推荐新歌首曲填充黑胶盘面
+     * - 满足自动播放策略时自动开播；否则填好封面、歌名、队列与歌词停在待播态（绝不出现空白黑胶）
+     */
+    const seedInitialLaunchTrack = async (shouldAutoPlay: boolean): Promise<boolean> => {
+      if (playMusic.value && playMusic.value.id) return true;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return false;
+      if (seedLaunchPromise) return seedLaunchPromise;
+
+      seedLaunchPromise = (async () => {
+        isSeedingLaunchTrack.value = true;
+        try {
+          const [{ useRecommendStore }, { getPersonalFM, getRecommendMusic }, { usePlaylistStore }, { useSettingsStore }] =
+            await Promise.all([
+              import('./recommend'),
+              import('@/api/home'),
+              import('./playlist'),
+              import('./settings')
+            ]);
+
+          const recommendStore = useRecommendStore();
+          const playlistStore = usePlaylistStore();
+          const settingsStore = useSettingsStore();
+
+          let rawList: any[] = [];
+
+          // 1. 优先每日推荐
+          try {
+            await recommendStore.refreshIfStale();
+            if (Array.isArray(recommendStore.dailyRecommendSongs) && recommendStore.dailyRecommendSongs.length > 0) {
+              rawList = recommendStore.dailyRecommendSongs;
+            }
+          } catch {
+            // fallback below
+          }
+
+          // 2. 次选私人 FM
+          if (rawList.length === 0) {
+            try {
+              const fmRes: any = await getPersonalFM();
+              const fmData = fmRes?.data?.data;
+              if (Array.isArray(fmData) && fmData.length > 0) {
+                rawList = fmData;
+              }
+            } catch {
+              // fallback below
+            }
+          }
+
+          // 3. 游客/未登录兜底：推荐新歌（免登录即可稳定返回）
+          if (rawList.length === 0) {
+            try {
+              const recRes: any = await getRecommendMusic({ limit: 15 });
+              const recList = recRes?.data?.result || recRes?.result || [];
+              if (Array.isArray(recList) && recList.length > 0) {
+                rawList = recList;
+              }
+            } catch {
+              // ignore
+            }
+          }
+
+          const normalized = rawList
+            .map(normalizeSeedSong)
+            .filter((item): item is SongResult => Boolean(item));
+
+          if (normalized.length === 0) {
+            return false;
+          }
+
+          // 如果拉取期间用户已经手动点了某首歌，切勿覆盖用户选择
+          if (playMusic.value && playMusic.value.id) {
+            return true;
+          }
+
+          playlistStore.setPlayList(normalized, false, false);
+          const firstSong = normalized[0];
+
+          if (shouldAutoPlay) {
+            await handlePlayMusic({ ...firstSong, isFirstPlay: true }, true);
+          } else {
+            const currentQuality = settingsStore.setData?.musicQuality || 'higher';
+            play.value = false;
+            isPlay.value = false;
+            userPlayIntent.value = false;
+            playMusic.value = {
+              ...firstSong,
+              isFirstPlay: true,
+              playLoading: false,
+              playbackMeta: inferPlaybackMetaFromUrl(undefined, {
+                fallbackQuality: currentQuality
+              })
+            };
+
+            // 预填时间轴与歌词，待用户点击一键开播
+            void (async () => {
+              try {
+                const [{ loadLrc }, { nowTime, allTime }] = await Promise.all([
+                  Promise.resolve(useLyrics()),
+                  import('@/hooks/MusicHook')
+                ]);
+                const durSec = Number(firstSong.dt || firstSong.duration || 0) / 1000;
+                if (durSec > 0) allTime.value = durSec;
+                nowTime.value = 0;
+                const lyric = await loadLrc(firstSong.id);
+                if (String(playMusic.value?.id) === String(firstSong.id)) {
+                  playMusic.value = { ...playMusic.value, lyric };
+                }
+              } catch {
+                // ignore
+              }
+            })();
+          }
+
+          return true;
+        } catch (error) {
+          if (!isAutoplayBlockedError(error)) {
+            console.warn('[seedInitialLaunchTrack] 拉取首次推荐曲目失败:', error);
+          }
+          return false;
+        } finally {
+          isSeedingLaunchTrack.value = false;
+          seedLaunchPromise = null;
+        }
+      })();
+
+      return seedLaunchPromise;
+    };
+
     /**
      * 初始化播放状态
      */
@@ -861,13 +1073,23 @@ export const usePlayerCoreStore = defineStore(
       const { useSettingsStore } = await import('./settings');
       const settingStore = useSettingsStore();
 
+      const launchAutoPlayMode = getEffectiveLaunchAutoPlayMode(settingStore.setData, isAndroid());
+      const externalAudioConnected =
+        launchAutoPlayMode === 'external-audio' ? isExternalAudioOutputConnected() : false;
+      const shouldAutoPlay = shouldAutoPlayOnLaunch({
+        mode: launchAutoPlayMode,
+        isExternalAudioConnected: externalAudioConnected
+      });
+
       if (playMusic.value && Object.keys(playMusic.value).length > 0 && playMusic.value.id) {
         const isLocalMusic = Boolean(playMusic.value.playMusicUrl?.startsWith('local://'));
-        const shouldAutoPlay = Boolean(settingStore.setData.autoPlay);
 
         if (shouldAutoPlay) {
           try {
-            console.log('恢复上次播放的音乐并自动播放:', playMusic.value.name);
+            console.log(
+              `[initializePlayState] 满足启动自动播放策略 (${launchAutoPlayMode})，续播:`,
+              playMusic.value.name
+            );
             await handlePlayMusic(
               {
                 ...playMusic.value,
@@ -877,12 +1099,15 @@ export const usePlayerCoreStore = defineStore(
               true
             );
           } catch (error) {
-            console.error('重新获取音乐链接失败:', error);
+            if (!isAutoplayBlockedError(error)) {
+              console.error('重新获取音乐链接失败:', error);
+            }
             play.value = false;
             isPlay.value = false;
+            userPlayIntent.value = false;
           }
         } else {
-          // 继续聆听：冷启动恢复上次退出时的歌曲、播放进度、队列与音质（默认暂停待点播，不自动外放打扰用户）
+          // 继续聆听：冷启动恢复上次退出时的歌曲、播放进度、队列与音质（停在待播态）
           console.log('[initializePlayState] 冷启动待命恢复上次曲目:', playMusic.value.name);
           play.value = false;
           isPlay.value = false;
@@ -945,6 +1170,9 @@ export const usePlayerCoreStore = defineStore(
             // ignore
           }
         }
+      } else {
+        // 新用户首次打开无历史记录：自动拉取每日推荐 / 私人 FM / 推荐新歌首曲填充黑胶并按策略开播
+        await seedInitialLaunchTrack(shouldAutoPlay);
       }
 
       setTimeout(() => {
@@ -1000,6 +1228,7 @@ export const usePlayerCoreStore = defineStore(
       volume,
       userPlayIntent,
       isFmPlaying,
+      isSeedingLaunchTrack,
       lastPlaybackError,
       lastFailureCode,
       audioOutputDeviceId,
@@ -1024,6 +1253,7 @@ export const usePlayerCoreStore = defineStore(
       checkPlaybackState,
       cancelPlaybackCheck,
       reparseCurrentSong,
+      seedInitialLaunchTrack,
       initializePlayState,
       refreshAudioDevices,
       setAudioOutputDevice,

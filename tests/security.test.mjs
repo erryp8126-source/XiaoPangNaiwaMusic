@@ -1604,3 +1604,128 @@ test("mobile drawer layering & auto-close: all <n-drawer> tags exceed MobilePlay
   }
   assert.ok(drawerCount >= 8, `Expected at least 8 <n-drawer> tags in renderer, found ${drawerCount}`);
 });
+
+test("immersive launch runtime: launchPolicy resolves defaults, external-audio gating & silent NotAllowedError detection", async () => {
+  const launchPolicyUrl = pathToFileURL(
+    path.join(repoRoot, "upstream/src/renderer/utils/launchPolicy.ts")
+  ).href;
+  const {
+    getEffectiveLaunchHomeMode,
+    getEffectiveLaunchAutoPlayMode,
+    shouldAutoPlayOnLaunch,
+    isAutoplayBlockedError
+  } = await import(launchPolicyUrl);
+
+  // 启动首页模式默认沉浸黑胶，显式选择 classic 时切经典页
+  assert.equal(getEffectiveLaunchHomeMode(undefined), "immersive");
+  assert.equal(getEffectiveLaunchHomeMode({}), "immersive");
+  assert.equal(getEffectiveLaunchHomeMode({ launchHomeMode: "immersive" }), "immersive");
+  assert.equal(getEffectiveLaunchHomeMode({ launchHomeMode: "classic" }), "classic");
+
+  // 自动播放策略默认：原生端默认 always，非原生端兼容旧 autoPlay 布尔值且默认 off
+  assert.equal(getEffectiveLaunchAutoPlayMode({}, true), "always");
+  assert.equal(getEffectiveLaunchAutoPlayMode({ launchAutoPlayMode: "" }, true), "always");
+  assert.equal(getEffectiveLaunchAutoPlayMode({ launchAutoPlayMode: "external-audio" }, true), "external-audio");
+  assert.equal(getEffectiveLaunchAutoPlayMode({ launchAutoPlayMode: "off" }, true), "off");
+  assert.equal(getEffectiveLaunchAutoPlayMode({}, false), "off");
+  assert.equal(getEffectiveLaunchAutoPlayMode({ autoPlay: true }, false), "always");
+
+  // 耳机/蓝牙条件判定
+  assert.equal(shouldAutoPlayOnLaunch({ mode: "always", isExternalAudioConnected: false }), true);
+  assert.equal(shouldAutoPlayOnLaunch({ mode: "external-audio", isExternalAudioConnected: true }), true);
+  assert.equal(shouldAutoPlayOnLaunch({ mode: "external-audio", isExternalAudioConnected: false }), false);
+  assert.equal(shouldAutoPlayOnLaunch({ mode: "off", isExternalAudioConnected: true }), false);
+
+  // Web / Safari PWA Autoplay 拦截识别
+  const domNotAllowed = Object.assign(
+    new Error("The request is not allowed by the user agent or the platform in the current context."),
+    { name: "NotAllowedError" }
+  );
+  assert.equal(isAutoplayBlockedError(domNotAllowed), true);
+  assert.equal(isAutoplayBlockedError("play() failed because the user didn't interact with the document first"), true);
+  assert.equal(isAutoplayBlockedError("Playback was unable to start"), true);
+  assert.equal(isAutoplayBlockedError(new Error("Network timeout 504")), false);
+});
+
+test("immersive launch invariants: vinyl view, anti-conflict bottom bar, native audio output bridges & silent autoplay", () => {
+  // 1. 沉浸黑胶首页组件与关键能力
+  const vinylPath = path.join(repoRoot, "upstream/src/renderer/views/home/components/ImmersiveVinylHome.vue");
+  assert.equal(fs.existsSync(vinylPath), true, "ImmersiveVinylHome.vue must exist");
+  const vinylSrc = fs.readFileSync(vinylPath, "utf-8");
+  assert.match(vinylSrc, /extractCoverPalette/, "Must reuse coverColorExtractor.ts");
+  assert.match(vinylSrc, /formatPlaybackBadgeText/, "Must reuse playbackMeta.ts");
+  assert.match(vinylSrc, /triggerHaptic/, "Must trigger native haptics on swipe/actions");
+  assert.match(vinylSrc, /tonearm-anchor/, "Must render animated vinyl tonearm");
+  assert.match(vinylSrc, /vinyl-platter/, "Must render rotating vinyl platter");
+  assert.match(vinylSrc, /心动/);
+  assert.match(vinylSrc, /发现/);
+  assert.match(vinylSrc, /音乐库/);
+  assert.match(vinylSrc, /<mobile-player-settings/);
+
+  // 2. 底栏防冲突与深色透明导航栏联动
+  const mobileLayout = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/layout/MobileLayout.vue"),
+    "utf-8"
+  );
+  assert.match(mobileLayout, /isImmersiveHomeActive/);
+  assert.match(mobileLayout, /provide\('isImmersiveHomeActive'/);
+  assert.match(mobileLayout, /is-immersive-dark/);
+
+  const mobilePlayBar = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/player/MobilePlayBar.vue"),
+    "utf-8"
+  );
+  assert.match(mobilePlayBar, /isImmersiveHomeActive/);
+  assert.match(mobilePlayBar, /v-if="!playerStore\.musicFull && !isImmersiveHomeActive"/);
+
+  const appMenu = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/layout/components/AppMenu.vue"),
+    "utf-8"
+  );
+  assert.match(appMenu, /is-immersive-dark/);
+  assert.match(appMenu, /setHomeDisplayMode\('classic'\)/);
+
+  // 3. 设置项持久化与 PlaybackTab UI
+  const playbackTab = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/set/tabs/PlaybackTab.vue"),
+    "utf-8"
+  );
+  assert.match(playbackTab, /启动首页模式/);
+  assert.match(playbackTab, /沉浸黑胶（默认）/);
+  assert.match(playbackTab, /经典发现首页/);
+  assert.match(playbackTab, /打开 App 自动播放/);
+  assert.match(playbackTab, /始终自动播放（原生端默认）/);
+  assert.match(playbackTab, /仅连接耳机或蓝牙时/);
+
+  // 4. Android & iOS 原生耳机/蓝牙输出检测桥接
+  const androidBridgeKt = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/bridge/AndroidJsBridge.kt"),
+    "utf-8"
+  );
+  assert.match(androidBridgeKt, /@JavascriptInterface\s+fun\s+isAudioOutputExternal\(\):\s*Boolean/);
+  assert.match(androidBridgeKt, /AudioManager\.GET_DEVICES_OUTPUTS/);
+
+  const iosBridgeSwift = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Bridge/IOSJsBridge.swift"),
+    "utf-8"
+  );
+  assert.match(iosBridgeSwift, /AVAudioSession\.sharedInstance\(\)\.currentRoute\.outputs/);
+  assert.match(iosBridgeSwift, /isAudioOutputExternal:\s*function\(\)/);
+
+  // 5. 冷启动首曲填充与 Web Autoplay 静默降级
+  const playerCore = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/playerCore.ts"),
+    "utf-8"
+  );
+  assert.match(playerCore, /seedInitialLaunchTrack/);
+  assert.match(playerCore, /isExternalAudioOutputConnected/);
+  assert.match(playerCore, /autoplay_blocked/);
+  assert.match(playerCore, /isAutoplayBlockedError/);
+
+  const audioService = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/services/audioService.ts"),
+    "utf-8"
+  );
+  assert.match(audioService, /isAutoplayBlockedError/);
+  assert.match(audioService, /autoplay_blocked/);
+});

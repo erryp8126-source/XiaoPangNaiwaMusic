@@ -1,13 +1,19 @@
 <template>
   <div>
-    <!-- 移动端：奶娃悬浮磨砂玻璃胶囊底栏 -->
-    <nav v-if="isMobile" class="mobile-dock" aria-label="主导航">
+    <!-- 移动端：奶娃悬浮磨砂玻璃胶囊底栏（沉浸黑胶首页自动切深色透明态） -->
+    <nav
+      v-if="isMobile"
+      class="mobile-dock"
+      :class="{ 'is-immersive-dark': isImmersiveHomeActive }"
+      aria-label="主导航"
+    >
       <router-link
         v-for="(item, index) in menus"
         :key="item.path"
         :to="item.path"
         class="dock-item"
         :class="{ 'is-active': isChecked(index) }"
+        @click="handleMobileDockClick(item.path)"
       >
         <div class="dock-pill">
           <i class="dock-icon" :class="getMobileIcon(item.path, isChecked(index))"></i>
@@ -54,7 +60,8 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, watch } from 'vue';
+import type { Ref } from 'vue';
+import { inject, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute } from 'vue-router';
 
@@ -84,6 +91,14 @@ const props = defineProps({
 const route = useRoute();
 const path = ref(route.path);
 const settingsStore = useSettingsStore();
+const isImmersiveHomeActive = inject<Ref<boolean>>('isImmersiveHomeActive', ref(false));
+
+const handleMobileDockClick = (menuPath: string) => {
+  // 在沉浸黑胶首页点击底部「发现」Tab，直接切回经典发现浏览页
+  if (menuPath === '/' && isImmersiveHomeActive.value) {
+    settingsStore.setHomeDisplayMode('classic');
+  }
+};
 
 watch(
   () => route.path,
@@ -156,6 +171,26 @@ const toggleMenu = () => {
   box-shadow:
     0 12px 36px rgba(0, 0, 0, 0.5),
     0 0 0 0.5px rgba(255, 197, 51, 0.08);
+}
+
+.mobile-dock.is-immersive-dark {
+  background: rgba(12, 16, 26, 0.58);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+
+  .dock-item {
+    .dock-pill {
+      color: rgba(255, 255, 255, 0.6);
+    }
+
+    &.is-active .dock-pill {
+      color: #ffd147;
+      background: rgba(255, 209, 71, 0.14);
+      box-shadow: inset 0 0 0 1px rgba(255, 209, 71, 0.24);
+    }
+  }
 }
 
 .dock-item {

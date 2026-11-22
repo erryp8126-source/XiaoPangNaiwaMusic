@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import UIKit
 import WebKit
@@ -68,6 +69,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         let statusData = (try? JSONSerialization.data(withJSONObject: statusDict)) ?? Data("{}".utf8)
         let statusJson = String(data: statusData, encoding: .utf8) ?? "{}"
         let activeTrackJson = audioManager.getActiveTrackJson()
+        let initialExternalAudio = isAudioOutputExternal() ? "true" : "false"
 
         let js = """
         (function() {
@@ -84,6 +86,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
           var _localStatus = \(statusJson);
           var _audioState = { instanceId: 0, position: 0, duration: 0, playing: false };
           var _activeTrack = \(activeTrackJson);
+          var _audioOutputExternal = \(initialExternalAudio);
 
           function post(method, payload) {
             try {
@@ -169,11 +172,17 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             },
             triggerHaptic: function(style) {
               post('triggerHaptic', { style: String(style || 'light') });
+            },
+            isAudioOutputExternal: function() {
+              return Boolean(_audioOutputExternal);
             }
           };
 
           window.__algerUpdateIosStateCache = function(stateObj) {
             if (stateObj) _audioState = Object.assign(_audioState, stateObj);
+          };
+          window.__algerUpdateIosAudioOutputExternal = function(isExternal) {
+            _audioOutputExternal = Boolean(isExternal);
           };
         })();
         """
@@ -245,6 +254,26 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         default:
             break
         }
+    }
+
+    internal func isAudioOutputExternal() -> Bool {
+        let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
+        return IOSJsBridge.hasExternalAudioOutput(outputs.map { $0.portType })
+    }
+
+    internal static func hasExternalAudioOutput(_ portTypes: [AVAudioSession.Port]) -> Bool {
+        let externalPorts: Set<AVAudioSession.Port> = [
+            .headphones,
+            .bluetoothA2DP,
+            .bluetoothHFP,
+            .bluetoothLE,
+            .usbAudio,
+            .lineOut,
+            .carAudio,
+            .airPlay,
+            .HDMI
+        ]
+        return portTypes.contains { externalPorts.contains($0) }
     }
 
     internal func triggerNativeHaptic(style: String) {
@@ -341,6 +370,8 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             case "get-offline-playable-ids":
                 let offline = self.storageManager.getOfflinePlayableIds()
                 self.callbackDispatcher(callbackId, true, self.jsonString(offline))
+            case "is-audio-output-external":
+                self.callbackDispatcher(callbackId, true, self.isAudioOutputExternal() ? "true" : "false")
             case "get-downloads-path":
                 self.callbackDispatcher(callbackId, true, self.jsonQuote(self.storageManager.getDownloadDir().path))
             case "get-listening-stats":

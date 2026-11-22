@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 import JavaScriptCore
 
@@ -382,5 +383,61 @@ final class Batch3VerificationTests: XCTestCase {
             }
         }
         wait(for: [exp], timeout: 2.0)
+    }
+
+    /// 验证 7：iOS 外部音频输出（耳机/蓝牙）检测逻辑与 JS 桥接注入
+    func testIosExternalAudioOutputDetectionAndBridgeExposure() {
+        XCTAssertFalse(IOSJsBridge.hasExternalAudioOutput([]))
+        XCTAssertFalse(IOSJsBridge.hasExternalAudioOutput([.builtInSpeaker]))
+        XCTAssertFalse(IOSJsBridge.hasExternalAudioOutput([.builtInReceiver]))
+        XCTAssertTrue(IOSJsBridge.hasExternalAudioOutput([.headphones]))
+        XCTAssertTrue(IOSJsBridge.hasExternalAudioOutput([.bluetoothA2DP]))
+        XCTAssertTrue(IOSJsBridge.hasExternalAudioOutput([.bluetoothHFP]))
+        XCTAssertTrue(IOSJsBridge.hasExternalAudioOutput([.bluetoothLE]))
+        XCTAssertTrue(IOSJsBridge.hasExternalAudioOutput([.usbAudio]))
+        XCTAssertTrue(IOSJsBridge.hasExternalAudioOutput([.airPlay]))
+        XCTAssertTrue(IOSJsBridge.hasExternalAudioOutput([.carAudio]))
+        XCTAssertTrue(IOSJsBridge.hasExternalAudioOutput([.builtInSpeaker, .bluetoothA2DP]))
+
+        let prefs = AppPrefs()
+        let ncm = NeteaseApiClient(prefs: prefs)
+        let unblock = MusicUnblockEngine()
+        let httpServer = LocalHttpServer(ncmClient: ncm, unblockEngine: unblock)
+        let audio = AudioPlayerManager(ncmClient: ncm, unblockEngine: unblock, skipSystemAudioSetup: true)
+        let storage = LocalMusicAndDownloadManager(portProvider: { 30488 }, tokenProvider: { "tok" }) { _, _ in }
+
+        let bridge = IOSJsBridge(
+            prefs: prefs,
+            ncmClient: ncm,
+            unblockEngine: unblock,
+            httpServer: httpServer,
+            audioManager: audio,
+            storageManager: storage,
+            onStatusBarStyle: { _ in },
+            onOpenExternalUrl: { _ in },
+            onShowToast: { _ in },
+            onPickTextFile: { cb in cb(nil) },
+            onPickLocalAudioSources: { cb in cb(["canceled": true, "filePaths": []]) },
+            callbackDispatcher: { _, _, _ in }
+        )
+
+        let ctx = JSContext()!
+        ctx.evaluateScript("var window = this; window.webkit = { messageHandlers: { AlgerIOS: { postMessage: function() {} } } };")
+        ctx.evaluateScript(bridge.makeInjectionScript().source)
+
+        let res = ctx.evaluateScript("""
+        (function() {
+          var hasFn = typeof window.AlgerAndroid.isAudioOutputExternal === 'function';
+          window.__algerUpdateIosAudioOutputExternal(true);
+          var afterTrue = window.AlgerAndroid.isAudioOutputExternal();
+          window.__algerUpdateIosAudioOutputExternal(false);
+          var afterFalse = window.AlgerAndroid.isAudioOutputExternal();
+          return JSON.stringify({ hasFn: hasFn, afterTrue: afterTrue, afterFalse: afterFalse });
+        })();
+        """)?.toString() ?? "{}"
+        let dict = (try? JSONSerialization.jsonObject(with: Data(res.utf8))) as? [String: Any]
+        XCTAssertEqual(dict?["hasFn"] as? Bool, true)
+        XCTAssertEqual(dict?["afterTrue"] as? Bool, true)
+        XCTAssertEqual(dict?["afterFalse"] as? Bool, false)
     }
 }

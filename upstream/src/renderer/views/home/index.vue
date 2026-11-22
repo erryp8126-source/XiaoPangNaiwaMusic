@@ -1,7 +1,33 @@
 <template>
-  <div class="home-container h-full w-full max-w-full overflow-x-hidden bg-transparent transition-colors duration-300">
+  <immersive-vinyl-home v-if="showImmersiveHome" @switch-discover="switchToDiscover" />
+  <div
+    v-else
+    class="home-container h-full w-full max-w-full overflow-x-hidden bg-transparent transition-colors duration-300"
+  >
     <n-scrollbar class="h-full">
       <div class="home-content w-full max-w-full overflow-x-hidden box-border pb-44 pt-3 page-padding">
+        <!-- 移动端顶部模式快捷切换（心动黑胶 / 发现 / 音乐库） -->
+        <div v-if="settingsStore.isMobile" class="flex items-center justify-between gap-2 mb-3">
+          <div class="classic-mode-switcher">
+            <button
+              type="button"
+              class="switcher-tab"
+              @click="switchToImmersive"
+            >
+              <i class="ri-disc-fill text-amber-500"></i>
+              <span>心动</span>
+            </button>
+            <span class="switcher-tab is-active">发现</span>
+            <button
+              type="button"
+              class="switcher-tab"
+              @click="router.push('/library')"
+            >
+              音乐库
+            </button>
+          </div>
+        </div>
+
         <!-- 移动端顶部暖阳快捷搜索胶囊 -->
         <button
           type="button"
@@ -49,14 +75,19 @@
 
 <script lang="ts" setup>
 import { NScrollbar } from 'naive-ui';
+import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
+
+import { useSettingsStore } from '@/store/modules/settings';
+import { triggerHaptic } from '@/utils/androidBridge';
 
 import HomeAlbumSection from './components/HomeAlbumSection.vue';
 import HomeArtists from './components/HomeArtists.vue';
 import HomeHero from './components/HomeHero.vue';
 import HomeNewSongs from './components/HomeNewSongs.vue';
 import HomePlaylistSection from './components/HomePlaylistSection.vue';
+import ImmersiveVinylHome from './components/ImmersiveVinylHome.vue';
 
 defineOptions({
   name: 'Home'
@@ -64,11 +95,55 @@ defineOptions({
 
 const { t } = useI18n();
 const router = useRouter();
+const settingsStore = useSettingsStore();
+
+const showImmersiveHome = computed(
+  () => settingsStore.isMobile && settingsStore.homeDisplayMode === 'immersive'
+);
+
+const switchToDiscover = () => {
+  settingsStore.setHomeDisplayMode('classic');
+};
+
+const switchToImmersive = () => {
+  triggerHaptic('selection');
+  settingsStore.setHomeDisplayMode('immersive');
+};
 </script>
 
 <style lang="scss" scoped>
 .home-container {
   position: relative;
+}
+
+.classic-mode-switcher {
+  @apply inline-flex items-center gap-1 p-1 rounded-full;
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(186, 218, 238, 0.45);
+  box-shadow: 0 4px 14px rgba(82, 134, 168, 0.08);
+
+  .switcher-tab {
+    @apply inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold text-slate-600 transition-all active:scale-95;
+
+    &.is-active {
+      @apply font-bold text-amber-700;
+      background: linear-gradient(135deg, rgba(255, 214, 102, 0.34) 0%, rgba(167, 224, 248, 0.24) 100%);
+    }
+  }
+}
+
+:global(.dark) .classic-mode-switcher {
+  background: rgba(23, 30, 42, 0.82);
+  border-color: rgba(255, 255, 255, 0.09);
+
+  .switcher-tab {
+    @apply text-slate-300;
+
+    &.is-active {
+      @apply text-amber-300;
+      background: rgba(255, 197, 51, 0.18);
+    }
+  }
 }
 
 :deep(.n-scrollbar-content) {

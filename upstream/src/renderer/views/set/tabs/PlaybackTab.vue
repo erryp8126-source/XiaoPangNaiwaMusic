@@ -209,14 +209,25 @@
       </setting-item>
 
       <setting-item
-        inline
-        :title="t('settings.playback.autoPlay')"
-        :description="t('settings.playback.autoPlayDesc')"
+        title="启动首页模式"
+        description="选择移动端打开 App 时默认进入全屏沉浸黑胶页或经典发现首页"
       >
-        <n-switch v-model:value="setData.autoPlay">
-          <template #checked>{{ t('common.on') }}</template>
-          <template #unchecked>{{ t('common.off') }}</template>
-        </n-switch>
+        <s-select
+          v-model="launchHomeMode"
+          :options="launchHomeModeOptions"
+          width="w-48 max-md:w-full"
+        />
+      </setting-item>
+
+      <setting-item
+        title="打开 App 自动播放"
+        description="冷启动进入应用时按策略自动续播上次曲目或首曲推荐；网页端受浏览器策略限制时将静默停在待播态"
+      >
+        <s-select
+          v-model="launchAutoPlayMode"
+          :options="launchAutoPlayModeOptions"
+          width="w-56 max-md:w-full"
+        />
       </setting-item>
 
       <setting-item
@@ -270,6 +281,12 @@ import MusicSourceSettings from '@/components/settings/MusicSourceSettings.vue';
 import { type Platform } from '@/types/music';
 import { isAndroid, isElectron, isNative } from '@/utils';
 import { getNativeCapabilities } from '@/utils/androidBridge';
+import {
+  getEffectiveLaunchAutoPlayMode,
+  getEffectiveLaunchHomeMode,
+  type LaunchAutoPlayMode,
+  type LaunchHomeMode
+} from '@/utils/launchPolicy';
 import { showBottomToast } from '@/utils/shortcutToast';
 
 import { SETTINGS_DATA_KEY } from '../keys';
@@ -446,6 +463,35 @@ const volumeNormalizationEnabled = computed({
   get: () => Boolean(setData.value.volumeNormalizationEnabled),
   set: (val: boolean) => {
     setData.value = { ...setData.value, volumeNormalizationEnabled: val };
+  }
+});
+
+const launchHomeModeOptions = [
+  { label: '沉浸黑胶（默认）', value: 'immersive' },
+  { label: '经典发现首页', value: 'classic' }
+];
+
+const launchHomeMode = computed<LaunchHomeMode>({
+  get: () => getEffectiveLaunchHomeMode(setData.value),
+  set: (val: LaunchHomeMode) => {
+    setData.value = { ...setData.value, launchHomeMode: val };
+  }
+});
+
+const launchAutoPlayModeOptions = [
+  { label: '始终自动播放（原生端默认）', value: 'always' },
+  { label: '仅连接耳机或蓝牙时', value: 'external-audio' },
+  { label: '关闭', value: 'off' }
+];
+
+const launchAutoPlayMode = computed<LaunchAutoPlayMode>({
+  get: () => getEffectiveLaunchAutoPlayMode(setData.value, isAndroid),
+  set: (val: LaunchAutoPlayMode) => {
+    setData.value = {
+      ...setData.value,
+      launchAutoPlayMode: val,
+      autoPlay: val !== 'off'
+    };
   }
 });
 </script>
