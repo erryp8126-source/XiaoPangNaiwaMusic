@@ -559,4 +559,33 @@ final class Batch3VerificationTests: XCTestCase {
             XCTAssertFalse(hasBridge, "Bridge must NOT mount for origin \(proto)//\(host)")
         }
     }
+
+    /// 验证 10：saveTextFile 隔离写入 Downloads/Backups/ 子目录且严格校验 .json/.txt 后缀
+    func testSaveTextFileIsolatedToBackupsDirectoryAndAllowedExtensions() {
+        let manager = LocalMusicAndDownloadManager(
+            portProvider: { 30488 },
+            tokenProvider: { "tok" }
+        ) { _, _ in }
+
+        let invalidExtRes = manager.saveTextFile(filename: "index.json.mp3", content: "{\"ok\":1}")
+        XCTAssertEqual(invalidExtRes["success"] as? Bool, true)
+        let invalidExtPath = invalidExtRes["path"] as? String ?? ""
+        createdFilesToCleanup.append(URL(fileURLWithPath: invalidExtPath))
+        XCTAssertTrue(invalidExtPath.contains("/Backups/"), "Must isolate text backups into Backups/, got: \(invalidExtPath)")
+        XCTAssertTrue(invalidExtPath.hasSuffix(".mp3.json"), "Non-.json/.txt filename must have .json appended: \(invalidExtPath)")
+
+        let txtRes = manager.saveTextFile(filename: "my_notes.txt", content: "hello")
+        XCTAssertEqual(txtRes["success"] as? Bool, true)
+        let txtPath = txtRes["path"] as? String ?? ""
+        createdFilesToCleanup.append(URL(fileURLWithPath: txtPath))
+        XCTAssertTrue(txtPath.contains("/Backups/"))
+        XCTAssertTrue(txtPath.hasSuffix("/my_notes.txt"))
+
+        let jsonRes = manager.saveTextFile(filename: "sync_backup.json", content: "{}")
+        XCTAssertEqual(jsonRes["success"] as? Bool, true)
+        let jsonPath = jsonRes["path"] as? String ?? ""
+        createdFilesToCleanup.append(URL(fileURLWithPath: jsonPath))
+        XCTAssertTrue(jsonPath.contains("/Backups/"))
+        XCTAssertTrue(jsonPath.hasSuffix("/sync_backup.json"))
+    }
 }

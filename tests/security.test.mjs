@@ -2174,3 +2174,36 @@ test("iOS WebView security: Fail-Closed navigation allowlist and origin-checked 
   assert.match(iosBridgeSwift, /url\.scheme\?\.lowercased\(\)\s*==\s*"http"[\s\S]*url\.host\s*==\s*"127\.0\.0\.1"[\s\S]*url\.port\s*==\s*localPort/);
   assert.match(iosBridgeSwift, /url\.absoluteString\s*==\s*"about:blank"/);
 });
+
+test("release prep: saveTextFile isolated to Backups/ with .json/.txt allowlist & v1.0.0/Node 22 metadata synced", () => {
+  const androidDlKt = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/download/NativeDownloadManager.kt"),
+    "utf-8"
+  );
+  const ktSaveBlock = androidDlKt.slice(androidDlKt.indexOf("fun saveTextFile("), androidDlKt.indexOf("fun saveImageToGallery("));
+  assert.match(ktSaveBlock, /File\(getDownloadDir\(\),\s*"Backups"\)/);
+  assert.match(ktSaveBlock, /endsWith\("\.json"\)\s*\|\|\s*lower\.endsWith\("\.txt"\)/);
+
+  const iosDlSwift = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Storage/LocalMusicAndDownloadManager.swift"),
+    "utf-8"
+  );
+  const swiftSaveBlock = iosDlSwift.slice(iosDlSwift.indexOf("func saveTextFile("), iosDlSwift.indexOf("func importPickedAudioUrls("));
+  assert.match(swiftSaveBlock, /appendingPathComponent\("Backups"/);
+  assert.match(swiftSaveBlock, /hasSuffix\("\.json"\)\s*\|\|\s*lower\.hasSuffix\("\.txt"\)/);
+
+  const readmeMd = fs.readFileSync(path.join(repoRoot, "README.md"), "utf-8");
+  assert.doesNotMatch(readmeMd, /v5\.1\.4/);
+  assert.match(readmeMd, /XiaoPangNaiwaMusic-v1\.0\.0-unsigned\.ipa/);
+
+  const buildApkPs1 = fs.readFileSync(path.join(repoRoot, "build_apk.ps1"), "utf-8");
+  assert.doesNotMatch(buildApkPs1, /"5\.1\.3"/);
+  assert.match(buildApkPs1, /else\s*\{\s*"1\.0\.0"\s*\}/);
+
+  const buildPwaPs1 = fs.readFileSync(path.join(repoRoot, "build_pwa.ps1"), "utf-8");
+  assert.doesNotMatch(buildPwaPs1, /"5\.1\.3"/);
+  assert.match(buildPwaPs1, /else\s*\{\s*"1\.0\.0"\s*\}/);
+
+  const netlifyToml = fs.readFileSync(path.join(repoRoot, "netlify.toml"), "utf-8");
+  assert.match(netlifyToml, /NODE_VERSION\s*=\s*"22"/);
+});

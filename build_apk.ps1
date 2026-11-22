@@ -11,7 +11,7 @@ $AssetsWwwDir = Join-Path $AndroidDir "app\src\main\assets\www"
 $ReleaseOutDir = Join-Path $Root "releases"
 
 $PkgJson = Get-Content (Join-Path $UpstreamDir "package.json") -Raw -Encoding UTF8 | ConvertFrom-Json
-$Version = if ($PkgJson.version) { $PkgJson.version } else { "5.1.3" }
+$Version = if ($PkgJson.version) { $PkgJson.version } else { "1.0.0" }
 
 $KeystoreProps = Join-Path $AndroidDir "keystore.properties"
 if (Test-Path $KeystoreProps) {

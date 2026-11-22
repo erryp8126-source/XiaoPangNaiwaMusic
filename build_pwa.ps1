@@ -9,7 +9,7 @@ $UpstreamDir = Join-Path $Root "upstream"
 $PwaOutDir = Join-Path $Root "releases\pwa"
 
 $PkgJson = Get-Content (Join-Path $UpstreamDir "package.json") -Raw -Encoding UTF8 | ConvertFrom-Json
-$Version = if ($PkgJson.version) { $PkgJson.version } else { "5.1.3" }
+$Version = if ($PkgJson.version) { $PkgJson.version } else { "1.0.0" }
 $ZipPath = Join-Path $Root "releases\小庞奶娃音乐-v$Version-pwa.zip"
 
 Write-Host "[1/2] 构建 小庞奶娃音乐 v$Version Vue 3 + Safari PWA 静态资源..." -ForegroundColor Cyan

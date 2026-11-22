@@ -548,10 +548,14 @@ final class LocalMusicAndDownloadManager: NSObject, URLSessionDownloadDelegate {
     }
 
     func saveTextFile(filename: String, content: String) -> [String: Any] {
-        let safe = sanitizeFilename(filename)
-        let name = safe.isEmpty ? "xiaopang-music-backup.json" : safe
-        let dest = getDownloadDir().appendingPathComponent(name)
+        let sanitized = sanitizeFilename(filename).trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let rawSafe = sanitized.isEmpty ? "xiaopang-music-backup.json" : sanitized
+        let lower = rawSafe.lowercased()
+        let name = (lower.hasSuffix(".json") || lower.hasSuffix(".txt")) ? rawSafe : "\(rawSafe).json"
+        let backupDir = getDownloadDir().appendingPathComponent("Backups", isDirectory: true)
         do {
+            try FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
+            let dest = backupDir.appendingPathComponent(name)
             try content.write(to: dest, atomically: true, encoding: .utf8)
             return ["success": true, "path": dest.path]
         } catch {

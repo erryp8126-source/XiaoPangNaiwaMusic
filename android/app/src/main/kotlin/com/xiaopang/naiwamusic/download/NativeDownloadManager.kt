@@ -240,8 +240,16 @@ class NativeDownloadManager(
 
     fun saveTextFile(filename: String, content: String): JsonObject {
         return try {
-            val safe = sanitizeFilename(filename).ifBlank { "xiaopang-music-backup.json" }
-            val outFile = File(getDownloadDir(), safe)
+            val rawBase = filename.trim().ifEmpty { "xiaopang-music-backup.json" }
+            val sanitized = sanitizeFilename(rawBase).trim('.').ifBlank { "xiaopang-music-backup.json" }
+            val lower = sanitized.lowercase()
+            val safe = if (lower.endsWith(".json") || lower.endsWith(".txt")) {
+                sanitized
+            } else {
+                "$sanitized.json"
+            }
+            val backupDir = File(getDownloadDir(), "Backups").apply { mkdirs() }
+            val outFile = File(backupDir, safe)
             outFile.writeText(content, Charsets.UTF_8)
             JsonObject().apply {
                 addProperty("success", true)
