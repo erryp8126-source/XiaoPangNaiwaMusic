@@ -6,7 +6,7 @@
   >
     <!-- Cover -->
     <div
-      class="relative aspect-square overflow-hidden rounded-[20px] bg-sky-100/70 dark:bg-slate-800/90 shadow-naiwa-sm ring-1 ring-white/80 dark:ring-white/10 transition-all duration-300 ease-out group-hover:shadow-xl"
+      class="relative aspect-square overflow-hidden rounded-[20px] bg-sky-100/70 dark:bg-[#151D2B] shadow-naiwa-sm ring-1 ring-white/80 dark:ring-white/[0.08] transition-all duration-300 ease-out group-hover:shadow-xl"
     >
       <img
         ref="coverRef"

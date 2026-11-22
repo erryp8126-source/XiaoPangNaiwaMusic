@@ -144,11 +144,11 @@ provide('openPlaylistDrawer', openPlaylistDrawer);
 
 <style lang="scss" scoped>
 .layout-page {
-  @apply w-screen h-screen overflow-hidden bg-light dark:bg-black;
+  @apply w-screen h-screen overflow-hidden bg-light dark:bg-[#0B0F17];
 }
 
 .layout-main {
-  @apply w-full h-full relative text-gray-900 dark:text-white;
+  @apply w-full h-full relative text-gray-900 dark:text-slate-100;
 }
 
 .layout-main-page {
@@ -156,7 +156,7 @@ provide('openPlaylistDrawer', openPlaylistDrawer);
 }
 
 .menu {
-  @apply h-full bg-light dark:bg-black;
+  @apply h-full bg-light dark:bg-[#0F1520] dark:border-r dark:border-white/[0.08];
 }
 
 .main {

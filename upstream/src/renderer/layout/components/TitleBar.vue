@@ -1,7 +1,7 @@
 <template>
   <div
     id="title-bar"
-    class="flex justify-between px-6 py-2 select-none relative text-dark dark:text-white"
+    class="flex justify-between px-6 py-2 select-none relative text-dark dark:text-slate-100 dark:bg-[#0F1520]"
     @mousedown="drag"
   >
     <div id="title" class="font-bold tracking-tight">小庞奶娃音乐</div>

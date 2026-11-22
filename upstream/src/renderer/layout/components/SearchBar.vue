@@ -1,5 +1,5 @@
 <template>
-  <div class="flex items-center gap-2 pb-4 pr-4 pl-1">
+  <div class="search-bar-shell flex items-center gap-2 pb-3 pt-2 pr-4 pl-2 mb-1 dark:bg-[#0F1520] dark:border-b dark:border-white/[0.08]">
     <!-- ── LEFT: Tabs（搜索展开时隐藏）─────────────── -->
     <transition name="tab-slide">
       <div
@@ -506,7 +506,8 @@ onMounted(() => {
   box-sizing: border-box;
 }
 .dark .tabs-track {
-  background: #1f2937;
+  background: #151d2b;
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .tab-slider-bg {
@@ -572,8 +573,9 @@ onMounted(() => {
   transition: all 0.15s;
 }
 .dark .back-btn {
-  border-color: #374151;
-  color: #9ca3af;
+  border-color: rgba(255, 255, 255, 0.08);
+  background: #1c2638;
+  color: #cbd5e1;
 }
 .back-btn:hover {
   color: #22c55e;
@@ -610,8 +612,8 @@ onMounted(() => {
     box-shadow 0.2s;
 }
 .dark .search-inner {
-  border-color: #374151;
-  background: #111827;
+  border-color: rgba(255, 255, 255, 0.08);
+  background: #1c2638;
 }
 .search-inner--focus {
   border-color: #22c55e;
@@ -619,8 +621,8 @@ onMounted(() => {
   box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.1);
 }
 .dark .search-inner--focus {
-  background: #0a0a0a;
-  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.12);
+  background: #1c2638;
+  box-shadow: 0 0 0 3px rgba(255, 197, 51, 0.16);
 }
 
 .search-icon-glyph {
@@ -667,8 +669,8 @@ onMounted(() => {
   flex-shrink: 0;
 }
 .dark .type-chip {
-  background: #1f2937;
-  color: #9ca3af;
+  background: #151d2b;
+  color: #cbd5e1;
 }
 .type-chip:hover {
   background: #dcfce7;
@@ -695,8 +697,9 @@ onMounted(() => {
   transition: all 0.15s;
 }
 .dark .action-btn {
-  border-color: #374151;
-  color: #9ca3af;
+  border-color: rgba(255, 255, 255, 0.08);
+  background: #1c2638;
+  color: #cbd5e1;
 }
 .action-btn:hover {
   color: #22c55e;
@@ -736,7 +739,8 @@ onMounted(() => {
     box-shadow 0.15s;
 }
 .dark .user-btn {
-  border-color: #374151;
+  border-color: rgba(255, 255, 255, 0.08);
+  background: #1c2638;
 }
 .user-btn:hover {
   border-color: #22c55e;
@@ -765,8 +769,8 @@ onMounted(() => {
     0 1px 4px rgba(0, 0, 0, 0.05);
 }
 .dark .user-menu {
-  background: #111827;
-  border-color: #1f2937;
+  background: #151d2b;
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
 .user-menu-top {
@@ -892,7 +896,7 @@ onMounted(() => {
   background: #fff;
 }
 .dark .suggestions-box {
-  background: #111827;
+  background: #151d2b;
 }
 
 .suggest-row {

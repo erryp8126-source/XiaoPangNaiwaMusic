@@ -150,10 +150,10 @@ const darkThemeOverrides: GlobalThemeOverrides = {
     successColor: '#FFC533',
     borderRadius: '14px',
     borderRadiusSmall: '10px',
-    bodyColor: '#0F141C',
-    cardColor: '#171E2A',
-    modalColor: '#171E2A',
-    popoverColor: '#1B2433',
+    bodyColor: '#0B0F17',
+    cardColor: '#151D2B',
+    modalColor: '#151D2B',
+    popoverColor: '#151D2B',
     textColorBase: '#F1F5F9',
     textColor1: '#F8FAFC',
     textColor2: '#CBD5E1',
@@ -170,9 +170,9 @@ const darkThemeOverrides: GlobalThemeOverrides = {
   },
   Input: {
     borderRadius: '12px',
-    color: '#1E293B',
-    colorFocus: '#243146',
-    border: '1px solid #475569',
+    color: '#1C2638',
+    colorFocus: '#1C2638',
+    border: '1px solid rgba(255, 255, 255, 0.08)',
     textColor: '#F8FAFC'
   },
   Switch: {
@@ -190,16 +190,16 @@ const darkThemeOverrides: GlobalThemeOverrides = {
     peers: {
       InternalSelection: {
         borderRadius: '12px',
-        color: '#1E293B',
-        border: '1px solid #475569',
+        color: '#1C2638',
+        border: '1px solid rgba(255, 255, 255, 0.08)',
         textColor: '#F8FAFC'
       }
     }
   },
   Tabs: {
     tabBorderRadius: '12px',
-    colorSegment: '#1A2332',
-    tabColorSegment: '#263246',
+    colorSegment: '#0F1520',
+    tabColorSegment: '#1C2638',
     tabTextColorActiveSegment: '#FFC533',
     tabTextColorActiveLine: '#FFC533',
     barColor: '#FFC533'
@@ -213,7 +213,7 @@ const darkThemeOverrides: GlobalThemeOverrides = {
     borderRadius: '9999px'
   },
   Drawer: {
-    color: '#131A24'
+    color: '#0F1520'
   }
 };
 

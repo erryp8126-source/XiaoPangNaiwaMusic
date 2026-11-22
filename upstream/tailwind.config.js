@@ -24,10 +24,10 @@ export default {
           dark: '#475569'
         },
         dark: {
-          DEFAULT: '#0F141C',
-          100: '#171E2A',
-          200: '#222C3D',
-          300: '#313F55'
+          DEFAULT: '#0B0F17',
+          100: '#0F1520',
+          200: '#151D2B',
+          300: '#1C2638'
         },
         light: {
           DEFAULT: '#F6FAFD',

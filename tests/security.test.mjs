@@ -2113,3 +2113,40 @@ test("network recovery: Android/iOS native listeners and frontend interceptor cl
   );
   assert.match(requestTs, /useOfflineAvailabilityStore\(\)\.markOnline\(\)/);
 });
+
+test("desktop dark theme & sidebar layout: native color-scheme, 4-tier dark palette, PlayBar contrast & non-overlapping Logo", () => {
+  const indexHtml = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/index.html"),
+    "utf-8"
+  );
+  assert.match(indexHtml, /<meta\s+name=["']color-scheme["']\s+content=["']light dark["']/i);
+  assert.match(indexHtml, /#0B0F17/i);
+
+  const indexCss = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/index.css"),
+    "utf-8"
+  );
+  assert.match(indexCss, /:root\s*\{[\s\S]*color-scheme:\s*light;/i);
+  assert.match(indexCss, /:root\.dark,\s*\.theme-dark\s*\{[\s\S]*color-scheme:\s*dark;/i);
+  assert.match(indexCss, /#0b0f17/i);
+  assert.match(indexCss, /#0f1520/i);
+  assert.match(indexCss, /#151d2b/i);
+  assert.match(indexCss, /#1c2638/i);
+
+  const playBarVue = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/player/PlayBar.vue"),
+    "utf-8"
+  );
+  assert.doesNotMatch(playBarVue, /\.music-play-bar[\s\S]*dark:shadow-gray-300/);
+  assert.match(playBarVue, /dark:bg-\[#0F1520\]\/95/);
+  assert.match(playBarVue, /dark:shadow-black\/60/);
+  assert.match(playBarVue, /dark:border-t\s+dark:border-white\/10/);
+
+  const appMenuVue = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/layout/components/AppMenu.vue"),
+    "utf-8"
+  );
+  assert.match(appMenuVue, /\.app-menu\s*\{[\s\S]*flex-col/);
+  assert.match(appMenuVue, /\.app-menu-header\s*\{[\s\S]*h-12[\s\S]*mb-4/);
+  assert.match(appMenuVue, /\.app-menu-logo\s*\{[\s\S]*w-9\s+h-9/);
+});

@@ -45,7 +45,7 @@
                 ></i>
                 <span
                   v-if="settingsStore.setData.isMenuExpanded"
-                  class="app-menu-item-text ml-3"
+                  class="app-menu-item-text ml-3 whitespace-nowrap"
                   :class="isChecked(index) ? 'text-primary font-semibold' : ''"
                   >{{ t(item.meta.title) }}</span
                 >
@@ -246,10 +246,12 @@ const toggleMenu = () => {
 
 /* ===== 桌面侧边栏样式 ===== */
 .app-menu {
-  @apply flex-col items-center justify-center transition-all duration-300 w-[100px] px-1;
+  @apply flex flex-col items-stretch justify-start h-full pt-2 transition-all duration-300 w-[100px] px-1;
 }
 
 .app-menu-list {
+  flex: 1;
+  min-height: 0;
   max-height: calc(100vh - 120px);
   overflow-y: auto;
   overflow-x: hidden;
@@ -262,21 +264,29 @@ const toggleMenu = () => {
   @apply w-[160px];
 
   .app-menu-item {
-    @apply hover:bg-amber-50 dark:hover:bg-slate-800 rounded-xl mr-4;
+    @apply hover:bg-amber-50 dark:hover:bg-[#1C2638] rounded-xl mr-3;
   }
 }
 
 .app-menu-item-link,
 .app-menu-header {
-  @apply flex items-center w-[200px] overflow-hidden ml-2 px-5;
+  @apply flex items-center w-full overflow-hidden ml-2 px-5;
 }
 
 .app-menu-header {
-  @apply ml-1;
+  @apply h-12 min-h-[48px] flex-shrink-0 mb-4 ml-1;
+}
+
+.app-menu-logo {
+  @apply w-9 h-9 flex-shrink-0 flex items-center justify-center cursor-pointer;
 }
 
 .app-menu-item-link {
-  @apply mb-6 mt-6;
+  @apply mb-5 mt-5;
+}
+
+.app-menu-item:first-child .app-menu-item-link {
+  margin-top: 0;
 }
 
 .app-menu-item-icon {
