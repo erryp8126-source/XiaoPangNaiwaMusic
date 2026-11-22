@@ -81,6 +81,8 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
 
         let js = """
         (function() {
+          if (!window.location) return;
+          if (window.location.protocol !== 'http:' || window.location.hostname !== '127.0.0.1') return;
           if (window.AlgerAndroid) return;
           window.__ALGER_PLATFORM__ = 'ios';
           var _capabilities = {
@@ -293,6 +295,33 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         default:
             break
         }
+    }
+
+    internal static func isAllowedWebViewNavigationUrl(_ url: URL?, localPort: Int) -> Bool {
+        guard let url = url else { return false }
+        if url.absoluteString == "about:blank" {
+            return true
+        }
+        guard localPort > 0 else { return false }
+        return url.scheme?.lowercased() == "http"
+            && url.host == "127.0.0.1"
+            && url.port == localPort
+    }
+
+    internal static func shouldOpenExternalBrowser(
+        for url: URL?,
+        localPort: Int,
+        isLinkOrNewWindow: Bool
+    ) -> Bool {
+        guard isLinkOrNewWindow, let url = url else { return false }
+        if isAllowedWebViewNavigationUrl(url, localPort: localPort) {
+            return false
+        }
+        guard let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            return false
+        }
+        return !(url.host ?? "").isEmpty
     }
 
     internal func isAudioOutputExternal() -> Bool {

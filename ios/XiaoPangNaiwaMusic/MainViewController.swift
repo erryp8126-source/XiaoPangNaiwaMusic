@@ -238,19 +238,23 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
-        if let url = navigationAction.request.url {
-            let s = url.absoluteString
-            if s.hasPrefix("http://127.0.0.1:") || s.hasPrefix("about:") {
-                decisionHandler(.allow)
-                return
-            }
-            if navigationAction.navigationType == .linkActivated || navigationAction.targetFrame == nil {
-                UIApplication.shared.open(url)
-                decisionHandler(.cancel)
-                return
-            }
+        let localPort = services.httpServer.port
+        let url = navigationAction.request.url
+        if IOSJsBridge.isAllowedWebViewNavigationUrl(url, localPort: localPort) {
+            decisionHandler(.allow)
+            return
         }
-        decisionHandler(.allow)
+        let isLinkOrNewWindow =
+            navigationAction.navigationType == .linkActivated || navigationAction.targetFrame == nil
+        if let targetUrl = url,
+           IOSJsBridge.shouldOpenExternalBrowser(
+               for: targetUrl,
+               localPort: localPort,
+               isLinkOrNewWindow: isLinkOrNewWindow
+           ) {
+            UIApplication.shared.open(targetUrl)
+        }
+        decisionHandler(.cancel)
     }
 
     func webView(
@@ -259,7 +263,12 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        if let url = navigationAction.request.url {
+        if let url = navigationAction.request.url,
+           IOSJsBridge.shouldOpenExternalBrowser(
+               for: url,
+               localPort: services.httpServer.port,
+               isLinkOrNewWindow: true
+           ) {
             UIApplication.shared.open(url)
         }
         return nil

@@ -212,6 +212,7 @@ final class Batch3VerificationTests: XCTestCase {
         let ctx = JSContext()!
         ctx.evaluateScript("""
         var window = this;
+        window.location = { protocol: 'http:', hostname: '127.0.0.1' };
         var __postedMessages = [];
         window.webkit = {
           messageHandlers: {
@@ -304,6 +305,7 @@ final class Batch3VerificationTests: XCTestCase {
         let ctx = JSContext()!
         ctx.evaluateScript("""
         var window = this;
+        window.location = { protocol: 'http:', hostname: '127.0.0.1' };
         var __postedMessages = [];
         window.webkit = {
           messageHandlers: {
@@ -422,7 +424,7 @@ final class Batch3VerificationTests: XCTestCase {
         )
 
         let ctx = JSContext()!
-        ctx.evaluateScript("var window = this; window.webkit = { messageHandlers: { AlgerIOS: { postMessage: function() {} } } };")
+        ctx.evaluateScript("var window = this; window.location = { protocol: 'http:', hostname: '127.0.0.1' }; window.webkit = { messageHandlers: { AlgerIOS: { postMessage: function() {} } } };")
         ctx.evaluateScript(bridge.makeInjectionScript().source)
 
         let res = ctx.evaluateScript("""
@@ -477,6 +479,7 @@ final class Batch3VerificationTests: XCTestCase {
         let ctx = JSContext()!
         ctx.evaluateScript("""
         var window = this;
+        window.location = { protocol: 'http:', hostname: '127.0.0.1' };
         var __postedSecretMsgs = [];
         window.webkit = {
           messageHandlers: {
@@ -503,5 +506,57 @@ final class Batch3VerificationTests: XCTestCase {
         XCTAssertEqual(dict?["r1"] as? Bool, true)
         XCTAssertEqual(dict?["g2"] as? String, "")
         XCTAssertEqual(dict?["msgs"] as? Int, 2)
+    }
+
+    /// 验证 9：iOS WebView 导航 Fail-Closed 白名单与 IOSJsBridge 同源注入守卫
+    func testIosWebViewNavigationFailClosedAndBridgeOriginGuard() {
+        // 1. Fail-Closed 导航白名单验证
+        XCTAssertTrue(IOSJsBridge.isAllowedWebViewNavigationUrl(URL(string: "http://127.0.0.1:30488/__app/index.html"), localPort: 30488))
+        XCTAssertTrue(IOSJsBridge.isAllowedWebViewNavigationUrl(URL(string: "about:blank"), localPort: 30488))
+        XCTAssertFalse(IOSJsBridge.isAllowedWebViewNavigationUrl(URL(string: "http://127.0.0.1:39999/other"), localPort: 30488))
+        XCTAssertFalse(IOSJsBridge.isAllowedWebViewNavigationUrl(URL(string: "https://127.0.0.1:30488/__app/index.html"), localPort: 30488))
+        XCTAssertFalse(IOSJsBridge.isAllowedWebViewNavigationUrl(URL(string: "http://localhost:30488/__app/index.html"), localPort: 30488))
+        XCTAssertFalse(IOSJsBridge.isAllowedWebViewNavigationUrl(URL(string: "https://evil.example.com/"), localPort: 30488))
+        XCTAssertFalse(IOSJsBridge.isAllowedWebViewNavigationUrl(URL(string: "file:///etc/passwd"), localPort: 30488))
+        XCTAssertFalse(IOSJsBridge.isAllowedWebViewNavigationUrl(URL(string: "javascript:alert(1)"), localPort: 30488))
+
+        // 2. 外部系统浏览器拉起约束：仅用户点击 / 新窗口的合法 http(s) 外链才允许拉起，重定向/脚本跳转与危险 scheme 一律忽略
+        XCTAssertTrue(IOSJsBridge.shouldOpenExternalBrowser(for: URL(string: "https://github.com/erryp8126-source"), localPort: 30488, isLinkOrNewWindow: true))
+        XCTAssertFalse(IOSJsBridge.shouldOpenExternalBrowser(for: URL(string: "https://github.com/erryp8126-source"), localPort: 30488, isLinkOrNewWindow: false))
+        XCTAssertFalse(IOSJsBridge.shouldOpenExternalBrowser(for: URL(string: "file:///tmp/x"), localPort: 30488, isLinkOrNewWindow: true))
+        XCTAssertFalse(IOSJsBridge.shouldOpenExternalBrowser(for: URL(string: "javascript:alert(1)"), localPort: 30488, isLinkOrNewWindow: true))
+        XCTAssertFalse(IOSJsBridge.shouldOpenExternalBrowser(for: URL(string: "http://127.0.0.1:30488/__app/index.html"), localPort: 30488, isLinkOrNewWindow: true))
+
+        // 3. 注入脚本源校验：非 http://127.0.0.1 源下绝不挂载 window.AlgerAndroid 与凭据访问方法
+        let prefs = AppPrefs()
+        let ncm = NeteaseApiClient(prefs: prefs)
+        let unblock = MusicUnblockEngine()
+        let httpServer = LocalHttpServer(ncmClient: ncm, unblockEngine: unblock)
+        let audio = AudioPlayerManager(ncmClient: ncm, unblockEngine: unblock, skipSystemAudioSetup: true)
+        let storage = LocalMusicAndDownloadManager(portProvider: { 30488 }, tokenProvider: { "tok" }) { _, _ in }
+
+        let bridge = IOSJsBridge(
+            prefs: prefs,
+            ncmClient: ncm,
+            unblockEngine: unblock,
+            httpServer: httpServer,
+            audioManager: audio,
+            storageManager: storage,
+            onStatusBarStyle: { _ in },
+            onOpenExternalUrl: { _ in },
+            onShowToast: { _ in },
+            onPickTextFile: { cb in cb(nil) },
+            onPickLocalAudioSources: { cb in cb(["canceled": true, "filePaths": []]) },
+            callbackDispatcher: { _, _, _ in }
+        )
+        let scriptSource = bridge.makeInjectionScript().source
+
+        for (proto, host) in [("https:", "evil.example.com"), ("about:", ""), ("http:", "localhost"), ("file:", "")] {
+            let ctx = JSContext()!
+            ctx.evaluateScript("var window = this; window.location = { protocol: '\(proto)', hostname: '\(host)' };")
+            ctx.evaluateScript(scriptSource)
+            let hasBridge = ctx.evaluateScript("typeof window.AlgerAndroid !== 'undefined'")?.toBool() ?? true
+            XCTAssertFalse(hasBridge, "Bridge must NOT mount for origin \(proto)//\(host)")
+        }
     }
 }

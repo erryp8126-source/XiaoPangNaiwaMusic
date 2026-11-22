@@ -2150,3 +2150,27 @@ test("desktop dark theme & sidebar layout: native color-scheme, 4-tier dark pale
   assert.match(appMenuVue, /\.app-menu-header\s*\{[\s\S]*h-12[\s\S]*mb-4/);
   assert.match(appMenuVue, /\.app-menu-logo\s*\{[\s\S]*w-9\s+h-9/);
 });
+
+test("iOS WebView security: Fail-Closed navigation allowlist and origin-checked JS bridge", () => {
+  const mainVcSwift = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/MainViewController.swift"),
+    "utf-8"
+  );
+  const decideBlock = mainVcSwift.slice(
+    mainVcSwift.indexOf("decidePolicyFor navigationAction"),
+    mainVcSwift.indexOf("createWebViewWith configuration")
+  );
+  assert.match(decideBlock, /IOSJsBridge\.isAllowedWebViewNavigationUrl/);
+  assert.match(decideBlock, /decisionHandler\(\.cancel\)\s*\}\s*[\r\n]+\s*func webView\(/);
+  const lastDecisionAllow = decideBlock.lastIndexOf("decisionHandler(.allow)");
+  const lastDecisionCancel = decideBlock.lastIndexOf("decisionHandler(.cancel)");
+  assert.ok(lastDecisionCancel > lastDecisionAllow, "decidePolicyFor must end with Fail-Closed decisionHandler(.cancel)");
+
+  const iosBridgeSwift = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Bridge/IOSJsBridge.swift"),
+    "utf-8"
+  );
+  assert.match(iosBridgeSwift, /window\.location\.protocol\s*!==\s*'http:'\s*\|\|\s*window\.location\.hostname\s*!==\s*'127\.0\.0\.1'/);
+  assert.match(iosBridgeSwift, /url\.scheme\?\.lowercased\(\)\s*==\s*"http"[\s\S]*url\.host\s*==\s*"127\.0\.0\.1"[\s\S]*url\.port\s*==\s*localPort/);
+  assert.match(iosBridgeSwift, /url\.absoluteString\s*==\s*"about:blank"/);
+});
