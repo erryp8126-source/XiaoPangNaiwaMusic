@@ -36,8 +36,8 @@ android {
     applicationId = "com.xiaopang.naiwamusic"
     minSdk = 26
     targetSdk = 35
-    versionCode = 10000
-    versionName = "1.0.0"
+    versionCode = 10001
+    versionName = "1.0.1"
   }
 
   signingConfigs {

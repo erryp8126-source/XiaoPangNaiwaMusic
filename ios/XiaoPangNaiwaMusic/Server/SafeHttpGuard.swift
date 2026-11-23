@@ -58,8 +58,7 @@ enum SafeHttpGuard {
         // 192.0.0.0/24 & 192.168.0.0/16
         if b0 == 192 && b1 == 0 && b2 == 0 { return false }
         if b0 == 192 && b1 == 168 { return false }
-        // 198.18.0.0/15 (benchmarking)
-        if b0 == 198 && (b1 == 18 || b1 == 19) { return false }
+        // Note: 198.18.0.0/15 is intentionally allowed for VPN FakeIP / TUN virtual routing compatibility
         // 224.0.0.0/4 (multicast) & 240.0.0.0/4 (reserved/broadcast)
         if b0 >= 224 { return false }
         return true
@@ -84,13 +83,25 @@ enum SafeHttpGuard {
         return true
     }
 
+    /// 仅校验 http/https 协议与全量公网 IP（不限制第三方 CDN 域名后缀，用于解灰音频流探测）
+    static func validatePublicHttpUrlAndResolve(_ url: URL) -> Bool {
+        return validateResolvedUrl(url, allowedSuffixes: nil)
+    }
+
     /// 校验协议、域名白名单，并解析该主机名对应的全部 IPv4/IPv6 地址，拒绝任意私网/回环/链路本地/组播/未指定地址
     static func validateUrlAndResolve(_ url: URL, allowedSuffixes: Set<String>) -> Bool {
+        return validateResolvedUrl(url, allowedSuffixes: allowedSuffixes)
+    }
+
+    private static func validateResolvedUrl(_ url: URL, allowedSuffixes: Set<String>?) -> Bool {
         guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
             return false
         }
         guard let host = url.host?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines),
-              isAllowedDomain(host, allowedSuffixes: allowedSuffixes) else {
+              !host.isEmpty else {
+            return false
+        }
+        if let allowedSuffixes = allowedSuffixes, !isAllowedDomain(host, allowedSuffixes: allowedSuffixes) {
             return false
         }
 
@@ -133,12 +144,12 @@ enum SafeHttpGuard {
 final class SafeRedirectSessionDelegate: NSObject, URLSessionTaskDelegate {
     private static let allowedRedirectCodes: Set<Int> = [301, 302, 307, 308]
 
-    private let allowedSuffixes: Set<String>
+    private let allowedSuffixes: Set<String>?
     private let maxRedirects: Int
     private let lock = NSLock()
     private var hopCounts: [Int: Int] = [:]
 
-    init(allowedSuffixes: Set<String>, maxRedirects: Int = SafeHttpGuard.maxRedirects) {
+    init(allowedSuffixes: Set<String>?, maxRedirects: Int = SafeHttpGuard.maxRedirects) {
         self.allowedSuffixes = allowedSuffixes
         self.maxRedirects = maxRedirects
         super.init()
@@ -167,7 +178,10 @@ final class SafeRedirectSessionDelegate: NSObject, URLSessionTaskDelegate {
             return
         }
 
-        guard SafeHttpGuard.validateUrlAndResolve(nextUrl, allowedSuffixes: allowedSuffixes) else {
+        let isAllowed = allowedSuffixes.map {
+            SafeHttpGuard.validateUrlAndResolve(nextUrl, allowedSuffixes: $0)
+        } ?? SafeHttpGuard.validatePublicHttpUrlAndResolve(nextUrl)
+        guard isAllowed else {
             completionHandler(nil)
             return
         }

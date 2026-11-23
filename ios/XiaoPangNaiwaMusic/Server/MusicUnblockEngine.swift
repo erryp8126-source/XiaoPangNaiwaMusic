@@ -14,6 +14,8 @@ final class MusicUnblockEngine {
 
     private let redirectDelegate: SafeRedirectSessionDelegate
     private let session: URLSession
+    private let mediaProbeRedirectDelegate: SafeRedirectSessionDelegate
+    private let mediaProbeSession: URLSession
 
     init() {
         let cfg = URLSessionConfiguration.default
@@ -23,6 +25,9 @@ final class MusicUnblockEngine {
         let del = SafeRedirectSessionDelegate(allowedSuffixes: SafeHttpGuard.audioAndProxyAllowedDomains)
         self.redirectDelegate = del
         self.session = URLSession(configuration: cfg, delegate: del, delegateQueue: nil)
+        let probeDel = SafeRedirectSessionDelegate(allowedSuffixes: nil)
+        self.mediaProbeRedirectDelegate = probeDel
+        self.mediaProbeSession = URLSession(configuration: cfg, delegate: probeDel, delegateQueue: nil)
     }
 
     func unblock(
@@ -312,13 +317,13 @@ final class MusicUnblockEngine {
     }
 
     private func checkAudioUrlReachable(_ url: String) -> Bool {
-        guard let u = URL(string: url), Self.isSafePublicHttpUrl(u) else { return false }
+        guard let u = URL(string: url), SafeHttpGuard.validatePublicHttpUrlAndResolve(u) else { return false }
         var req = URLRequest(url: u, timeoutInterval: 8)
         req.httpMethod = "HEAD"
         req.setValue(Self.defaultUA, forHTTPHeaderField: "User-Agent")
         let sem = DispatchSemaphore(value: 0)
         var ok = false
-        session.dataTask(with: req) { _, resp, _ in
+        mediaProbeSession.dataTask(with: req) { _, resp, _ in
             if let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode) {
                 let ct = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
                 ok = !ct.contains("text/html")

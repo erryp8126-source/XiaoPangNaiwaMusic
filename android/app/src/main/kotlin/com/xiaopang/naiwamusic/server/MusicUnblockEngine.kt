@@ -36,6 +36,11 @@ class MusicUnblockEngine {
         .dns(SafeHttpGuard.createSafeDns(SafeHttpGuard.AUDIO_AND_PROXY_ALLOWED_DOMAINS))
         .build()
 
+    // 音频流 CDN 探测客户端：仅约束公网 IP + 手动重定向校验，允许第三方公网音频 CDN
+    private val mediaProbeClient: OkHttpClient = client.newBuilder()
+        .dns(SafeHttpGuard.createPublicIpOnlyDns())
+        .build()
+
     data class UnblockResult(
         val url: String,
         val br: Int = 320000,
@@ -250,10 +255,9 @@ class MusicUnblockEngine {
     private fun checkAudioUrlReachable(url: String): Boolean {
         return try {
             val req = Request.Builder().url(url).head().header("User-Agent", DEFAULT_UA).build()
-            SafeHttpGuard.executeWithSafeRedirects(
-                client,
-                req,
-                SafeHttpGuard.AUDIO_AND_PROXY_ALLOWED_DOMAINS
+            SafeHttpGuard.executePublicMediaWithSafeRedirects(
+                mediaProbeClient,
+                req
             ).use { resp ->
                 resp.isSuccessful && (resp.header("Content-Type")?.contains("text/html") != true)
             }

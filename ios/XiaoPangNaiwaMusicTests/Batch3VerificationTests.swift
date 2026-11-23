@@ -263,18 +263,29 @@ final class Batch3VerificationTests: XCTestCase {
         XCTAssertEqual(dict?["postedCount"] as? Int, 0, "Disabled iOS entries must not send misleading native messages")
     }
 
-    /// 验证 4：SafeHttpGuard 在 iOS 运行时阻断回环与云元数据 IP
+    /// 验证 4：SafeHttpGuard 在 iOS 运行时阻断回环/私网/云元数据 IP，并放行 VPN FakeIP (198.18.0.0/15) 与公网媒体地址
     func testSafeHttpGuardBlocksPrivateAndLoopbackTargets() {
         XCTAssertFalse(SafeHttpGuard.isPublicIPv4(127, 0, 0, 1))
         XCTAssertFalse(SafeHttpGuard.isPublicIPv4(169, 254, 169, 254))
         XCTAssertFalse(SafeHttpGuard.isPublicIPv4(10, 0, 0, 1))
         XCTAssertFalse(SafeHttpGuard.isPublicIPv4(192, 168, 1, 1))
+        XCTAssertFalse(SafeHttpGuard.isPublicIPv4(172, 16, 0, 1))
+        XCTAssertFalse(SafeHttpGuard.isPublicIPv4(100, 64, 0, 1))
+        XCTAssertFalse(SafeHttpGuard.isPublicIPv4(192, 0, 0, 1))
+        XCTAssertFalse(SafeHttpGuard.isPublicIPv4(0, 0, 0, 0))
+        XCTAssertFalse(SafeHttpGuard.isPublicIPv4(224, 0, 0, 1))
         XCTAssertTrue(SafeHttpGuard.isPublicIPv4(8, 8, 8, 8))
+        XCTAssertTrue(SafeHttpGuard.isPublicIPv4(198, 18, 0, 1))
+        XCTAssertTrue(SafeHttpGuard.isPublicIPv4(198, 19, 255, 254))
 
         let loopbackUrl = URL(string: "http://127.0.0.1:8080/secret")!
         XCTAssertFalse(
             SafeHttpGuard.validateUrlAndResolve(loopbackUrl, allowedSuffixes: SafeHttpGuard.audioAndProxyAllowedDomains)
         )
+        XCTAssertFalse(SafeHttpGuard.validatePublicHttpUrlAndResolve(loopbackUrl))
+        XCTAssertFalse(SafeHttpGuard.validatePublicHttpUrlAndResolve(URL(string: "http://169.254.169.254/latest")!))
+        XCTAssertFalse(SafeHttpGuard.validatePublicHttpUrlAndResolve(URL(string: "ftp://8.8.8.8/song.mp3")!))
+        XCTAssertTrue(SafeHttpGuard.validatePublicHttpUrlAndResolve(URL(string: "https://198.18.0.1/song.mp3")!))
     }
 
     /// 验证 5（Phase 1）：iOS 原生桥接暴露 triggerHaptic 并正确派发四类触觉反馈

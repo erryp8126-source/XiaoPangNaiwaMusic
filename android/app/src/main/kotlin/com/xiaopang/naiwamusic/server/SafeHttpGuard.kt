@@ -73,8 +73,7 @@ object SafeHttpGuard {
         // 192.0.0.0/24 (IETF protocol), 192.168.0.0/16 (private)
         if (b0 == 192 && b1 == 0 && b2 == 0) return false
         if (b0 == 192 && b1 == 168) return false
-        // 198.18.0.0/15 (benchmarking)
-        if (b0 == 198 && (b1 == 18 || b1 == 19)) return false
+        // Note: 198.18.0.0/15 is intentionally allowed for VPN FakeIP / TUN virtual routing compatibility
         // 224.0.0.0/4 (multicast) & 240.0.0.0/4 (reserved/broadcast)
         if (b0 >= 224) return false
         return true
@@ -118,21 +117,38 @@ object SafeHttpGuard {
         }
     }
 
-    fun validateUrlSyntax(rawUrl: String, allowedSuffixes: Set<String>): URI? {
+    fun validatePublicHttpUrlSyntax(rawUrl: String): URI? {
         val parsed = runCatching { URI(rawUrl.trim()) }.getOrNull() ?: return null
         val scheme = parsed.scheme?.lowercase() ?: return null
         if (scheme != "http" && scheme != "https") return null
+        val host = parsed.host?.lowercase()?.trim() ?: return null
+        if (host.isEmpty()) return null
+        return parsed
+    }
+
+    fun validateUrlSyntax(rawUrl: String, allowedSuffixes: Set<String>): URI? {
+        val parsed = validatePublicHttpUrlSyntax(rawUrl) ?: return null
         val host = parsed.host?.lowercase()?.trim() ?: return null
         if (!isAllowedDomain(host, allowedSuffixes)) return null
         return parsed
     }
 
-    fun validateUrlAndResolve(rawUrl: String, allowedSuffixes: Set<String>): Boolean {
-        val parsed = validateUrlSyntax(rawUrl, allowedSuffixes) ?: return false
-        val host = parsed.host ?: return false
+    private fun validateResolvedPublicIps(host: String): Boolean {
         val addresses = runCatching { InetAddress.getAllByName(host) }.getOrNull()
         if (addresses.isNullOrEmpty()) return false
         return addresses.all { isPublicAddress(it) }
+    }
+
+    fun validatePublicHttpUrlAndResolve(rawUrl: String): Boolean {
+        val parsed = validatePublicHttpUrlSyntax(rawUrl) ?: return false
+        val host = parsed.host ?: return false
+        return validateResolvedPublicIps(host)
+    }
+
+    fun validateUrlAndResolve(rawUrl: String, allowedSuffixes: Set<String>): Boolean {
+        val parsed = validateUrlSyntax(rawUrl, allowedSuffixes) ?: return false
+        val host = parsed.host ?: return false
+        return validateResolvedPublicIps(host)
     }
 
     /**
@@ -176,11 +192,40 @@ object SafeHttpGuard {
         allowedSuffixes: Set<String>,
         maxRedirects: Int = MAX_REDIRECTS
     ): Response {
+        return executeRedirectsInternal(client, initialRequest, allowedSuffixes, maxRedirects)
+    }
+
+    /**
+     * 用于已解灰音频流 CDN HEAD 可达性探测：不限制第三方 CDN 域名后缀，
+     * 但每一跳严格要求 http/https 协议与全量公网 IP（防内网/回环/元数据 SSRF）。
+     */
+    fun executePublicMediaWithSafeRedirects(
+        client: OkHttpClient,
+        initialRequest: Request,
+        maxRedirects: Int = MAX_REDIRECTS
+    ): Response {
+        return executeRedirectsInternal(client, initialRequest, null, maxRedirects)
+    }
+
+    private fun isUrlAllowedForRedirect(targetUrl: String, allowedSuffixes: Set<String>?): Boolean {
+        return if (allowedSuffixes != null) {
+            validateUrlAndResolve(targetUrl, allowedSuffixes)
+        } else {
+            validatePublicHttpUrlAndResolve(targetUrl)
+        }
+    }
+
+    private fun executeRedirectsInternal(
+        client: OkHttpClient,
+        initialRequest: Request,
+        allowedSuffixes: Set<String>?,
+        maxRedirects: Int
+    ): Response {
         var currentReq = initialRequest
         var hop = 0
         while (true) {
             val targetUrl = currentReq.url.toString()
-            if (!validateUrlAndResolve(targetUrl, allowedSuffixes)) {
+            if (!isUrlAllowedForRedirect(targetUrl, allowedSuffixes)) {
                 throw SecurityException("Blocked unsafe or non-allowlisted URL: ${currentReq.url.host}")
             }
 
@@ -198,7 +243,7 @@ object SafeHttpGuard {
 
             val nextUrl = currentReq.url.resolve(location)
                 ?: throw SecurityException("Malformed redirect target")
-            if (!validateUrlAndResolve(nextUrl.toString(), allowedSuffixes)) {
+            if (!isUrlAllowedForRedirect(nextUrl.toString(), allowedSuffixes)) {
                 throw SecurityException("Blocked redirect to unsafe or non-allowlisted host: ${nextUrl.host}")
             }
 

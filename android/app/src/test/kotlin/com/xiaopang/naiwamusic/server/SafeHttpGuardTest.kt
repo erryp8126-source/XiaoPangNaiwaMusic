@@ -39,11 +39,24 @@ class SafeHttpGuardTest {
     }
 
     @Test
-    fun allowsPublicIpv4Address() {
-        val addr = InetAddress.getByName("8.8.8.8")
-        assertTrue(SafeHttpGuard.isPublicAddress(addr))
+    fun allowsPublicIpv4AndVpnFakeIpAddresses() {
+        for (ip in listOf("8.8.8.8", "198.18.0.1", "198.18.10.20", "198.19.255.254", "::ffff:198.18.0.1")) {
+            val addr = InetAddress.getByName(ip)
+            assertTrue("Expected $ip to be allowed (public or VPN FakeIP)", SafeHttpGuard.isPublicAddress(addr))
+        }
         val dns = SafeHttpGuard.createPublicIpOnlyDns()
-        val resolved = dns.lookup("8.8.8.8")
-        assertTrue(resolved.isNotEmpty())
+        assertTrue(dns.lookup("8.8.8.8").isNotEmpty())
+        assertTrue(dns.lookup("198.18.0.1").isNotEmpty())
+    }
+
+    @Test
+    fun publicMediaUrlCheckBlocksPrivateAndNonHttpSchemes() {
+        assertFalse(SafeHttpGuard.validatePublicHttpUrlAndResolve("http://127.0.0.1:8080/a.mp3"))
+        assertFalse(SafeHttpGuard.validatePublicHttpUrlAndResolve("http://169.254.169.254/latest/meta-data"))
+        assertFalse(SafeHttpGuard.validatePublicHttpUrlAndResolve("http://10.0.0.1/a.mp3"))
+        assertFalse(SafeHttpGuard.validatePublicHttpUrlAndResolve("http://192.168.1.1/a.mp3"))
+        assertFalse(SafeHttpGuard.validatePublicHttpUrlAndResolve("ftp://cdn.example.com/a.mp3"))
+        assertTrue(SafeHttpGuard.validatePublicHttpUrlSyntax("https://thirdparty-cdn.example.com/stream.mp3") != null)
+        assertTrue(SafeHttpGuard.validatePublicHttpUrlAndResolve("https://198.18.0.1/track.mp3"))
     }
 }

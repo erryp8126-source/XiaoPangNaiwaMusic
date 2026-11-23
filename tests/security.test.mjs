@@ -2194,7 +2194,7 @@ test("release prep: saveTextFile isolated to Backups/ with .json/.txt allowlist 
 
   const readmeMd = fs.readFileSync(path.join(repoRoot, "README.md"), "utf-8");
   assert.doesNotMatch(readmeMd, /v5\.1\.4/);
-  assert.match(readmeMd, /XiaoPangNaiwaMusic-v1\.0\.0-unsigned\.ipa/);
+  assert.match(readmeMd, /XiaoPangNaiwaMusic-v1\.0\.\d+-unsigned\.ipa/);
 
   const buildApkPs1 = fs.readFileSync(path.join(repoRoot, "build_apk.ps1"), "utf-8");
   assert.doesNotMatch(buildApkPs1, /"5\.1\.3"/);
@@ -2206,4 +2206,61 @@ test("release prep: saveTextFile isolated to Backups/ with .json/.txt allowlist 
 
   const netlifyToml = fs.readFileSync(path.join(repoRoot, "netlify.toml"), "utf-8");
   assert.match(netlifyToml, /NODE_VERSION\s*=\s*"22"/);
+});
+
+test("v1.0.1 patch: VPN FakeIP (198.18.0.0/15) allowed, private SSRF still blocked, CDN HEAD probe public-IP only & versions 1.0.1", () => {
+  const androidGuard = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/SafeHttpGuard.kt"),
+    "utf-8"
+  );
+  assert.doesNotMatch(androidGuard, /b0\s*==\s*198\s*&&\s*\(b1\s*==\s*18\s*\|\|\s*b1\s*==\s*19\)/);
+  assert.match(androidGuard, /if\s*\(b0\s*==\s*192\s*&&\s*b1\s*==\s*168\)\s*return\s*false/);
+  assert.match(androidGuard, /if\s*\(b0\s*==\s*169\s*&&\s*b1\s*==\s*254\)\s*return\s*false/);
+  assert.match(androidGuard, /fun executePublicMediaWithSafeRedirects\(/);
+
+  const androidUnblock = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/MusicUnblockEngine.kt"),
+    "utf-8"
+  );
+  const ktProbeBlock = androidUnblock.slice(
+    androidUnblock.indexOf("fun checkAudioUrlReachable("),
+    androidUnblock.indexOf("fun httpGetText(")
+  );
+  assert.match(ktProbeBlock, /executePublicMediaWithSafeRedirects\(\s*mediaProbeClient/);
+
+  const iosGuard = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Server/SafeHttpGuard.swift"),
+    "utf-8"
+  );
+  assert.doesNotMatch(iosGuard, /b0\s*==\s*198\s*&&\s*\(b1\s*==\s*18\s*\|\|\s*b1\s*==\s*19\)/);
+  assert.match(iosGuard, /if\s*b0\s*==\s*192\s*&&\s*b1\s*==\s*168\s*\{\s*return\s*false\s*\}/);
+  assert.match(iosGuard, /if\s*b0\s*==\s*169\s*&&\s*b1\s*==\s*254\s*\{\s*return\s*false\s*\}/);
+  assert.match(iosGuard, /static func validatePublicHttpUrlAndResolve\(/);
+
+  const iosUnblock = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Server/MusicUnblockEngine.swift"),
+    "utf-8"
+  );
+  const swiftProbeBlock = iosUnblock.slice(
+    iosUnblock.indexOf("func checkAudioUrlReachable("),
+    iosUnblock.indexOf("func httpGetText(")
+  );
+  assert.match(swiftProbeBlock, /SafeHttpGuard\.validatePublicHttpUrlAndResolve/);
+  assert.match(swiftProbeBlock, /mediaProbeSession\.dataTask/);
+
+  const rootPkg = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf-8"));
+  const upstreamPkg = JSON.parse(fs.readFileSync(path.join(repoRoot, "upstream/package.json"), "utf-8"));
+  assert.equal(rootPkg.version, "1.0.1");
+  assert.equal(upstreamPkg.version, "1.0.1");
+
+  const gradleKts = fs.readFileSync(path.join(repoRoot, "android/app/build.gradle.kts"), "utf-8");
+  assert.match(gradleKts, /versionCode\s*=\s*10001/);
+  assert.match(gradleKts, /versionName\s*=\s*"1\.0\.1"/);
+
+  const projectYml = fs.readFileSync(path.join(repoRoot, "ios/project.yml"), "utf-8");
+  assert.match(projectYml, /MARKETING_VERSION:\s*"1\.0\.1"/);
+  assert.match(projectYml, /CURRENT_PROJECT_VERSION:\s*"10001"/);
+  const readmeMd = fs.readFileSync(path.join(repoRoot, "README.md"), "utf-8");
+  assert.match(readmeMd, /\(v1\.0\.1\)/);
+  assert.match(readmeMd, /XiaoPangNaiwaMusic-v1\.0\.1-unsigned\.ipa/);
 });
