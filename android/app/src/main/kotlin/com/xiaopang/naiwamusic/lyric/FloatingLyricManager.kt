@@ -1,5 +1,6 @@
 package com.xiaopang.naiwamusic.lyric
 
+import android.app.KeyguardManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -127,43 +128,63 @@ class FloatingLyricManager(
         activeInstance = this
     }
 
+    private fun runOnMain(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            block()
+        } else {
+            mainHandler.post(block)
+        }
+    }
+
     fun isEnabled(): Boolean = isShowing
 
     fun isLockedState(): Boolean = isLocked
 
-    fun setEnabled(enabled: Boolean): Boolean {
+    fun setEnabled(enabled: Boolean, openSettingsOnDenied: Boolean = true): Boolean {
         if (!enabled) {
             hide()
             prefs.floatingLyricEnabled = false
+            MusicPlaybackService.instance?.onFloatingLyricStateChanged(false)
             return false
         }
         if (!Settings.canDrawOverlays(appContext)) {
+            val isLocked = runCatching {
+                (appContext.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)
+                    ?.isKeyguardLocked == true
+            }.getOrDefault(false)
             mainHandler.post {
-                Toast.makeText(
-                    appContext,
-                    "请授予「显示在其他应用上层」权限以开启桌面歌词",
-                    Toast.LENGTH_LONG
-                ).show()
-                val intent = Intent(
-                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:${appContext.packageName}")
-                ).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                runCatching {
+                    Toast.makeText(
+                        appContext,
+                        "请授予「显示在其他应用上层」权限以开启桌面歌词",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
-                runCatching { appContext.startActivity(intent) }
+                if (openSettingsOnDenied && !isLocked) {
+                    val intent = Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:${appContext.packageName}")
+                    ).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    runCatching { appContext.startActivity(intent) }
+                }
             }
             prefs.floatingLyricEnabled = false
+            MusicPlaybackService.instance?.onFloatingLyricStateChanged(false)
             return false
         }
         show()
-        prefs.floatingLyricEnabled = true
-        return true
+        val enabledNow = if (Looper.myLooper() == Looper.getMainLooper()) isShowing else true
+        prefs.floatingLyricEnabled = enabledNow
+        MusicPlaybackService.instance?.onFloatingLyricStateChanged(enabledNow)
+        return enabledNow
     }
 
     fun show() {
-        mainHandler.post {
-            if (isShowing) return@post
-            if (!Settings.canDrawOverlays(appContext)) return@post
+        runOnMain {
+            if (isShowing) return@runOnMain
+            if (!Settings.canDrawOverlays(appContext)) return@runOnMain
 
             highlightColor = prefs.floatingLyricColor
             lyricTextSizeSp = prefs.floatingLyricTextSize
@@ -720,7 +741,7 @@ class FloatingLyricManager(
     }
 
     fun hide() {
-        mainHandler.post {
+        runOnMain {
             mainHandler.removeCallbacks(autoCollapseRunnable)
             mainHandler.removeCallbacks(lyricTicker)
             cancelUnlockNotification()

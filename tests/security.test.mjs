@@ -2500,3 +2500,92 @@ test("security hardening final: LX runner blocks private/loopback/supabase URLs 
   assert.doesNotMatch(extractIpBlock, /split_part\(/i, "extract_sync_client_ip must not take first comma-separated segment of x-forwarded-for");
   assert.match(extractIpBlock, /order\s+by\s+ord\s+desc/i, "extract_sync_client_ip must take rightmost non-empty x-forwarded-for segment as fallback");
 });
+
+test("media session custom controls: monochrome vectors, lockscreen-safe lyric toggle, bidirectional favorite sync", () => {
+  const vectorDrawables = [
+    "android/app/src/main/res/drawable/ic_media_heart_outline.xml",
+    "android/app/src/main/res/drawable/ic_media_heart_filled.xml",
+    "android/app/src/main/res/drawable/ic_media_lyric_off.xml",
+    "android/app/src/main/res/drawable/ic_media_lyric_on.xml"
+  ];
+  for (const relPath of vectorDrawables) {
+    const absPath = path.join(repoRoot, relPath);
+    assert.equal(fs.existsSync(absPath), true, `${relPath} must exist`);
+    const xml = fs.readFileSync(absPath, "utf-8");
+    assert.match(xml, /<vector\b/i, `${relPath} must be an Android VectorDrawable`);
+    assert.match(xml, /android:fillColor="#FFFFFFFF"/i, `${relPath} must use monochrome pure white tintable fill`);
+  }
+
+  const floatingMgrSrc = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/lyric/FloatingLyricManager.kt"),
+    "utf-8"
+  );
+  assert.match(floatingMgrSrc, /KeyguardManager/);
+  assert.match(floatingMgrSrc, /fun setEnabled\(enabled: Boolean,\s*openSettingsOnDenied: Boolean = true\)/);
+  assert.match(floatingMgrSrc, /openSettingsOnDenied && !isLocked/);
+  assert.match(floatingMgrSrc, /MusicPlaybackService\.instance\?\.onFloatingLyricStateChanged/);
+
+  const playbackServiceSrc = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/player/MusicPlaybackService.kt"),
+    "utf-8"
+  );
+  assert.match(playbackServiceSrc, /CUSTOM_CMD_TOGGLE_FAVORITE\s*=\s*"com\.xiaopang\.naiwamusic\.TOGGLE_FAVORITE"/);
+  assert.match(playbackServiceSrc, /CUSTOM_CMD_TOGGLE_LYRIC\s*=\s*"com\.xiaopang\.naiwamusic\.TOGGLE_LYRIC"/);
+  assert.match(playbackServiceSrc, /object\s*:\s*MediaSession\.Callback/);
+  assert.match(playbackServiceSrc, /override fun onConnect\(/);
+  assert.match(playbackServiceSrc, /override fun onCustomCommand\(/);
+  assert.match(playbackServiceSrc, /mediaSession\.setCustomLayout\(buildCustomMediaButtons\(\)\)/);
+  assert.match(playbackServiceSrc, /eventEmitter\?\.invoke\("media-control",\s*"toggle_favorite"\)/);
+  assert.match(playbackServiceSrc, /mgr\.setEnabled\(targetEnabled,\s*openSettingsOnDenied\s*=\s*false\)/);
+  assert.match(playbackServiceSrc, /"floating-lyric-state-changed"/);
+  assert.match(playbackServiceSrc, /fun setMediaFavoriteState\(songId: String,\s*isFavorite: Boolean\)/);
+  assert.match(playbackServiceSrc, /fun onFloatingLyricStateChanged\(enabled: Boolean\)/);
+
+  const bridgeSrc = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/bridge/AndroidJsBridge.kt"),
+    "utf-8"
+  );
+  assert.match(bridgeSrc, /@JavascriptInterface\s+fun setMediaFavoriteState\(songId: String,\s*isFavorite: Boolean\)/);
+
+  const bridgeTypesSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/utils/bridge/types.ts"),
+    "utf-8"
+  );
+  assert.match(bridgeTypesSrc, /setMediaFavoriteState\?\(songId:\s*string,\s*isFavorite:\s*boolean\):\s*void/);
+
+  const favoriteStoreSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/favorite.ts"),
+    "utf-8"
+  );
+  assert.match(favoriteStoreSrc, /setFavoriteStateLocal/);
+
+  const audioServiceSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/services/audioService.ts"),
+    "utf-8"
+  );
+  assert.match(audioServiceSrc, /cmd\s*===\s*'toggle_favorite'/);
+  assert.match(audioServiceSrc, /handleNativeToggleFavorite/);
+  assert.match(audioServiceSrc, /setMediaFavoriteState\?\.\(songIdStr,\s*wasFavorite\)/);
+  assert.match(audioServiceSrc, /setMediaFavoriteState\?\.\(songIdStr,\s*false\)/);
+
+  const musicHookSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/hooks/MusicHook.ts"),
+    "utf-8"
+  );
+  assert.match(musicHookSrc, /syncNativeMediaFavoriteState\(/);
+  assert.match(musicHookSrc, /onAndroidEvent\('floating-lyric-state-changed'/);
+
+  const mobileSettingsSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/player/MobilePlayerSettings.vue"),
+    "utf-8"
+  );
+  assert.match(mobileSettingsSrc, /onAndroidEvent\('floating-lyric-state-changed'/);
+  assert.match(mobileSettingsSrc, /offAndroidEvent\('floating-lyric-state-changed'/);
+
+  const playbackTabSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/set/tabs/PlaybackTab.vue"),
+    "utf-8"
+  );
+  assert.match(playbackTabSrc, /onAndroidEvent\('floating-lyric-state-changed'/);
+  assert.match(playbackTabSrc, /offAndroidEvent\('floating-lyric-state-changed'/);
+});

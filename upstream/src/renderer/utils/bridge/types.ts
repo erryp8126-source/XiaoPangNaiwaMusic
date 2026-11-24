@@ -38,6 +38,7 @@ export interface AndroidBridgeInterface {
   audioGetActiveTrack?(): string;
   audioSyncQueue(queueJson: string): void;
   audioSetAudioEnhancement?(configJson: string): void;
+  setMediaFavoriteState?(songId: string, isFavorite: boolean): void;
   // Hardware Equalizer (Android only; iOS supportsEq=false)
   eqSetEnabled(enabled: boolean): void | boolean;
   eqSetBandGain(freqHz: number, gainDb: number): void | boolean;

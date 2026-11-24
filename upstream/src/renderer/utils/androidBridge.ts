@@ -30,6 +30,7 @@ export {
   invokeAndroidAsync,
   isAndroid,
   isAndroidAudioCached,
+  isCloudFavoriteSupportedSong,
   isExternalAudioOutputConnected,
   nativeSecureGetSecret,
   nativeSecureRemoveSecret,
@@ -40,6 +41,7 @@ export {
   saveAndroidServerConfig,
   saveImageViaNativeBridge,
   syncNativeAudioEnhancement,
+  syncNativeMediaFavoriteState,
   triggerHaptic,
   type OfflinePlayableIdGroups
 } from './bridge/core';

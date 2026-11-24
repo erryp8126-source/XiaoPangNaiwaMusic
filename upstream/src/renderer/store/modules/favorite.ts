@@ -178,6 +178,26 @@ export const useFavoriteStore = defineStore('favorite', () => {
     }
   };
 
+  /**
+   * 仅更新本地收藏列表状态（不重复请求云端接口，供原生媒体控制回传成功态后同步）
+   */
+  const setFavoriteStateLocal = (id: number | string, isFav: boolean) => {
+    const normalizedId = typeof id === 'string' && /^\d+$/.test(id) ? Number(id) : id;
+    const isMatch = (existingId: number | string) =>
+      typeof normalizedId === 'string' && normalizedId.includes('--')
+        ? isBilibiliIdMatch(existingId, normalizedId)
+        : existingId === normalizedId || String(existingId) === String(normalizedId);
+
+    if (isFav) {
+      if (!favoriteList.value.some(isMatch)) {
+        favoriteList.value.push(normalizedId);
+      }
+    } else {
+      favoriteList.value = favoriteList.value.filter((existingId) => !isMatch(existingId));
+    }
+    setLocalStorageItem('favoriteList', favoriteList.value);
+  };
+
   return {
     // 状态
     favoriteList,
@@ -186,6 +206,7 @@ export const useFavoriteStore = defineStore('favorite', () => {
     // Actions
     addToFavorite,
     removeFromFavorite,
+    setFavoriteStateLocal,
     addToDislikeList,
     removeFromDislikeList,
     initializeFavoriteList,

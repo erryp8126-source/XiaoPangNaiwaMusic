@@ -353,6 +353,8 @@ import { useSettingsStore } from '@/store/modules/settings';
 import { isAndroid } from '@/utils';
 import {
   getNativeCapabilities,
+  offAndroidEvent,
+  onAndroidEvent,
   registerAndroidBackHandler,
   triggerHaptic
 } from '@/utils/androidBridge';
@@ -443,6 +445,14 @@ const toggleAndroidFloatingLyric = () => {
   floatingLyricOn.value = Boolean(
     (window as any).AlgerAndroid?.setFloatingLyricEnabled?.(!floatingLyricOn.value)
   );
+};
+
+const handleFloatingLyricStateChanged = (_: any, payload: any) => {
+  floatingLyricOn.value = Boolean(payload?.enabled);
+};
+
+const handleFloatingLyricClosed = () => {
+  floatingLyricOn.value = false;
 };
 
 const handleDownloadCurrent = async () => {
@@ -610,6 +620,10 @@ onMounted(() => {
   if (hasTimerActive.value && sleepTimer.value.type === 'time') {
     startTimerUpdate();
   }
+  if (nativeCapabilities.supportsFloatingLyric) {
+    onAndroidEvent('floating-lyric-state-changed', handleFloatingLyricStateChanged);
+    onAndroidEvent('floating-lyric-closed', handleFloatingLyricClosed);
+  }
   unregisterBack = registerAndroidBackHandler(() => {
     if (showEqModal.value) {
       closeEqModal();
@@ -625,6 +639,10 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopTimerUpdate();
+  if (nativeCapabilities.supportsFloatingLyric) {
+    offAndroidEvent('floating-lyric-state-changed', handleFloatingLyricStateChanged);
+    offAndroidEvent('floating-lyric-closed', handleFloatingLyricClosed);
+  }
   unregisterBack?.();
   unregisterBack = null;
 });

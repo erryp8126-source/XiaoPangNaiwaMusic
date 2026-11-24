@@ -20,6 +20,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.core.app.NotificationCompat
@@ -38,8 +39,11 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaStyleNotificationHelper
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import com.xiaopang.naiwamusic.NaiwaApp
 import com.xiaopang.naiwamusic.MainActivity
 import com.xiaopang.naiwamusic.R
@@ -56,6 +60,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.ByteArrayOutputStream
@@ -83,7 +89,12 @@ class MusicPlaybackService : Service() {
         const val ACTION_PREV = "com.xiaopang.naiwamusic.ACTION_PREV"
         const val ACTION_PLAY_PAUSE = "com.xiaopang.naiwamusic.ACTION_PLAY_PAUSE"
         const val ACTION_NEXT = "com.xiaopang.naiwamusic.ACTION_NEXT"
+        const val ACTION_TOGGLE_FAVORITE = "com.xiaopang.naiwamusic.ACTION_TOGGLE_FAVORITE"
+        const val ACTION_TOGGLE_LYRIC = "com.xiaopang.naiwamusic.ACTION_TOGGLE_LYRIC"
         const val ACTION_UNLOCK_LYRIC = "com.xiaopang.naiwamusic.ACTION_UNLOCK_LYRIC"
+
+        const val CUSTOM_CMD_TOGGLE_FAVORITE = "com.xiaopang.naiwamusic.TOGGLE_FAVORITE"
+        const val CUSTOM_CMD_TOGGLE_LYRIC = "com.xiaopang.naiwamusic.TOGGLE_LYRIC"
 
         private const val MAX_NATIVE_SKIP_FAILS = 8
 
@@ -111,8 +122,26 @@ class MusicPlaybackService : Service() {
         @Volatile
         var latestVolumeNormalization: Boolean = false
 
+        @Volatile
+        var latestFavoriteSongId: String = ""
+
+        @Volatile
+        var latestFavoriteState: Boolean = false
+
+        internal fun isSupportedCustomCommand(action: String): Boolean {
+            return action == CUSTOM_CMD_TOGGLE_FAVORITE || action == CUSTOM_CMD_TOGGLE_LYRIC
+        }
+
+        internal fun resolveFavoriteIconRes(isFavorite: Boolean): Int {
+            return if (isFavorite) R.drawable.ic_media_heart_filled else R.drawable.ic_media_heart_outline
+        }
+
+        internal fun resolveLyricIconRes(isEnabled: Boolean): Int {
+            return if (isEnabled) R.drawable.ic_media_lyric_on else R.drawable.ic_media_lyric_off
+        }
+
         private val pendingActions = mutableListOf<(MusicPlaybackService) -> Unit>()
-        private val mainHandler = Handler(Looper.getMainLooper())
+        private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
 
         fun ensureStarted(context: Context, onReady: (MusicPlaybackService) -> Unit) {
             mainHandler.post {
@@ -218,6 +247,10 @@ class MusicPlaybackService : Service() {
     @Volatile
     private var nativeIsFm: Boolean = false
     private var stopAfterCurrent: Boolean = false
+    @Volatile
+    private var currentIsFavorite: Boolean = false
+    @Volatile
+    private var currentLyricEnabled: Boolean = false
 
     private var pendingAutoNextRunnable: Runnable? = null
     private var nativeAdvanceJob: Job? = null
@@ -319,6 +352,8 @@ class MusicPlaybackService : Service() {
                     }
                 }
             }
+            ACTION_TOGGLE_FAVORITE -> handleToggleFavoriteFromMedia()
+            ACTION_TOGGLE_LYRIC -> handleToggleLyricFromMedia()
             ACTION_UNLOCK_LYRIC -> {
                 FloatingLyricManager.activeInstance?.setLocked(false)
             }
@@ -662,10 +697,181 @@ class MusicPlaybackService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        currentLyricEnabled = FloatingLyricManager.activeInstance?.isEnabled() == true ||
+            (NaiwaApp.instance.prefs.floatingLyricEnabled && Settings.canDrawOverlays(this))
+        if (currentSongId.isNotBlank() && latestFavoriteSongId == currentSongId) {
+            currentIsFavorite = latestFavoriteState
+        }
+
         mediaSession = MediaSession.Builder(this, wrappedPlayer)
             .setId("alger_music_session")
             .setSessionActivity(sessionActivityPendingIntent)
+            .setCallback(object : MediaSession.Callback {
+                override fun onConnect(
+                    session: MediaSession,
+                    controller: MediaSession.ControllerInfo
+                ): MediaSession.ConnectionResult {
+                    val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS
+                        .buildUpon()
+                        .add(SessionCommand(CUSTOM_CMD_TOGGLE_FAVORITE, Bundle.EMPTY))
+                        .add(SessionCommand(CUSTOM_CMD_TOGGLE_LYRIC, Bundle.EMPTY))
+                        .build()
+                    return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                        .setAvailableSessionCommands(sessionCommands)
+                        .setCustomLayout(buildCustomMediaButtons())
+                        .build()
+                }
+
+                override fun onCustomCommand(
+                    session: MediaSession,
+                    controller: MediaSession.ControllerInfo,
+                    customCommand: SessionCommand,
+                    args: Bundle
+                ): ListenableFuture<SessionResult> {
+                    return when (customCommand.customAction) {
+                        CUSTOM_CMD_TOGGLE_FAVORITE -> {
+                            handleToggleFavoriteFromMedia()
+                            Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                        }
+                        CUSTOM_CMD_TOGGLE_LYRIC -> {
+                            handleToggleLyricFromMedia()
+                            Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                        }
+                        else -> super.onCustomCommand(session, controller, customCommand, args)
+                    }
+                }
+            })
             .build()
+        mediaSession.setCustomLayout(buildCustomMediaButtons())
+    }
+
+    private fun buildCustomMediaButtons(): List<CommandButton> {
+        val favBtn = CommandButton.Builder(
+            if (currentIsFavorite) CommandButton.ICON_HEART_FILLED else CommandButton.ICON_HEART_UNFILLED
+        )
+            .setCustomIconResId(resolveFavoriteIconRes(currentIsFavorite))
+            .setDisplayName(if (currentIsFavorite) "取消喜欢" else "喜欢")
+            .setSessionCommand(SessionCommand(CUSTOM_CMD_TOGGLE_FAVORITE, Bundle.EMPTY))
+            .setEnabled(true)
+            .build()
+
+        val lyricBtn = CommandButton.Builder(
+            if (currentLyricEnabled) CommandButton.ICON_SUBTITLES else CommandButton.ICON_SUBTITLES_OFF
+        )
+            .setCustomIconResId(resolveLyricIconRes(currentLyricEnabled))
+            .setDisplayName(if (currentLyricEnabled) "关闭桌面歌词" else "开启桌面歌词")
+            .setSessionCommand(SessionCommand(CUSTOM_CMD_TOGGLE_LYRIC, Bundle.EMPTY))
+            .setEnabled(true)
+            .build()
+
+        return listOf(favBtn, lyricBtn)
+    }
+
+    private fun updateMediaSessionCustomLayoutOnly() {
+        if (::mediaSession.isInitialized) {
+            runCatching {
+                mediaSession.setCustomLayout(buildCustomMediaButtons())
+            }.onFailure {
+                Log.w(TAG, "setCustomLayout failed: ${it.message}")
+            }
+        }
+    }
+
+    private fun refreshMediaSessionCustomLayout() {
+        updateMediaSessionCustomLayoutOnly()
+        if (isForegroundStarted) {
+            updateNotification()
+        }
+    }
+
+    private fun syncFavoriteStateForTrack(explicitFavorite: Boolean? = null) {
+        currentIsFavorite = when {
+            explicitFavorite != null -> {
+                if (currentSongId.isNotBlank()) {
+                    latestFavoriteSongId = currentSongId
+                    latestFavoriteState = explicitFavorite
+                }
+                explicitFavorite
+            }
+            currentSongId.isNotBlank() && latestFavoriteSongId == currentSongId -> latestFavoriteState
+            else -> false
+        }
+        updateMediaSessionCustomLayoutOnly()
+    }
+
+    fun setMediaFavoriteState(songId: String, isFavorite: Boolean) {
+        if (songId.isNotBlank()) {
+            latestFavoriteSongId = songId
+            latestFavoriteState = isFavorite
+        }
+        uiHandler.post {
+            if (songId.isBlank() || currentSongId.isBlank() || currentSongId == songId) {
+                currentIsFavorite = isFavorite
+                refreshMediaSessionCustomLayout()
+            }
+        }
+    }
+
+    fun onFloatingLyricStateChanged(enabled: Boolean) {
+        uiHandler.post {
+            if (currentLyricEnabled != enabled) {
+                currentLyricEnabled = enabled
+                refreshMediaSessionCustomLayout()
+            }
+        }
+    }
+
+    private fun handleToggleFavoriteFromMedia() {
+        val actionBlock = {
+            if (currentSongId.isNotBlank()) {
+                currentIsFavorite = !currentIsFavorite
+                latestFavoriteSongId = currentSongId
+                latestFavoriteState = currentIsFavorite
+                refreshMediaSessionCustomLayout()
+                eventEmitter?.invoke("media-control", "toggle_favorite")
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            actionBlock()
+        } else {
+            uiHandler.post { actionBlock() }
+        }
+    }
+
+    private fun handleToggleLyricFromMedia() {
+        val actionBlock = {
+            runCatching {
+                val mgr = FloatingLyricManager.activeInstance
+                if (mgr == null) {
+                    currentLyricEnabled = false
+                    refreshMediaSessionCustomLayout()
+                    eventEmitter?.invoke(
+                        "floating-lyric-state-changed",
+                        gson.toJson(mapOf("enabled" to false, "permissionDenied" to false))
+                    )
+                } else {
+                    val targetEnabled = !mgr.isEnabled()
+                    val actualEnabled = mgr.setEnabled(targetEnabled, openSettingsOnDenied = false)
+                    val permissionDenied = targetEnabled && !actualEnabled
+                    currentLyricEnabled = actualEnabled
+                    refreshMediaSessionCustomLayout()
+                    eventEmitter?.invoke(
+                        "floating-lyric-state-changed",
+                        gson.toJson(mapOf("enabled" to actualEnabled, "permissionDenied" to permissionDenied))
+                    )
+                    if (!actualEnabled && !permissionDenied) {
+                        eventEmitter?.invoke("floating-lyric-closed", "{}")
+                    }
+                }
+            }.onFailure {
+                Log.w(TAG, "handleToggleLyricFromMedia failed: ${it.message}")
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            actionBlock()
+        } else {
+            uiHandler.post { actionBlock() }
+        }
     }
 
     // ==================== 后台原生无缝预装 & 自动切歌引擎 ====================
@@ -885,6 +1091,7 @@ class MusicPlaybackService : Service() {
             exoPlayer.removeMediaItems(0, curItemIdx)
         }
 
+        syncFavoriteStateForTrack()
         snapshotPlayerState()
         FloatingLyricManager.activeInstance?.onNativeTrackChanged(currentSongId, currentTitle, currentArtist)
         FloatingLyricManager.activeInstance?.onNativePlayStateChanged(true)
@@ -1277,6 +1484,7 @@ class MusicPlaybackService : Service() {
         exoPlayer.playWhenReady = true
         exoPlayer.prepare()
 
+        syncFavoriteStateForTrack()
         snapshotPlayerState()
         FloatingLyricManager.activeInstance?.onNativeTrackChanged(currentSongId, currentTitle, currentArtist)
         FloatingLyricManager.activeInstance?.onNativePlayStateChanged(true)
@@ -1440,6 +1648,8 @@ class MusicPlaybackService : Service() {
             currentAlbum = payload.get("album")?.asString ?: ""
             currentCoverUrl = payload.get("cover")?.asString ?: ""
             currentPlayUrl = url
+            val payloadFav = payload.get("isFavorite")?.takeIf { !it.isJsonNull }?.asBoolean
+            syncFavoriteStateForTrack(payloadFav)
             FloatingLyricManager.activeInstance?.onNativeTrackChanged(currentSongId, currentTitle, currentArtist)
             ListeningStatsTracker.onTrackChanged(
                 this,
@@ -1971,6 +2181,18 @@ class MusicPlaybackService : Service() {
             Intent(this, MusicPlaybackService::class.java).setAction(ACTION_NEXT),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val favPending = PendingIntent.getService(
+            this,
+            14,
+            Intent(this, MusicPlaybackService::class.java).setAction(ACTION_TOGGLE_FAVORITE),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val lyricPending = PendingIntent.getService(
+            this,
+            15,
+            Intent(this, MusicPlaybackService::class.java).setAction(ACTION_TOGGLE_LYRIC),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
         val isPlaying = isEffectivelyPlaying()
         val playPauseIcon = if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
@@ -1988,6 +2210,16 @@ class MusicPlaybackService : Service() {
             .addAction(android.R.drawable.ic_media_previous, "上一首", prevPending)
             .addAction(playPauseIcon, playPauseLabel, playPausePending)
             .addAction(android.R.drawable.ic_media_next, "下一首", nextPending)
+            .addAction(
+                resolveFavoriteIconRes(currentIsFavorite),
+                if (currentIsFavorite) "取消喜欢" else "喜欢",
+                favPending
+            )
+            .addAction(
+                resolveLyricIconRes(currentLyricEnabled),
+                if (currentLyricEnabled) "关闭桌面歌词" else "开启桌面歌词",
+                lyricPending
+            )
 
         currentArtworkBitmap?.let { builder.setLargeIcon(it) }
 

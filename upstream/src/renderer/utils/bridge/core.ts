@@ -172,6 +172,43 @@ export function syncNativeAudioEnhancement(config: {
 }
 
 /**
+ * 判断歌曲是否为可同步红心收藏状态的云端（网易云数字 ID）曲目
+ */
+export function isCloudFavoriteSupportedSong(song: {
+  id?: string | number | null;
+  playMusicUrl?: string;
+  source?: string;
+} | null | undefined): boolean {
+  if (!song || song.id === undefined || song.id === null || song.id === '') return false;
+  const songIdStr = String(song.id);
+  const isLocalOrNonNumeric = Boolean(
+    song.playMusicUrl?.startsWith('local://') ||
+      song.source === 'local' ||
+      songIdStr.startsWith('local_') ||
+      (typeof song.id !== 'number' && !/^\d+$/.test(songIdStr))
+  );
+  return !isLocalOrNonNumeric;
+}
+
+/**
+ * 同步当前歌曲的红心收藏状态到原生媒体会话（锁屏与通知栏媒体卡片）
+ */
+export function syncNativeMediaFavoriteState(
+  songId: string | number | null | undefined,
+  isFavorite: boolean
+): void {
+  if (!isAndroid()) return;
+  try {
+    window.AlgerAndroid?.setMediaFavoriteState?.(
+      songId === undefined || songId === null ? '' : String(songId),
+      Boolean(isFavorite)
+    );
+  } catch {
+    // ignore
+  }
+}
+
+/**
  * 保存或分享听歌统计报告卡片 PNG（Android 保存至系统相册，iOS 调起原生分享/保存面板）
  */
 export async function saveImageViaNativeBridge(

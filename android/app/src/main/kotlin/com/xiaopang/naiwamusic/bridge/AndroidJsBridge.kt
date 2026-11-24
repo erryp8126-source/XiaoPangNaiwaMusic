@@ -418,6 +418,13 @@ class AndroidJsBridge(
     }
 
     @JavascriptInterface
+    fun setMediaFavoriteState(songId: String, isFavorite: Boolean) {
+        MusicPlaybackService.latestFavoriteSongId = songId
+        MusicPlaybackService.latestFavoriteState = isFavorite
+        MusicPlaybackService.instance?.setMediaFavoriteState(songId, isFavorite)
+    }
+
+    @JavascriptInterface
     fun isFloatingLyricLocked(): Boolean {
         return floatingLyricManager.isLockedState()
     }

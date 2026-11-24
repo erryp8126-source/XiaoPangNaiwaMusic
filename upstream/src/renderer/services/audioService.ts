@@ -6,6 +6,7 @@ import { isElectron } from '@/utils'; // 导入isElectron常量
 import {
   getNativeCapabilities,
   isAndroid,
+  isCloudFavoriteSupportedSong,
   NativeHowl,
   onAndroidEvent,
   syncNativeAudioEnhancement
@@ -67,12 +68,15 @@ class AudioService {
   private operationLockTimeout = 5000; // 5秒超时
   private operationLockStartTime: number = 0;
   private operationLockId: string = '';
+  private favoriteToggleInFlight = false;
 
   constructor() {
     if (isAndroid()) {
       onAndroidEvent('media-control', (_, cmd: string) => {
         if (cmd === 'nexttrack' || cmd === 'previoustrack') {
           this.emit(cmd);
+        } else if (cmd === 'toggle_favorite') {
+          void this.handleNativeToggleFavorite();
         }
       });
     } else if ('mediaSession' in navigator) {
@@ -1424,6 +1428,77 @@ class AudioService {
     } catch (error) {
       console.error('检查播放状态出错:', error);
       return false;
+    }
+  }
+
+  /**
+   * 响应锁屏 / 通知栏媒体控制卡片的红心收藏按钮点击：
+   * - 未登录或本地/非网易云曲目立即回滚原生按钮状态并提示
+   * - 发起云端 likeSong 请求；成功提交本地 store，失败则回滚原生按钮状态
+   */
+  private async handleNativeToggleFavorite(): Promise<void> {
+    if (this.favoriteToggleInFlight) return;
+    this.favoriteToggleInFlight = true;
+    try {
+      const [
+        { usePlayerStore },
+        { useFavoriteStore },
+        { useUserStore },
+        { hasPermission },
+        { likeSong },
+        { showBottomToast }
+      ] = await Promise.all([
+        import('@/store/modules/player'),
+        import('@/store/modules/favorite'),
+        import('@/store/modules/user'),
+        import('@/utils/auth'),
+        import('@/api/music'),
+        import('@/utils/shortcutToast')
+      ]);
+
+      const playerStore = usePlayerStore();
+      const favoriteStore = useFavoriteStore();
+      const userStore = useUserStore();
+
+      const song = playerStore.playMusic?.id ? playerStore.playMusic : this.currentTrack;
+      if (!song || song.id === undefined || song.id === null || song.id === '') {
+        window.AlgerAndroid?.setMediaFavoriteState?.('', false);
+        return;
+      }
+
+      const songIdStr = String(song.id);
+      if (!isCloudFavoriteSupportedSong(song)) {
+        window.AlgerAndroid?.setMediaFavoriteState?.(songIdStr, false);
+        showBottomToast('本地歌曲暂不支持云端红心收藏');
+        return;
+      }
+
+      const numericId = Number(song.id);
+      const wasFavorite = Boolean(
+        favoriteStore.isFavorite(numericId) || favoriteStore.isFavorite(song.id)
+      );
+      if (!userStore.user || !hasPermission(true)) {
+        window.AlgerAndroid?.setMediaFavoriteState?.(songIdStr, wasFavorite);
+        showBottomToast('请先登录网易云账号后再收藏');
+        return;
+      }
+
+      const targetFavorite = !wasFavorite;
+      try {
+        const res = await likeSong(numericId, targetFavorite);
+        if (res?.data?.code !== undefined && res.data.code !== 200) {
+          throw new Error(`likeSong rejected with code ${res.data.code}`);
+        }
+        favoriteStore.setFavoriteStateLocal(numericId, targetFavorite);
+        window.AlgerAndroid?.setMediaFavoriteState?.(songIdStr, targetFavorite);
+        showBottomToast(targetFavorite ? '已添加到我喜欢的音乐' : '已取消喜欢');
+      } catch (error) {
+        console.warn('[AudioService] Failed to toggle favorite from native media control:', error);
+        window.AlgerAndroid?.setMediaFavoriteState?.(songIdStr, wasFavorite);
+        showBottomToast('收藏状态同步失败，请稍后重试');
+      }
+    } finally {
+      this.favoriteToggleInFlight = false;
     }
   }
 }

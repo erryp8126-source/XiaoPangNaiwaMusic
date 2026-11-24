@@ -272,7 +272,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, ref } from 'vue';
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import EqControl from '@/components/EQControl.vue';
@@ -280,7 +280,7 @@ import AudioDeviceSettings from '@/components/settings/AudioDeviceSettings.vue';
 import MusicSourceSettings from '@/components/settings/MusicSourceSettings.vue';
 import { type Platform } from '@/types/music';
 import { isAndroid, isElectron, isNative } from '@/utils';
-import { getNativeCapabilities } from '@/utils/androidBridge';
+import { getNativeCapabilities, offAndroidEvent, onAndroidEvent } from '@/utils/androidBridge';
 import {
   getEffectiveLaunchAutoPlayMode,
   getEffectiveLaunchHomeMode,
@@ -386,6 +386,33 @@ const handleUnlockFloatingLyric = () => {
   (window as any).AlgerAndroid?.setFloatingLyricLocked?.(false);
   floatingLyricLocked.value = false;
 };
+
+const handleFloatingLyricStateChanged = (_: any, payload: any) => {
+  const nextEnabled = Boolean(payload?.enabled);
+  floatingLyricEnabled.value = nextEnabled;
+  if (!nextEnabled) {
+    floatingLyricLocked.value = false;
+  }
+};
+
+const handleFloatingLyricClosed = () => {
+  floatingLyricEnabled.value = false;
+  floatingLyricLocked.value = false;
+};
+
+onMounted(() => {
+  if (nativeCapabilities.supportsFloatingLyric) {
+    onAndroidEvent('floating-lyric-state-changed', handleFloatingLyricStateChanged);
+    onAndroidEvent('floating-lyric-closed', handleFloatingLyricClosed);
+  }
+});
+
+onUnmounted(() => {
+  if (nativeCapabilities.supportsFloatingLyric) {
+    offAndroidEvent('floating-lyric-state-changed', handleFloatingLyricStateChanged);
+    offAndroidEvent('floating-lyric-closed', handleFloatingLyricClosed);
+  }
+});
 
 const formatCacheBytes = (bytes: number): string => {
   if (!bytes || bytes <= 0) return '0 MB';

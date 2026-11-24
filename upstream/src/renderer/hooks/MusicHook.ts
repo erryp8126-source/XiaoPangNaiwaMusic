@@ -6,11 +6,19 @@ import useIndexedDB from '@/hooks/IndexDBHook';
 import { audioService } from '@/services/audioService';
 import { playbackRequestManager } from '@/services/playbackRequestManager';
 import type { usePlayerStore } from '@/store';
+import { useFavoriteStore } from '@/store/modules/favorite';
 import type { Artist, ILyricText, SongResult } from '@/types/music';
 import { isAndroid, isElectron } from '@/utils';
-import { isAndroidAudioCached, onAndroidEvent, syncAndroidPlaybackQueue } from '@/utils/androidBridge';
+import {
+  isAndroidAudioCached,
+  isCloudFavoriteSupportedSong,
+  onAndroidEvent,
+  syncAndroidPlaybackQueue,
+  syncNativeMediaFavoriteState
+} from '@/utils/androidBridge';
 import { getTextColors } from '@/utils/linearColor';
 import { inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
+import { showBottomToast } from '@/utils/shortcutToast';
 import { parseLyrics } from '@/utils/yrcParser';
 
 const windowData = window as any;
@@ -413,6 +421,48 @@ const setupAndroidFloatingLyricSync = () => {
       store.nextPlay();
     } else if (cmd === 'prev') {
       store.prevPlay();
+    }
+  });
+
+  const favoriteStore = useFavoriteStore();
+  const syncCurrentMediaFavorite = () => {
+    const store = getPlayerStore();
+    const song = store.playMusic;
+    if (!song || song.id === undefined || song.id === null || song.id === '') {
+      syncNativeMediaFavoriteState('', false);
+      return;
+    }
+    const songIdStr = String(song.id);
+    if (!isCloudFavoriteSupportedSong(song)) {
+      syncNativeMediaFavoriteState(songIdStr, false);
+      return;
+    }
+    const numericId = Number(song.id);
+    const isFav = Boolean(
+      favoriteStore.isFavorite(song.id) ||
+        (!Number.isNaN(numericId) && favoriteStore.isFavorite(numericId))
+    );
+    syncNativeMediaFavoriteState(songIdStr, isFav);
+  };
+
+  watch(
+    () => [
+      getPlayerStore().playMusic?.id,
+      getPlayerStore().playMusic?.playMusicUrl,
+      favoriteStore.favoriteList
+    ],
+    () => {
+      syncCurrentMediaFavorite();
+    },
+    { immediate: true, deep: true }
+  );
+
+  onAndroidEvent('floating-lyric-state-changed', (_, payload: any) => {
+    if (payload?.enabled === true) {
+      syncAndroidFloatingLyricLines();
+      syncAndroidFloatingLyric();
+    } else if (payload?.permissionDenied === true) {
+      showBottomToast('请授予悬浮窗权限以开启桌面歌词');
     }
   });
 };
