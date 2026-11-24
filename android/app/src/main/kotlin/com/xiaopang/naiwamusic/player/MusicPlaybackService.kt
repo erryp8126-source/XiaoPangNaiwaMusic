@@ -5,7 +5,6 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -17,7 +16,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
-import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
@@ -40,7 +38,9 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.session.CommandButton
+import androidx.media3.session.MediaNotification
 import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaSessionService
 import androidx.media3.session.MediaStyleNotificationHelper
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
@@ -60,6 +60,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import okhttp3.OkHttpClient
@@ -79,7 +80,7 @@ import kotlin.math.abs
  * 3. 返回前台自动状态与曲目同步
  */
 @OptIn(UnstableApi::class)
-class MusicPlaybackService : Service() {
+class MusicPlaybackService : MediaSessionService() {
 
     companion object {
         private const val TAG = "MusicPlaybackService"
@@ -317,6 +318,34 @@ class MusicPlaybackService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        setMediaNotificationProvider(object : MediaNotification.Provider {
+            override fun createNotification(
+                mediaSession: MediaSession,
+                customLayout: ImmutableList<CommandButton>,
+                actionFactory: MediaNotification.ActionFactory,
+                onNotificationChangedCallback: MediaNotification.Provider.Callback
+            ): MediaNotification {
+                return MediaNotification(NOTIFICATION_ID, buildNotification())
+            }
+
+            override fun handleCustomCommand(
+                session: MediaSession,
+                action: String,
+                extras: Bundle
+            ): Boolean {
+                return when (action) {
+                    CUSTOM_CMD_TOGGLE_FAVORITE -> {
+                        handleToggleFavoriteFromMedia()
+                        true
+                    }
+                    CUSTOM_CMD_TOGGLE_LYRIC -> {
+                        handleToggleLyricFromMedia()
+                        true
+                    }
+                    else -> false
+                }
+            }
+        })
         initWakeLock()
         createNotificationChannel()
         initPlayerAndSession()
@@ -332,6 +361,7 @@ class MusicPlaybackService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
         // 先确保前台通知已启动（避免 Android 8+ ForegroundServiceDidNotStartInTimeException）
         ensureForegroundNotification()
         when (intent?.action) {
@@ -397,7 +427,22 @@ class MusicPlaybackService : Service() {
     fun getCurrentSongArtist(): String = currentArtist
     fun getCurrentArtworkBitmap(): Bitmap? = currentArtworkBitmap
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
+        return if (::mediaSession.isInitialized) mediaSession else null
+    }
+
+    override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
+        if (isForegroundStarted || isTransitioningTrack || hasActiveTrack()) {
+            ensureForegroundNotification()
+            updateNotification()
+        }
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (!isEffectivelyPlaying() && !isTransitioningTrack) {
+            stopSelf()
+        }
+    }
 
     override fun onDestroy() {
         pushWidgetState(forcePaused = true)
@@ -417,6 +462,7 @@ class MusicPlaybackService : Service() {
         releaseEqualizer()
         releaseLoudnessEnhancer()
         if (::mediaSession.isInitialized) {
+            runCatching { removeSession(mediaSession) }
             mediaSession.release()
         }
         if (::exoPlayer.isInitialized) {
@@ -703,9 +749,12 @@ class MusicPlaybackService : Service() {
             currentIsFavorite = latestFavoriteState
         }
 
+        val initialButtons = buildCustomMediaButtons()
         mediaSession = MediaSession.Builder(this, wrappedPlayer)
             .setId("alger_music_session")
             .setSessionActivity(sessionActivityPendingIntent)
+            .setCustomLayout(initialButtons)
+            .setMediaButtonPreferences(initialButtons)
             .setCallback(object : MediaSession.Callback {
                 override fun onConnect(
                     session: MediaSession,
@@ -716,9 +765,17 @@ class MusicPlaybackService : Service() {
                         .add(SessionCommand(CUSTOM_CMD_TOGGLE_FAVORITE, Bundle.EMPTY))
                         .add(SessionCommand(CUSTOM_CMD_TOGGLE_LYRIC, Bundle.EMPTY))
                         .build()
+                    val playerCommands = MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS
+                        .buildUpon()
+                        .remove(Player.COMMAND_SEEK_BACK)
+                        .remove(Player.COMMAND_SEEK_FORWARD)
+                        .build()
+                    val buttons = buildCustomMediaButtons()
                     return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                         .setAvailableSessionCommands(sessionCommands)
-                        .setCustomLayout(buildCustomMediaButtons())
+                        .setAvailablePlayerCommands(playerCommands)
+                        .setCustomLayout(buttons)
+                        .setMediaButtonPreferences(buttons)
                         .build()
                 }
 
@@ -742,7 +799,9 @@ class MusicPlaybackService : Service() {
                 }
             })
             .build()
-        mediaSession.setCustomLayout(buildCustomMediaButtons())
+        addSession(mediaSession)
+        mediaSession.setCustomLayout(initialButtons)
+        mediaSession.setMediaButtonPreferences(initialButtons)
     }
 
     private fun buildCustomMediaButtons(): List<CommandButton> {
@@ -769,8 +828,14 @@ class MusicPlaybackService : Service() {
 
     private fun updateMediaSessionCustomLayoutOnly() {
         if (::mediaSession.isInitialized) {
+            val buttons = buildCustomMediaButtons()
             runCatching {
-                mediaSession.setCustomLayout(buildCustomMediaButtons())
+                mediaSession.setCustomLayout(buttons)
+                mediaSession.setMediaButtonPreferences(buttons)
+                mediaSession.mediaNotificationControllerInfo?.let { notifController ->
+                    mediaSession.setCustomLayout(notifController, buttons)
+                    mediaSession.setMediaButtonPreferences(notifController, buttons)
+                }
             }.onFailure {
                 Log.w(TAG, "setCustomLayout failed: ${it.message}")
             }

@@ -2529,12 +2529,17 @@ test("media session custom controls: monochrome vectors, lockscreen-safe lyric t
     path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/player/MusicPlaybackService.kt"),
     "utf-8"
   );
+  assert.match(playbackServiceSrc, /class MusicPlaybackService\s*:\s*MediaSessionService\(\)/);
+  assert.match(playbackServiceSrc, /override fun onGetSession\(/);
+  assert.match(playbackServiceSrc, /addSession\(mediaSession\)/);
+  assert.match(playbackServiceSrc, /setMediaNotificationProvider\(/);
   assert.match(playbackServiceSrc, /CUSTOM_CMD_TOGGLE_FAVORITE\s*=\s*"com\.xiaopang\.naiwamusic\.TOGGLE_FAVORITE"/);
   assert.match(playbackServiceSrc, /CUSTOM_CMD_TOGGLE_LYRIC\s*=\s*"com\.xiaopang\.naiwamusic\.TOGGLE_LYRIC"/);
   assert.match(playbackServiceSrc, /object\s*:\s*MediaSession\.Callback/);
   assert.match(playbackServiceSrc, /override fun onConnect\(/);
   assert.match(playbackServiceSrc, /override fun onCustomCommand\(/);
-  assert.match(playbackServiceSrc, /mediaSession\.setCustomLayout\(buildCustomMediaButtons\(\)\)/);
+  assert.match(playbackServiceSrc, /setCustomLayout\(/);
+  assert.match(playbackServiceSrc, /setMediaButtonPreferences\(/);
   assert.match(playbackServiceSrc, /eventEmitter\?\.invoke\("media-control",\s*"toggle_favorite"\)/);
   assert.match(playbackServiceSrc, /mgr\.setEnabled\(targetEnabled,\s*openSettingsOnDenied\s*=\s*false\)/);
   assert.match(playbackServiceSrc, /"floating-lyric-state-changed"/);
