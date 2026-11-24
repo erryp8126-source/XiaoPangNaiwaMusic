@@ -390,28 +390,28 @@ watch(
   }
 }
 
-:global(.dark) .mobile-play-bar {
+html.dark .mobile-play-bar {
   .mobile-mini-controls {
-    background-color: rgba(23, 31, 45, 0.9);
-    border-color: rgba(255, 255, 255, 0.12);
+    background-color: rgba(15, 15, 19, 0.94);
+    border-color: rgba(255, 255, 255, 0.08);
     box-shadow:
-      0 12px 34px rgba(0, 0, 0, 0.52),
+      0 12px 34px rgba(0, 0, 0, 0.56),
       0 0 0 0.5px rgba(255, 197, 51, 0.12);
 
     &.has-dynamic-bg {
-      background-color: var(--mini-dark-primary, rgba(23, 31, 45, 0.9));
+      background-color: var(--mini-dark-primary, rgba(15, 15, 19, 0.94));
     }
   }
 
   .mini-dynamic-bg {
     .mini-orb-primary {
-      background-color: var(--mini-orb-primary, rgba(64, 96, 160, 0.55));
-      opacity: 0.34;
+      background-color: var(--mini-orb-primary, rgba(255, 197, 51, 0.22));
+      opacity: 0.18;
     }
 
     .mini-orb-secondary {
-      background-color: var(--mini-dark-secondary, rgba(28, 38, 56, 0.85));
-      opacity: 0.52;
+      background-color: var(--mini-dark-secondary, #131316);
+      opacity: 0.26;
     }
   }
 
@@ -420,16 +420,16 @@ watch(
   }
 
   .mini-song-title {
-    color: #f8fafc;
+    color: #fafafa;
   }
 
   .mini-song-artist {
-    color: #94a3b8;
+    color: #a1a1aa;
   }
 
   .mini-list-btn {
-    color: #cbd5e1;
-    background: rgba(255, 255, 255, 0.08);
+    color: #fafafa;
+    background: #1c1c22;
   }
 }
 

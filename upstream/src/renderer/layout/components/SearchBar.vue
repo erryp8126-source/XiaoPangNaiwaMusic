@@ -1,5 +1,5 @@
 <template>
-  <div class="search-bar-shell flex items-center gap-2 pb-3 pt-2 pr-4 pl-2 mb-1 dark:bg-[#0F1520] dark:border-b dark:border-white/[0.08]">
+  <div class="search-bar-shell flex items-center gap-2 pb-3 pt-2 pr-4 pl-2 mb-1 dark:bg-[#0F0F13]/[0.94] dark:border-b dark:border-white/[0.08]">
     <!-- ── LEFT: Tabs（搜索展开时隐藏）─────────────── -->
     <transition name="tab-slide">
       <div
@@ -506,7 +506,7 @@ onMounted(() => {
   box-sizing: border-box;
 }
 .dark .tabs-track {
-  background: #151d2b;
+  background: #131316;
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -516,13 +516,17 @@ onMounted(() => {
   left: 0;
   height: calc(100% - 6px);
   border-radius: 9999px;
-  background: #22c55e;
-  box-shadow: 0 1px 6px rgba(34, 197, 94, 0.35);
+  background: linear-gradient(135deg, #ffb81c 0%, #e89200 100%);
+  box-shadow: 0 2px 8px rgba(232, 146, 0, 0.34);
   transition:
     transform 0.28s cubic-bezier(0.34, 1.4, 0.64, 1),
     width 0.28s cubic-bezier(0.34, 1.4, 0.64, 1);
   pointer-events: none;
   z-index: 0;
+}
+.dark .tab-slider-bg {
+  background: #ffc533;
+  box-shadow: 0 2px 10px rgba(255, 197, 51, 0.32);
 }
 
 .tab-btn {
@@ -544,17 +548,20 @@ onMounted(() => {
 .tab-btn--on {
   color: #fff;
 }
+.dark .tab-btn--on {
+  color: #09090b;
+}
 .tab-btn--off {
   color: #6b7280;
 }
 .dark .tab-btn--off {
-  color: #9ca3af;
+  color: #a1a1aa;
 }
 .tab-btn--off:hover {
   color: #111827;
 }
 .dark .tab-btn--off:hover {
-  color: #f9fafb;
+  color: #fafafa;
 }
 
 /* ── Back button ─────────────────────────────────────── */
@@ -574,12 +581,16 @@ onMounted(() => {
 }
 .dark .back-btn {
   border-color: rgba(255, 255, 255, 0.08);
-  background: #1c2638;
-  color: #cbd5e1;
+  background: #1c1c22;
+  color: #fafafa;
 }
 .back-btn:hover {
-  color: #22c55e;
-  border-color: #22c55e;
+  color: #e89200;
+  border-color: #e89200;
+}
+.dark .back-btn:hover {
+  color: #ffc533;
+  border-color: #ffc533;
 }
 
 /* ── Search wrap ─────────────────────────────────────── */
@@ -613,16 +624,17 @@ onMounted(() => {
 }
 .dark .search-inner {
   border-color: rgba(255, 255, 255, 0.08);
-  background: #1c2638;
+  background: #1c1c22;
 }
 .search-inner--focus {
-  border-color: #22c55e;
+  border-color: #e89200;
   background: #fff;
-  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.1);
+  box-shadow: 0 0 0 3px rgba(232, 146, 0, 0.14);
 }
 .dark .search-inner--focus {
-  background: #1c2638;
-  box-shadow: 0 0 0 3px rgba(255, 197, 51, 0.16);
+  background: #1c1c22;
+  border-color: #ffc533;
+  box-shadow: 0 0 0 3px rgba(255, 197, 51, 0.2);
 }
 
 .search-icon-glyph {
@@ -632,7 +644,10 @@ onMounted(() => {
   transition: color 0.2s;
 }
 .search-inner--focus .search-icon-glyph {
-  color: #22c55e;
+  color: #e89200;
+}
+.dark .search-inner--focus .search-icon-glyph {
+  color: #ffc533;
 }
 
 .search-input {
@@ -645,10 +660,10 @@ onMounted(() => {
   color: #111827;
 }
 .dark .search-input {
-  color: #f3f4f6;
+  color: #fafafa;
 }
 .search-input::placeholder {
-  color: #9ca3af;
+  color: #a1a1aa;
 }
 
 .type-chip {
@@ -669,16 +684,16 @@ onMounted(() => {
   flex-shrink: 0;
 }
 .dark .type-chip {
-  background: #151d2b;
-  color: #cbd5e1;
+  background: #131316;
+  color: #a1a1aa;
 }
 .type-chip:hover {
-  background: #dcfce7;
-  color: #16a34a;
+  background: rgba(232, 146, 0, 0.14);
+  color: #e89200;
 }
 .dark .type-chip:hover {
-  background: rgba(34, 197, 94, 0.1);
-  color: #22c55e;
+  background: rgba(255, 197, 51, 0.16);
+  color: #ffc533;
 }
 
 /* ── Action buttons ──────────────────────────────────── */
@@ -698,18 +713,18 @@ onMounted(() => {
 }
 .dark .action-btn {
   border-color: rgba(255, 255, 255, 0.08);
-  background: #1c2638;
-  color: #cbd5e1;
+  background: #1c1c22;
+  color: #fafafa;
 }
 .action-btn:hover {
-  color: #22c55e;
-  border-color: #bbf7d0;
-  background: #f0fdf4;
+  color: #e89200;
+  border-color: rgba(232, 146, 0, 0.35);
+  background: rgba(232, 146, 0, 0.1);
 }
 .dark .action-btn:hover {
-  border-color: #166534;
-  background: rgba(34, 197, 94, 0.08);
-  color: #22c55e;
+  border-color: rgba(255, 197, 51, 0.45);
+  background: rgba(255, 197, 51, 0.12);
+  color: #ffc533;
 }
 .action-btn.intelligence-active {
   color: #ec4899;
@@ -740,11 +755,15 @@ onMounted(() => {
 }
 .dark .user-btn {
   border-color: rgba(255, 255, 255, 0.08);
-  background: #1c2638;
+  background: #1c1c22;
 }
 .user-btn:hover {
-  border-color: #22c55e;
-  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.12);
+  border-color: #e89200;
+  box-shadow: 0 0 0 2px rgba(232, 146, 0, 0.16);
+}
+.dark .user-btn:hover {
+  border-color: #ffc533;
+  box-shadow: 0 0 0 2px rgba(255, 197, 51, 0.22);
 }
 
 .login-label {
@@ -754,7 +773,7 @@ onMounted(() => {
   padding: 0 8px;
 }
 .dark .login-label {
-  color: #9ca3af;
+  color: #a1a1aa;
 }
 
 /* ── User menu ───────────────────────────────────────── */
@@ -769,7 +788,7 @@ onMounted(() => {
     0 1px 4px rgba(0, 0, 0, 0.05);
 }
 .dark .user-menu {
-  background: #151d2b;
+  background: #131316;
   border-color: rgba(255, 255, 255, 0.08);
 }
 
@@ -785,7 +804,7 @@ onMounted(() => {
   background: #f9fafb;
 }
 .dark .user-menu-top:hover {
-  background: #1f2937;
+  background: #1c1c22;
 }
 
 .user-name {
@@ -797,7 +816,7 @@ onMounted(() => {
   white-space: nowrap;
 }
 .dark .user-name {
-  color: #f3f4f6;
+  color: #fafafa;
 }
 
 .menu-sep {
@@ -806,7 +825,7 @@ onMounted(() => {
   margin: 2px 0;
 }
 .dark .menu-sep {
-  background: #1f2937;
+  background: #1c1c22;
 }
 
 .menu-list {
@@ -824,13 +843,13 @@ onMounted(() => {
   transition: background 0.12s;
 }
 .dark .menu-row {
-  color: #d1d5db;
+  color: #fafafa;
 }
 .menu-row:hover {
   background: #f9fafb;
 }
 .dark .menu-row:hover {
-  background: #1f2937;
+  background: #1c1c22;
 }
 
 .menu-row i {
@@ -861,8 +880,12 @@ onMounted(() => {
   transition: all 0.12s;
 }
 .zoom-btn:hover {
-  background: #dcfce7;
-  color: #16a34a;
+  background: rgba(232, 146, 0, 0.14);
+  color: #e89200;
+}
+.dark .zoom-btn:hover {
+  background: rgba(255, 197, 51, 0.18);
+  color: #ffc533;
 }
 .zoom-val {
   font-size: 11px;
@@ -875,8 +898,12 @@ onMounted(() => {
   transition: all 0.12s;
 }
 .zoom-val--100 {
-  background: #dcfce7;
-  color: #16a34a;
+  background: rgba(232, 146, 0, 0.14);
+  color: #e89200;
+}
+.dark .zoom-val--100 {
+  background: rgba(255, 197, 51, 0.18);
+  color: #ffc533;
 }
 .ver-chip {
   font-size: 11px;
@@ -887,8 +914,8 @@ onMounted(() => {
   color: #6b7280;
 }
 .dark .ver-chip {
-  background: #1f2937;
-  color: #9ca3af;
+  background: #1c1c22;
+  color: #a1a1aa;
 }
 
 /* ── Suggestions ─────────────────────────────────────── */
@@ -896,7 +923,7 @@ onMounted(() => {
   background: #fff;
 }
 .dark .suggestions-box {
-  background: #151d2b;
+  background: #131316;
 }
 
 .suggest-row {
@@ -910,17 +937,17 @@ onMounted(() => {
   transition: background 0.1s;
 }
 .dark .suggest-row {
-  color: #d1d5db;
+  color: #fafafa;
 }
 .suggest-row:hover,
 .suggest-row--hi {
-  background: #f0fdf4;
-  color: #16a34a;
+  background: rgba(232, 146, 0, 0.1);
+  color: #e89200;
 }
 .dark .suggest-row:hover,
 .dark .suggest-row--hi {
-  background: rgba(34, 197, 94, 0.06);
-  color: #22c55e;
+  background: rgba(255, 197, 51, 0.12);
+  color: #ffc533;
 }
 .suggest-icon {
   font-size: 13px;

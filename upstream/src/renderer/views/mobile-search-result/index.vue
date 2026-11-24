@@ -429,22 +429,26 @@ onMounted(() => {
   }
 }
 
-:global(.dark) {
+html.dark {
+  .mobile-search-result {
+    background: #09090b;
+  }
+
   .result-header {
-    background: rgba(15, 20, 28, 0.82);
-    border-bottom-color: rgba(255, 255, 255, 0.06);
+    background: rgba(15, 15, 19, 0.94);
+    border-bottom-color: rgba(255, 255, 255, 0.08);
   }
 
   .header-back,
   .action-btn,
   .type-tag:not(.active) {
-    background: rgba(23, 30, 42, 0.78);
+    background: #1c1c22;
     border-color: rgba(255, 255, 255, 0.08);
-    color: #e2e8f0;
+    color: #fafafa;
   }
 
   .header-keyword {
-    color: #f8fafc;
+    color: #fafafa;
   }
 }
 </style>

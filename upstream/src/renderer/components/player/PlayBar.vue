@@ -382,7 +382,7 @@ const openPlayListDrawer = () => {
 
 .music-play-bar {
   @apply h-20 w-full absolute bottom-0 left-0 flex items-center box-border px-6 py-2 pt-3;
-  @apply bg-light dark:bg-[#0F1520]/95 shadow-2xl shadow-gray-300 dark:shadow-black/60 dark:border-t dark:border-white/10;
+  @apply bg-light dark:bg-[#0F0F13]/[0.94] shadow-2xl shadow-gray-300 dark:shadow-black/60 dark:border-t dark:border-white/10;
   z-index: 9999;
   animation-duration: 0.5s !important;
 
@@ -435,7 +435,7 @@ const openPlayListDrawer = () => {
 
   &-play {
     @apply flex justify-center items-center w-20 h-12 rounded-full mx-4 transition text-gray-500 dark:text-slate-200;
-    @apply bg-gray-100 bg-opacity-60 dark:bg-[#1C2638] dark:hover:bg-[#243147] hover:bg-gray-200;
+    @apply bg-gray-100 bg-opacity-60 dark:bg-[#1C1C22] dark:hover:bg-[#27272F] hover:bg-gray-200;
   }
 }
 

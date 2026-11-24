@@ -436,7 +436,7 @@ class MainActivity : AppCompatActivity() {
         val controller = WindowCompat.getInsetsController(window, webView)
         controller.isAppearanceLightStatusBars = !isDarkBackground
         controller.isAppearanceLightNavigationBars = !isDarkBackground
-        webView.setBackgroundColor(Color.parseColor(if (isDarkBackground) "#0F141C" else "#F6FAFD"))
+        webView.setBackgroundColor(Color.parseColor(if (isDarkBackground) "#09090B" else "#F6FAFD"))
     }
 
     private fun hasAudioPermission(): Boolean {

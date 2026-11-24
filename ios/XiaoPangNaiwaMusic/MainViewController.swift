@@ -202,7 +202,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     private func applyStatusBarStyle(isDark: Bool) {
         isDarkStatusBar = isDark
         let bg = isDark
-            ? UIColor(red: 15 / 255.0, green: 20 / 255.0, blue: 28 / 255.0, alpha: 1.0)
+            ? UIColor(red: 9 / 255.0, green: 9 / 255.0, blue: 11 / 255.0, alpha: 1.0)
             : UIColor(red: 246 / 255.0, green: 250 / 255.0, blue: 253 / 255.0, alpha: 1.0)
         view.backgroundColor = bg
         webView.backgroundColor = bg

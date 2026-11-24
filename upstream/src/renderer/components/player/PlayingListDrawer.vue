@@ -539,16 +539,16 @@ const handleDeleteSong = (song: SongResult) => {
   }
 }
 
-:global(.dark) .playlist-panel {
-  background: rgba(20, 27, 39, 0.94);
-  border-color: rgba(255, 255, 255, 0.1);
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.58);
+html.dark .playlist-panel {
+  background: #131316;
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.65);
 
   .playlist-panel-header {
     border-bottom-color: rgba(255, 255, 255, 0.08);
 
     .title {
-      color: #f8fafc;
+      color: #fafafa;
     }
 
     .count-pill {
@@ -558,9 +558,9 @@ const handleDeleteSong = (song: SongResult) => {
 
     .action-btn,
     .close-btn {
-      color: #cbd5e1;
-      background: rgba(255, 255, 255, 0.08);
-      border-color: rgba(255, 255, 255, 0.1);
+      color: #fafafa;
+      background: #1c1c22;
+      border-color: rgba(255, 255, 255, 0.08);
     }
   }
 }
@@ -658,8 +658,8 @@ const handleDeleteSong = (song: SongResult) => {
   }
 }
 
-:global(.dark) .next-up-bar .next-up-source {
-  color: #fcd34d;
+html.dark .next-up-bar .next-up-source {
+  color: #ffc533;
 }
 
 .music-play-list-content {
@@ -680,8 +680,8 @@ const handleDeleteSong = (song: SongResult) => {
   }
 }
 
-:global(.dark) .music-play-list-content {
-  background: rgba(20, 27, 39, 0.96);
+html.dark .music-play-list-content {
+  background: #131316;
 }
 
 // 移动端底部磨砂抽屉

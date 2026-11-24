@@ -98,9 +98,9 @@ const openSettings = () => {
   }
 }
 
-:global(.dark) .mobile-header {
-  background: rgba(15, 20, 28, 0.78);
-  border-bottom-color: rgba(255, 255, 255, 0.06);
+html.dark .mobile-header {
+  background: rgba(15, 15, 19, 0.94);
+  border-bottom-color: rgba(255, 255, 255, 0.08);
 }
 
 .header-left {
@@ -139,8 +139,8 @@ const openSettings = () => {
   }
 }
 
-:global(.dark) .header-brand .brand-title {
-  background: linear-gradient(125deg, #ffe066 0%, #ffb81c 58%, #7dd3fc 100%);
+html.dark .header-brand .brand-title {
+  background: linear-gradient(125deg, #ffe066 0%, #ffb81c 58%, #ffc533 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -167,10 +167,11 @@ const openSettings = () => {
   box-shadow: 0 3px 10px rgba(82, 134, 168, 0.08);
 }
 
-:global(.dark) .header-pill-btn {
-  background: rgba(30, 41, 59, 0.72);
-  border-color: rgba(255, 255, 255, 0.09);
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.28);
+html.dark .header-pill-btn {
+  background: #1c1c22;
+  color: #fafafa;
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.36);
 }
 
 .theme-btn:active i {

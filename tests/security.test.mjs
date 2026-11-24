@@ -2114,13 +2114,13 @@ test("network recovery: Android/iOS native listeners and frontend interceptor cl
   assert.match(requestTs, /useOfflineAvailabilityStore\(\)\.markOnline\(\)/);
 });
 
-test("desktop dark theme & sidebar layout: native color-scheme, 4-tier dark palette, PlayBar contrast & non-overlapping Logo", () => {
+test("desktop dark theme & sidebar layout: native color-scheme, charcoal dark palette, PlayBar contrast & non-overlapping Logo", () => {
   const indexHtml = fs.readFileSync(
     path.join(repoRoot, "upstream/src/renderer/index.html"),
     "utf-8"
   );
   assert.match(indexHtml, /<meta\s+name=["']color-scheme["']\s+content=["']light dark["']/i);
-  assert.match(indexHtml, /#0B0F17/i);
+  assert.match(indexHtml, /#09090B/i);
 
   const indexCss = fs.readFileSync(
     path.join(repoRoot, "upstream/src/renderer/index.css"),
@@ -2128,17 +2128,19 @@ test("desktop dark theme & sidebar layout: native color-scheme, 4-tier dark pale
   );
   assert.match(indexCss, /:root\s*\{[\s\S]*color-scheme:\s*light;/i);
   assert.match(indexCss, /:root\.dark,\s*\.theme-dark\s*\{[\s\S]*color-scheme:\s*dark;/i);
-  assert.match(indexCss, /#0b0f17/i);
-  assert.match(indexCss, /#0f1520/i);
-  assert.match(indexCss, /#151d2b/i);
-  assert.match(indexCss, /#1c2638/i);
+  assert.match(indexCss, /#09090b/i);
+  assert.match(indexCss, /#0f0f13/i);
+  assert.match(indexCss, /#131316/i);
+  assert.match(indexCss, /#1c1c22/i);
+  assert.match(indexCss, /--naiwa-sky-glow:\s*transparent;/i);
+  assert.match(indexCss, /--naiwa-sun-glow:\s*transparent;/i);
 
   const playBarVue = fs.readFileSync(
     path.join(repoRoot, "upstream/src/renderer/components/player/PlayBar.vue"),
     "utf-8"
   );
   assert.doesNotMatch(playBarVue, /\.music-play-bar[\s\S]*dark:shadow-gray-300/);
-  assert.match(playBarVue, /dark:bg-\[#0F1520\]\/95/);
+  assert.match(playBarVue, /dark:bg-\[#0F0F13\]\/\[0\.94\]/);
   assert.match(playBarVue, /dark:shadow-black\/60/);
   assert.match(playBarVue, /dark:border-t\s+dark:border-white\/10/);
 
@@ -2263,4 +2265,71 @@ test("v1.0.1 patch: VPN FakeIP (198.18.0.0/15) allowed, private SSRF still block
   const readmeMd = fs.readFileSync(path.join(repoRoot, "README.md"), "utf-8");
   assert.match(readmeMd, /\(v1\.0\.1\)/);
   assert.match(readmeMd, /XiaoPangNaiwaMusic-v1\.0\.1-unsigned\.ipa/);
+});
+
+test("dark mode overhaul: zero :global(.dark) selectors, neutral charcoal tokens & warm gold SearchBar accents", () => {
+  const rendererRoot = path.join(repoRoot, "upstream/src/renderer");
+  const collectStyleFiles = (dir) => {
+    const out = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        out.push(...collectStyleFiles(fullPath));
+      } else if (/\.(vue|css|scss)$/i.test(entry.name)) {
+        out.push(fullPath);
+      }
+    }
+    return out;
+  };
+
+  for (const filePath of collectStyleFiles(rendererRoot)) {
+    const content = fs.readFileSync(filePath, "utf-8");
+    assert.doesNotMatch(
+      content,
+      /:global\(\.dark\)/,
+      `Found broken :global(.dark) selector in ${path.relative(repoRoot, filePath)}`
+    );
+  }
+
+  const mobileHeaderVue = fs.readFileSync(path.join(rendererRoot, "layout/components/MobileHeader.vue"), "utf-8");
+  assert.match(mobileHeaderVue, /html\.dark\s+\.mobile-header/);
+
+  const mobilePlayBarVue = fs.readFileSync(path.join(rendererRoot, "components/player/MobilePlayBar.vue"), "utf-8");
+  assert.match(mobilePlayBarVue, /html\.dark\s+\.mobile-play-bar/);
+
+  const appMenuVue = fs.readFileSync(path.join(rendererRoot, "layout/components/AppMenu.vue"), "utf-8");
+  assert.match(appMenuVue, /html\.dark\s+\.mobile-dock/);
+
+  const homeIndexVue = fs.readFileSync(path.join(rendererRoot, "views/home/index.vue"), "utf-8");
+  assert.match(homeIndexVue, /html\.dark\s+\.classic-mode-switcher/);
+  assert.match(homeIndexVue, /html\.dark\s+\.home-search-pill/);
+
+  const searchBarVue = fs.readFileSync(path.join(rendererRoot, "layout/components/SearchBar.vue"), "utf-8");
+  assert.doesNotMatch(
+    searchBarVue,
+    /(#22c55e|#16a34a|#dcfce7|#f0fdf4|#bbf7d0|#166534|rgba\(\s*34,\s*197,\s*94)/i
+  );
+  assert.match(searchBarVue, /\.tab-slider-bg\s*\{[\s\S]*#e89200/i);
+  assert.match(searchBarVue, /\.dark\s+\.tab-slider-bg\s*\{[\s\S]*#ffc533/i);
+
+  const indexCss = fs.readFileSync(path.join(rendererRoot, "index.css"), "utf-8");
+  assert.match(indexCss, /--text-color-100:\s*#fafafa;/i);
+  assert.match(indexCss, /--text-color-200:\s*#a1a1aa;/i);
+
+  const appVue = fs.readFileSync(path.join(rendererRoot, "App.vue"), "utf-8");
+  assert.match(appVue, /#09090B/i);
+  assert.match(appVue, /#131316/i);
+  assert.match(appVue, /#1C1C22/i);
+
+  const mainActivityKt = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/MainActivity.kt"),
+    "utf-8"
+  );
+  assert.match(mainActivityKt, /Color\.parseColor\(if\s*\(isDarkBackground\)\s*"#09090B"/);
+
+  const mainVcSwift = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/MainViewController.swift"),
+    "utf-8"
+  );
+  assert.match(mainVcSwift, /red:\s*9\s*\/\s*255\.0,\s*green:\s*9\s*\/\s*255\.0,\s*blue:\s*11\s*\/\s*255\.0/);
 });

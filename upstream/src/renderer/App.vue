@@ -150,14 +150,14 @@ const darkThemeOverrides: GlobalThemeOverrides = {
     successColor: '#FFC533',
     borderRadius: '14px',
     borderRadiusSmall: '10px',
-    bodyColor: '#0B0F17',
-    cardColor: '#151D2B',
-    modalColor: '#151D2B',
-    popoverColor: '#151D2B',
-    textColorBase: '#F1F5F9',
-    textColor1: '#F8FAFC',
-    textColor2: '#CBD5E1',
-    textColor3: '#64748B'
+    bodyColor: '#09090B',
+    cardColor: '#131316',
+    modalColor: '#131316',
+    popoverColor: '#131316',
+    textColorBase: '#FAFAFA',
+    textColor1: '#FAFAFA',
+    textColor2: '#A1A1AA',
+    textColor3: '#71717A'
   },
   Button: {
     borderRadiusMedium: '12px',
@@ -170,19 +170,22 @@ const darkThemeOverrides: GlobalThemeOverrides = {
   },
   Input: {
     borderRadius: '12px',
-    color: '#1C2638',
-    colorFocus: '#1C2638',
+    color: '#1C1C22',
+    colorFocus: '#1C1C22',
     border: '1px solid rgba(255, 255, 255, 0.08)',
-    textColor: '#F8FAFC'
+    borderHover: '1px solid rgba(255, 197, 51, 0.5)',
+    borderFocus: '1px solid #FFC533',
+    boxShadowFocus: '0 0 0 2px rgba(255, 197, 51, 0.2)',
+    textColor: '#FAFAFA'
   },
   Switch: {
-    railColor: '#475569',
+    railColor: '#27272F',
     railColorActive: '#F59E0B',
     buttonColor: '#FFFFFF',
     boxShadowFocus: '0 0 0 2px rgba(255, 197, 51, 0.25)'
   },
   Radio: {
-    textColor: '#F1F5F9',
+    textColor: '#FAFAFA',
     dotColorActive: '#FFC533',
     boxShadowActive: 'inset 0 0 0 1px #FFC533'
   },
@@ -190,16 +193,18 @@ const darkThemeOverrides: GlobalThemeOverrides = {
     peers: {
       InternalSelection: {
         borderRadius: '12px',
-        color: '#1C2638',
+        color: '#1C1C22',
         border: '1px solid rgba(255, 255, 255, 0.08)',
-        textColor: '#F8FAFC'
+        borderHover: '1px solid rgba(255, 197, 51, 0.5)',
+        borderActive: '1px solid #FFC533',
+        textColor: '#FAFAFA'
       }
     }
   },
   Tabs: {
     tabBorderRadius: '12px',
-    colorSegment: '#0F1520',
-    tabColorSegment: '#1C2638',
+    colorSegment: '#131316',
+    tabColorSegment: '#1C1C22',
     tabTextColorActiveSegment: '#FFC533',
     tabTextColorActiveLine: '#FFC533',
     barColor: '#FFC533'
@@ -213,7 +218,7 @@ const darkThemeOverrides: GlobalThemeOverrides = {
     borderRadius: '9999px'
   },
   Drawer: {
-    color: '#0F1520'
+    color: '#131316'
   }
 };
 

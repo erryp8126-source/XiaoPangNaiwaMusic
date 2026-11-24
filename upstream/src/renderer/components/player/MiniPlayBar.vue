@@ -727,32 +727,35 @@ const setMusicFull = () => {
   padding: 4px 0;
 }
 
-:global(.dark) .mini-play-bar {
+html.dark .mini-play-bar {
+  background-color: rgba(15, 15, 19, 0.94);
+  border-color: rgba(255, 255, 255, 0.08);
+
   &.has-dynamic-bg {
-    background-color: var(--mini-dark-primary, rgba(23, 31, 45, 0.9));
+    background-color: var(--mini-dark-primary, rgba(15, 15, 19, 0.94));
   }
 
   .mini-bar-dynamic-layer {
     .mini-bar-orb-primary {
-      background-color: var(--mini-orb-primary, rgba(64, 96, 160, 0.5));
-      opacity: 0.34;
+      background-color: var(--mini-orb-primary, rgba(255, 197, 51, 0.22));
+      opacity: 0.18;
     }
 
     .mini-bar-orb-secondary {
-      background-color: var(--mini-dark-secondary, rgba(28, 38, 56, 0.85));
-      opacity: 0.5;
+      background-color: var(--mini-dark-secondary, #131316);
+      opacity: 0.26;
     }
   }
 }
 
-.dark {
+html.dark {
   .song-info {
     .song-title {
-      color: var(--text-color-1, #fff);
+      color: var(--text-color-1, #fafafa);
     }
 
     .song-artist {
-      color: var(--text-color-2, #fff);
+      color: var(--text-color-2, #a1a1aa);
     }
   }
 }

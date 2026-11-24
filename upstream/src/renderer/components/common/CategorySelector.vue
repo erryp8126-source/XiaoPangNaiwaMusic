@@ -109,8 +109,8 @@ defineExpose({
   border-bottom: 1px solid rgba(148, 163, 184, 0.22);
 }
 
-:global(.dark) .category-bar {
-  border-bottom-color: rgba(148, 163, 184, 0.14);
+html.dark .category-bar {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
 }
 
 .cat-pill.is-idle {
@@ -127,10 +127,10 @@ defineExpose({
   box-shadow: 0 6px 14px rgba(232, 137, 0, 0.3);
 }
 
-:global(.dark) .cat-pill.is-idle {
-  background: #1b2433;
-  color: #e2e8f0;
-  border-color: #334155;
+html.dark .cat-pill.is-idle {
+  background: #1c1c22;
+  color: #fafafa;
+  border-color: rgba(255, 255, 255, 0.08);
   box-shadow: none;
 }
 </style>

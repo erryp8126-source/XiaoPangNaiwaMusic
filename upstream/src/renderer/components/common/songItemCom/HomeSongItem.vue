@@ -4,7 +4,7 @@
     :class="
       isPlaying
         ? 'bg-amber-50/95 dark:bg-amber-500/15 ring-1 ring-amber-300/70 dark:ring-amber-400/30 shadow-sm'
-        : 'bg-white/85 dark:bg-[#151D2B] ring-1 ring-sky-100/80 dark:ring-white/[0.08] hover:bg-white dark:hover:bg-[#1C2638] shadow-naiwa-sm'
+        : 'bg-white/85 dark:bg-[#131316] ring-1 ring-sky-100/80 dark:ring-white/[0.08] hover:bg-white dark:hover:bg-[#1C1C22] shadow-naiwa-sm'
     "
     @click="onPlayMusic"
     @contextmenu.prevent="handleContextMenu"

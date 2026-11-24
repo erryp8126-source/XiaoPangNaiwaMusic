@@ -105,8 +105,9 @@ defineExpose({ scrollbarRef, scrollTo });
   background: rgba(246, 250, 253, 0.94);
   box-shadow: 0 4px 16px rgba(15, 23, 42, 0.07);
 }
-:global(.dark) .sticky-tabs.is-stuck {
-  background: rgba(15, 20, 28, 0.94);
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+html.dark .sticky-tabs.is-stuck {
+  background: rgba(15, 15, 19, 0.94);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
 }
 </style>

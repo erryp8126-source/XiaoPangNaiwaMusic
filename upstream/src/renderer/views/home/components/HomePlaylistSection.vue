@@ -10,7 +10,7 @@
       </div>
       <button
         type="button"
-        class="group flex items-center gap-0.5 rounded-full bg-white/75 dark:bg-[#1C2638] border border-sky-100 dark:border-white/[0.08] px-3 py-1 text-xs font-semibold text-slate-500 dark:text-slate-200 transition-all active:scale-95 hover:text-primary"
+        class="group flex items-center gap-0.5 rounded-full bg-white/75 dark:bg-[#1C1C22] border border-sky-100 dark:border-white/[0.08] px-3 py-1 text-xs font-semibold text-slate-500 dark:text-[#FAFAFA] transition-all active:scale-95 hover:text-primary"
         @click="$emit('more')"
       >
         <span>{{ t('comp.more') }}</span>

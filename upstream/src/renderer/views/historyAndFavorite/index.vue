@@ -89,15 +89,15 @@ const mobileTab = ref<'favorite' | 'history' | 'stats'>('favorite');
   box-shadow: 0 8px 24px rgba(82, 134, 168, 0.07);
 }
 
-:global(.dark) {
+html.dark {
   .mobile-seg-rail,
   .flex-item {
-    background: rgba(23, 30, 42, 0.74);
+    background: #131316;
     border-color: rgba(255, 255, 255, 0.08);
   }
 
   .mobile-seg-btn:not(.active) {
-    color: #94a3b8;
+    color: #a1a1aa;
   }
 }
 </style>

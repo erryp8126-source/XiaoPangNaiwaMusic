@@ -168,11 +168,11 @@ provide('openPlaylistDrawer', openPlaylistDrawer);
   }
 }
 
-:global(.dark) .mobile-bottom-menu {
+html.dark .mobile-bottom-menu:not(.is-immersive-dark) {
   background: linear-gradient(
     to top,
-    rgba(15, 20, 28, 0.95) 0%,
-    rgba(15, 20, 28, 0.58) 55%,
+    rgba(9, 9, 11, 0.96) 0%,
+    rgba(9, 9, 11, 0.65) 55%,
     transparent 100%
   );
 }

@@ -581,8 +581,9 @@ const currentLoginType = computed(() => userStore.loginType);
   }
 }
 
-:global(.dark) .play-list {
-  background: rgba(20, 27, 39, 0.88);
+html.dark .play-list {
+  background: #131316;
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .login-type {

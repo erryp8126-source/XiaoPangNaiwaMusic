@@ -250,9 +250,9 @@ const onPlayNext = () => {
   }
 }
 
-:global(.dark) .standard-song-item {
+html.dark .standard-song-item {
   &:hover {
-    background: rgba(30, 41, 59, 0.55);
+    background: #1c1c22;
   }
 
   &.is-playing-row {
@@ -261,8 +261,8 @@ const onPlayNext = () => {
   }
 
   .song-item-operating-play {
-    background: rgba(255, 255, 255, 0.08);
-    color: #e2e8f0;
+    background: #1c1c22;
+    color: #fafafa;
 
     &:hover,
     &.is-playing-btn {

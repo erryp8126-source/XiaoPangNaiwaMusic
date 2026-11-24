@@ -132,15 +132,15 @@ const switchToImmersive = () => {
   }
 }
 
-:global(.dark) .classic-mode-switcher {
-  background: rgba(23, 30, 42, 0.82);
-  border-color: rgba(255, 255, 255, 0.09);
+html.dark .classic-mode-switcher {
+  background: #131316;
+  border-color: rgba(255, 255, 255, 0.08);
 
   .switcher-tab {
-    @apply text-slate-300;
+    color: #a1a1aa;
 
     &.is-active {
-      @apply text-amber-300;
+      color: #ffc533;
       background: rgba(255, 197, 51, 0.18);
     }
   }
@@ -168,10 +168,11 @@ const switchToImmersive = () => {
   }
 }
 
-:global(.dark) .home-search-pill {
-  background: rgba(23, 30, 42, 0.78);
-  border-color: rgba(255, 255, 255, 0.09);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+html.dark .home-search-pill {
+  background: #1c1c22;
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #a1a1aa;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.36);
 
   .search-tag {
     background: rgba(255, 197, 51, 0.16);

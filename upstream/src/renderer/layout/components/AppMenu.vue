@@ -165,11 +165,11 @@ const toggleMenu = () => {
     0 2px 6px rgba(232, 146, 0, 0.06);
 }
 
-:global(.dark) .mobile-dock {
-  background: rgba(21, 28, 40, 0.86);
-  border-color: rgba(255, 255, 255, 0.09);
+html.dark .mobile-dock:not(.is-immersive-dark) {
+  background: rgba(15, 15, 19, 0.94);
+  border-color: rgba(255, 255, 255, 0.08);
   box-shadow:
-    0 12px 36px rgba(0, 0, 0, 0.5),
+    0 12px 36px rgba(0, 0, 0, 0.56),
     0 0 0 0.5px rgba(255, 197, 51, 0.08);
 }
 
@@ -232,15 +232,15 @@ const toggleMenu = () => {
   }
 }
 
-:global(.dark) .dock-item {
+html.dark .dock-item {
   .dock-pill {
-    color: #94a3b8;
+    color: #a1a1aa;
   }
 
   &.is-active .dock-pill {
     color: #ffc533;
-    background: linear-gradient(135deg, rgba(255, 197, 51, 0.2) 0%, rgba(56, 189, 248, 0.14) 100%);
-    box-shadow: inset 0 0 0 1px rgba(255, 197, 51, 0.24);
+    background: linear-gradient(135deg, rgba(255, 197, 51, 0.2) 0%, rgba(232, 146, 0, 0.12) 100%);
+    box-shadow: inset 0 0 0 1px rgba(255, 197, 51, 0.28);
   }
 }
 
@@ -264,7 +264,7 @@ const toggleMenu = () => {
   @apply w-[160px];
 
   .app-menu-item {
-    @apply hover:bg-amber-50 dark:hover:bg-[#1C2638] rounded-xl mr-3;
+    @apply hover:bg-amber-50 dark:hover:bg-[#1C1C22] rounded-xl mr-3;
   }
 }
 
