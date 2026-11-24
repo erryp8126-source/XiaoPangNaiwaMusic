@@ -139,6 +139,34 @@
       </template>
     </setting-item>
 
+    <setting-item v-if="userStore.user" title="当前登录账号">
+      <template #description>
+        <div class="flex items-center gap-2 flex-wrap mt-0.5">
+          <span class="text-[13px] font-semibold text-slate-800 dark:text-[#FAFAFA]">
+            {{ userStore.user.nickname || '网易云音乐用户' }}
+          </span>
+          <span
+            v-if="currentLoginTypeLabel"
+            class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-100/90 text-amber-800 dark:bg-amber-500/15 dark:text-[#FFC533] border border-amber-200/80 dark:border-amber-400/30"
+          >
+            {{ currentLoginTypeLabel }}
+          </span>
+        </div>
+      </template>
+      <template #action>
+        <div class="flex items-center gap-2">
+          <s-btn @click="handleSwitchAccount">
+            <i class="ri-user-shared-line text-sm"></i>
+            <span>切换账号</span>
+          </s-btn>
+          <s-btn variant="danger" @click="handleLogoutAccount">
+            <i class="ri-logout-box-r-line text-sm"></i>
+            <span>退出登录</span>
+          </s-btn>
+        </div>
+      </template>
+    </setting-item>
+
     <setting-item :title="t('settings.basic.animation')">
       <template #description>
         <div class="flex items-center gap-2.5 flex-wrap">
@@ -214,8 +242,10 @@ import CookieSettingsModal from '@/components/settings/CookieSettingsModal.vue';
 import { useSettingsStore } from '@/store/modules/settings';
 import { useUserStore } from '@/store/modules/user';
 import { isElectron, isMobile } from '@/utils';
+import { clearNativeNeteaseCookies, triggerHaptic } from '@/utils/androidBridge';
+import { clearLoginStatus, confirmAccountLogout, getLoginTypeLabel } from '@/utils/auth';
 
-import { SETTINGS_DATA_KEY, SETTINGS_MESSAGE_KEY } from '../keys';
+import { SETTINGS_DATA_KEY, SETTINGS_DIALOG_KEY, SETTINGS_MESSAGE_KEY } from '../keys';
 import SBtn from '../SBtn.vue';
 import SettingItem from '../SettingItem.vue';
 import SettingSection from '../SettingSection.vue';
@@ -234,6 +264,19 @@ const settingsStore = useSettingsStore();
 const userStore = useUserStore();
 const setData = inject(SETTINGS_DATA_KEY)!;
 const message = inject(SETTINGS_MESSAGE_KEY)!;
+const dialog = inject(SETTINGS_DIALOG_KEY)!;
+
+const currentLoginTypeLabel = computed(() => getLoginTypeLabel(userStore.loginType, t));
+
+const handleSwitchAccount = () => {
+  triggerHaptic('light');
+  confirmAccountLogout(dialog, message, userStore, { redirectToLogin: true });
+};
+
+const handleLogoutAccount = () => {
+  triggerHaptic('light');
+  confirmAccountLogout(dialog, message, userStore, { redirectToLogin: false });
+};
 
 const isDarkTheme = computed({
   get: () => settingsStore.theme === 'dark',
@@ -325,19 +368,19 @@ const handleTokenSave = async (token: string) => {
   }
 };
 
-const clearToken = () => {
-  localStorage.removeItem('token');
-  localStorage.removeItem('user');
+const clearToken = async () => {
+  clearLoginStatus();
   currentToken.value = '';
   userStore.user = null;
+  userStore.loginType = null;
+  await clearNativeNeteaseCookies();
   message.success(t('settings.basic.clearToken') + '成功');
-  setTimeout(() => window.location.reload(), 1000);
 };
 
 watch(
-  () => localStorage.getItem('token'),
-  (newToken) => {
-    currentToken.value = newToken || '';
+  [() => userStore.user, () => userStore.loginType],
+  () => {
+    currentToken.value = localStorage.getItem('token') || '';
   },
   { immediate: true }
 );

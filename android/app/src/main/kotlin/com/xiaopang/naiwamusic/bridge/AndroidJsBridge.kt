@@ -11,6 +11,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import android.view.HapticFeedbackConstants
+import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.widget.Toast
 import com.xiaopang.naiwamusic.NaiwaApp
@@ -207,6 +208,11 @@ class AndroidJsBridge(
                             if (it.isJsonPrimitive) it.asString else gson.toJson(it)
                         } ?: "{}"
                         callbackDispatcher(callbackId, true, ListeningStatsTracker.mergeStatsJson(activity, incoming))
+                    }
+                    "clear-netease-cookies" -> {
+                        clearNeteaseCookiesInternal {
+                            callbackDispatcher(callbackId, true, "true")
+                        }
                     }
                     else -> {
                         callbackDispatcher(callbackId, true, "null")
@@ -585,6 +591,28 @@ class AndroidJsBridge(
     @JavascriptInterface
     fun secureRemoveSecret(key: String): Boolean {
         return secureStore.removeSecret(key)
+    }
+
+    private fun clearNeteaseCookiesInternal(onDone: (() -> Unit)? = null) {
+        MusicPlaybackService.instance?.clearNativeUserCookie()
+        mainHandler.post {
+            runCatching {
+                val cookieManager = CookieManager.getInstance()
+                cookieManager.removeAllCookies {
+                    runCatching { cookieManager.flush() }
+                    onDone?.invoke()
+                }
+            }.onFailure {
+                Log.w(TAG, "clearNeteaseCookies failed: ${it.message}")
+                onDone?.invoke()
+            }
+        }
+    }
+
+    @JavascriptInterface
+    fun clearNeteaseCookies(): Boolean {
+        clearNeteaseCookiesInternal()
+        return true
     }
 
     @JavascriptInterface

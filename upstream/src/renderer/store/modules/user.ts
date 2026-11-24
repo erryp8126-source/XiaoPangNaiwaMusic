@@ -5,7 +5,12 @@ import { logout } from '@/api/login';
 import { getLikedList } from '@/api/music';
 import { getUserAlbumSublist, getUserPlaylist } from '@/api/user';
 import type { IUserDetail } from '@/types/user';
+import { clearNativeNeteaseCookies } from '@/utils/androidBridge';
 import { clearLoginStatus } from '@/utils/auth';
+
+export interface LogoutOptions {
+  redirectToLogin?: boolean;
+}
 
 interface UserData {
   userId: number;
@@ -75,27 +80,52 @@ export const useUserStore = defineStore('user', () => {
     }
   };
 
-  const handleLogout = async () => {
+  let isLoggingOut = false;
+
+  const resetUserSessionState = () => {
+    user.value = null;
+    userDetail.value = null;
+    recordList.value = [];
+    loginType.value = null;
+    collectedAlbumIds.value.clear();
+    playList.value = [];
+    albumList.value = [];
+    clearLoginStatus();
+  };
+
+  const handleLogout = async (options?: LogoutOptions) => {
+    if (isLoggingOut) return;
+    isLoggingOut = true;
+    const redirectToLogin = Boolean(options?.redirectToLogin);
     try {
-      await logout();
-      user.value = null;
-      loginType.value = null;
-      collectedAlbumIds.value.clear();
-      playList.value = [];
-      albumList.value = [];
-      clearLoginStatus();
-      // 刷新
-      window.location.reload();
-    } catch (error) {
-      console.error('登出失败:', error);
-      // 即使API调用失败，也要清除本地状态
-      user.value = null;
-      loginType.value = null;
-      collectedAlbumIds.value.clear();
-      playList.value = [];
-      albumList.value = [];
-      clearLoginStatus();
-      window.location.reload();
+      try {
+        await Promise.race([
+          logout(),
+          new Promise((resolve) => setTimeout(resolve, 3000))
+        ]);
+      } catch (error) {
+        console.error('登出失败:', error);
+      }
+
+      // 即使接口失败也要彻底清理本地登录态与原生 Cookie，绝不动本地音乐/下载/云同步配置
+      resetUserSessionState();
+      await clearNativeNeteaseCookies();
+
+      const [{ default: router }, { isMobile }] = await Promise.all([
+        import('@/router'),
+        import('@/utils')
+      ]);
+
+      if (redirectToLogin) {
+        const targetPath = isMobile.value ? '/user' : '/login';
+        if (router.currentRoute.value.path !== targetPath) {
+          await router.push(targetPath);
+        }
+      } else if (!isMobile.value && router.currentRoute.value.path === '/user') {
+        await router.push('/login');
+      }
+    } finally {
+      isLoggingOut = false;
     }
   };
 

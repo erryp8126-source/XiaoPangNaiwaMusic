@@ -69,6 +69,40 @@ export function nativeSecureRemoveSecret(key: string): boolean {
 }
 
 /**
+ * 清空 Web/原生端持久化保存的网易云 Cookie（以及原生后台播放服务缓存的 Cookie）
+ * 绝不触碰本地音乐、已下载歌曲和云同步配置
+ */
+export async function clearNativeNeteaseCookies(): Promise<boolean> {
+  if (typeof document !== 'undefined') {
+    try {
+      const cookieNames = ['MUSIC_U', '__csrf', 'NMTID', 'MUSIC_SNS', 'MUSIC_R_T', 'MUSIC_A_T'];
+      cookieNames.forEach((name) => {
+        document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
+      });
+    } catch {
+      // ignore
+    }
+  }
+  if (!isAndroid()) {
+    return true;
+  }
+  try {
+    const ok = await invokeAndroidAsync<boolean>('clear-netease-cookies', {}, 4000);
+    if (ok) return true;
+  } catch {
+    // fall through to sync bridge call
+  }
+  try {
+    if (typeof window.AlgerAndroid?.clearNeteaseCookies === 'function') {
+      return Boolean(window.AlgerAndroid.clearNeteaseCookies());
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
+/**
  * 查询 Android 原生 SimpleCache 是否已缓存指定曲目与音质
  */
 export function isAndroidAudioCached(songId: string | number, quality: string = 'higher'): boolean {

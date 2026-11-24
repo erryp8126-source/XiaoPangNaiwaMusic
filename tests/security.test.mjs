@@ -2333,3 +2333,78 @@ test("dark mode overhaul: zero :global(.dark) selectors, neutral charcoal tokens
   );
   assert.match(mainVcSwift, /red:\s*9\s*\/\s*255\.0,\s*green:\s*9\s*\/\s*255\.0,\s*blue:\s*11\s*\/\s*255\.0/);
 });
+
+test("account switch & logout: User page capsules, BasicTab account item, non-reloading handleLogout & native cookie cleanup", () => {
+  const userVue = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/user/index.vue"),
+    "utf-8"
+  );
+  assert.match(userVue, /ri-user-shared-line/);
+  assert.match(userVue, /ri-logout-box-r-line/);
+  assert.match(userVue, /triggerHaptic\('light'\)/);
+  assert.match(userVue, /confirmAccountLogout/);
+  assert.match(userVue, /html\.dark\s+\.account-pill-switch/);
+  assert.match(userVue, /html\.dark\s+\.account-pill-logout/);
+
+  const basicTabVue = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/set/tabs/BasicTab.vue"),
+    "utf-8"
+  );
+  assert.match(basicTabVue, /<setting-item\s+v-if="userStore\.user"\s+title="当前登录账号">/);
+  assert.match(basicTabVue, /userStore\.user\.nickname/);
+  assert.match(basicTabVue, /currentLoginTypeLabel/);
+  assert.match(basicTabVue, /切换账号/);
+  assert.match(basicTabVue, /variant="danger"[\s\S]{0,120}退出登录/);
+
+  const userStoreTs = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/user.ts"),
+    "utf-8"
+  );
+  assert.match(userStoreTs, /interface\s+LogoutOptions[\s\S]*redirectToLogin\?:\s*boolean/);
+  assert.match(userStoreTs, /handleLogout\s*=\s*async\s*\(options\?:\s*LogoutOptions\)/);
+  assert.doesNotMatch(userStoreTs, /window\.location\.reload\(/);
+  assert.doesNotMatch(userStoreTs, /localStorage\.clear\(/);
+  assert.doesNotMatch(userStoreTs, /nativeSecureRemoveSecret/);
+  assert.match(userStoreTs, /await\s+Promise\.race\(\[\s*logout\(\)/);
+  assert.match(userStoreTs, /userDetail\.value\s*=\s*null/);
+  assert.match(userStoreTs, /recordList\.value\s*=\s*\[\]/);
+  assert.match(userStoreTs, /clearLoginStatus\(\)/);
+  assert.match(userStoreTs, /await\s+clearNativeNeteaseCookies\(\)/);
+
+  const authTs = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/utils/auth.ts"),
+    "utf-8"
+  );
+  assert.match(authTs, /export\s+function\s+confirmAccountLogout\(/);
+  assert.match(authTs, /zIndex:\s*13000/);
+
+  const androidBridgeKt = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/bridge/AndroidJsBridge.kt"),
+    "utf-8"
+  );
+  assert.match(androidBridgeKt, /"clear-netease-cookies"\s*->/);
+  assert.match(androidBridgeKt, /@JavascriptInterface\s+fun\s+clearNeteaseCookies\(/);
+  assert.match(androidBridgeKt, /CookieManager\.getInstance\(\)/);
+  assert.match(androidBridgeKt, /removeAllCookies/);
+
+  const androidPlayerKt = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/player/MusicPlaybackService.kt"),
+    "utf-8"
+  );
+  assert.match(androidPlayerKt, /fun\s+clearNativeUserCookie\(/);
+
+  const iosBridgeSwift = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Bridge/IOSJsBridge.swift"),
+    "utf-8"
+  );
+  assert.match(iosBridgeSwift, /case\s+"clear-netease-cookies":/);
+  assert.match(iosBridgeSwift, /clearNeteaseCookies:\s*function\(/);
+  assert.match(iosBridgeSwift, /WKWebsiteDataStore\.default\(\)\.httpCookieStore/);
+  assert.match(iosBridgeSwift, /HTTPCookieStorage\.shared/);
+
+  const iosPlayerSwift = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Player/AudioPlayerManager.swift"),
+    "utf-8"
+  );
+  assert.match(iosPlayerSwift, /func\s+clearNativeUserCookie\(/);
+});

@@ -1313,6 +1313,12 @@ class MusicPlaybackService : Service() {
         eventEmitter?.invoke("audio-event", syncPayload)
     }
 
+    fun clearNativeUserCookie() {
+        uiHandler.post {
+            nativeUserCookie = ""
+        }
+    }
+
     fun syncQueue(payload: JsonObject) {
         uiHandler.post {
             runCatching {

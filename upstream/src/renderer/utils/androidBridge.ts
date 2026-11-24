@@ -18,6 +18,7 @@ export type {
 } from './bridge/types';
 
 export {
+  clearNativeNeteaseCookies,
   dispatchAndroidBackHandlers,
   fetchNativeOfflinePlayableIds,
   getAndroidApiBaseUrl,

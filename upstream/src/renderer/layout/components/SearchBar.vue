@@ -208,6 +208,7 @@
 
 <script lang="ts" setup>
 import { useDebounceFn } from '@vueuse/core';
+import { useDialog, useMessage } from 'naive-ui';
 import { computed, onMounted, ref, watch, watchEffect } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
@@ -224,9 +225,13 @@ import { useSearchStore } from '@/store/modules/search';
 import { useSettingsStore } from '@/store/modules/settings';
 import { useUserStore } from '@/store/modules/user';
 import { getImgUrl, isElectron } from '@/utils';
+import { confirmAccountLogout } from '@/utils/auth';
 import { checkUpdate, UpdateResult } from '@/utils/update';
 
 import config from '../../../../package.json';
+
+const dialog = useDialog();
+const message = useMessage();
 
 const router = useRouter();
 const route = useRoute();
@@ -455,7 +460,7 @@ const isDark = computed({
 const selectItem = (key: string) => {
   switch (key) {
     case 'logout':
-      userStore.handleLogout();
+      confirmAccountLogout(dialog, message, userStore, { redirectToLogin: false });
       break;
     case 'set':
       router.push('/set');

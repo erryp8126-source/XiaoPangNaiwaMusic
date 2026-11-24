@@ -120,3 +120,55 @@ export function getLoginErrorMessage(requireAuth: boolean = false): string {
 
   return '';
 }
+
+/**
+ * 获取登录方式的本地化展示文案
+ */
+export function getLoginTypeLabel(
+  loginType: LoginInfo['loginType'] | string | null | undefined,
+  t: (key: string) => string
+): string {
+  switch (loginType) {
+    case 'qr':
+      return t('login.title.qr');
+    case 'phone':
+      return t('login.title.phone');
+    case 'cookie':
+    case 'token':
+      return t('login.title.cookie');
+    case 'uid':
+      return t('login.title.uid');
+    default:
+      return '';
+  }
+}
+
+/**
+ * 退出登录 / 切换账号统一二次确认弹窗（弹窗层级高于底部播放条 9500）
+ */
+export function confirmAccountLogout(
+  dialog: { warning: (options: Record<string, any>) => any },
+  message: { info?: (msg: string) => any; success?: (msg: string) => any } | null | undefined,
+  userStore: { handleLogout: (options?: { redirectToLogin?: boolean }) => Promise<void> },
+  options?: { redirectToLogin?: boolean }
+): void {
+  const isSwitch = Boolean(options?.redirectToLogin);
+  dialog.warning({
+    title: isSwitch ? '切换账号' : '退出登录',
+    content: isSwitch
+      ? '确定要退出当前账号并切换其他账号登录吗？将清除本机登录态与网易云 Cookie，不会影响本地音乐、已下载歌曲和云同步配置。'
+      : '确定要退出当前网易云账号吗？退出后将清除本机登录态与网易云 Cookie，不会影响本地音乐、已下载歌曲和云同步配置。',
+    positiveText: isSwitch ? '确认切换' : '确认退出',
+    negativeText: '取消',
+    positiveButtonProps: isSwitch ? undefined : { type: 'error' },
+    style: { zIndex: 13000 },
+    onPositiveClick: async () => {
+      await userStore.handleLogout({ redirectToLogin: isSwitch });
+      if (isSwitch) {
+        message?.info?.('已退出当前账号，请登录新账号');
+      } else {
+        message?.success?.('已退出登录');
+      }
+    }
+  });
+}

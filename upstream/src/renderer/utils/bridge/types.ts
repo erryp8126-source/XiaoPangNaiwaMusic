@@ -69,6 +69,7 @@ export interface AndroidBridgeInterface {
   secureSetSecret?(key: string, value: string): boolean;
   secureGetSecret?(key: string): string;
   secureRemoveSecret?(key: string): boolean;
+  clearNeteaseCookies?(): boolean;
 }
 
 export type NativeEventListener = (event: any, data: any) => void;

@@ -62,10 +62,28 @@
       >
         <div class="page">
           <div class="user-name">
-            <span>{{ user.nickname }}</span>
-            <span v-if="currentLoginType" class="login-type">{{
-              t('login.title.' + currentLoginType)
-            }}</span>
+            <div class="user-name-main">
+              <span class="user-nickname">{{ user.nickname }}</span>
+              <span v-if="currentLoginTypeLabel" class="login-type">{{ currentLoginTypeLabel }}</span>
+            </div>
+            <div class="user-account-actions">
+              <button
+                type="button"
+                class="account-pill-btn account-pill-switch"
+                @click="handleSwitchAccount"
+              >
+                <i class="ri-user-shared-line"></i>
+                <span>切换账号</span>
+              </button>
+              <button
+                type="button"
+                class="account-pill-btn account-pill-logout"
+                @click="handleLogoutAccount"
+              >
+                <i class="ri-logout-box-r-line"></i>
+                <span>退出登录</span>
+              </button>
+            </div>
           </div>
           <div class="user-info">
             <n-avatar round :size="50" :src="getImgUrl(user.avatarUrl, '50y50')" />
@@ -175,7 +193,7 @@
 </template>
 
 <script lang="ts" setup>
-import { useMessage } from 'naive-ui';
+import { useDialog, useMessage } from 'naive-ui';
 import { storeToRefs } from 'pinia';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
@@ -188,7 +206,8 @@ import SongItem from '@/components/common/SongItem.vue';
 import { usePlayerStore } from '@/store/modules/player';
 import { useUserStore } from '@/store/modules/user';
 import { getImgUrl, isElectron, isMobile, setAnimationClass, setAnimationDelay } from '@/utils';
-import { checkLoginStatus as checkAuthStatus } from '@/utils/auth';
+import { triggerHaptic } from '@/utils/androidBridge';
+import { checkLoginStatus as checkAuthStatus, confirmAccountLogout, getLoginTypeLabel } from '@/utils/auth';
 import LoginComponent from '@/views/login/index.vue';
 
 defineOptions({
@@ -204,6 +223,7 @@ const infoLoading = ref(false);
 const albumLoading = ref(false);
 const mounted = ref(true);
 const message = useMessage();
+const dialog = useDialog();
 
 // Tab 相关
 const tabs = [
@@ -375,8 +395,7 @@ watch(
   () => router.currentRoute.value.path,
   (newPath) => {
     console.log('newPath', newPath);
-    if (newPath === '/user') {
-      checkLoginStatus();
+    if (newPath === '/user' && checkLoginStatus()) {
       loadData();
     }
   }
@@ -461,6 +480,17 @@ const handleLoginSuccess = () => {
 
 const isLoggedIn = computed(() => userStore.user);
 const currentLoginType = computed(() => userStore.loginType);
+const currentLoginTypeLabel = computed(() => getLoginTypeLabel(currentLoginType.value, t));
+
+const handleSwitchAccount = () => {
+  triggerHaptic('light');
+  confirmAccountLogout(dialog, message, userStore, { redirectToLogin: true });
+};
+
+const handleLogoutAccount = () => {
+  triggerHaptic('light');
+  confirmAccountLogout(dialog, message, userStore, { redirectToLogin: false });
+};
 </script>
 
 <style lang="scss" scoped>
@@ -480,8 +510,20 @@ const currentLoginType = computed(() => userStore.loginType);
       @apply text-gray-900 dark:text-white;
     }
     .user-name {
-      @apply text-xl font-bold mb-4 flex justify-between;
-      @apply text-white text-opacity-70;
+      @apply text-xl font-bold mb-4 flex items-center justify-between flex-wrap gap-2;
+      @apply text-white text-opacity-90;
+    }
+
+    .user-name-main {
+      @apply flex items-center gap-2 min-w-0 flex-wrap;
+    }
+
+    .user-nickname {
+      @apply truncate max-w-[180px] sm:max-w-[260px];
+    }
+
+    .user-account-actions {
+      @apply flex items-center gap-1.5 flex-shrink-0;
     }
 
     .uesr-signature {
@@ -590,6 +632,53 @@ html.dark .play-list {
   @apply text-xs font-bold px-2.5 py-0.5 rounded-full text-amber-200;
   background: rgba(255, 200, 61, 0.2);
   border: 1px solid rgba(255, 200, 61, 0.35);
+}
+
+.account-pill-btn {
+  @apply inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold cursor-pointer transition-all duration-150 active:scale-95;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.account-pill-switch {
+  background: rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.32);
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.32);
+  }
+}
+
+.account-pill-logout {
+  background: rgba(239, 68, 68, 0.28);
+  color: #fee2e2;
+  border: 1px solid rgba(254, 202, 202, 0.38);
+
+  &:hover {
+    background: rgba(239, 68, 68, 0.42);
+  }
+}
+
+html.dark .account-pill-switch {
+  background: rgba(28, 28, 34, 0.9);
+  color: #fafafa;
+  border-color: rgba(255, 255, 255, 0.14);
+
+  &:hover {
+    background: rgba(39, 39, 47, 0.95);
+    border-color: rgba(255, 197, 51, 0.45);
+  }
+}
+
+html.dark .account-pill-logout {
+  background: rgba(127, 29, 29, 0.55);
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.36);
+
+  &:hover {
+    background: rgba(153, 27, 27, 0.72);
+  }
 }
 
 .mobile {

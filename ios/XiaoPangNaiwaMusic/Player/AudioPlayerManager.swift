@@ -619,6 +619,12 @@ final class AudioPlayerManager: NSObject {
 
     // MARK: - 后台原生自动切歌队列
 
+    func clearNativeUserCookie() {
+        DispatchQueue.main.async { [weak self] in
+            self?.nativeUserCookie = ""
+        }
+    }
+
     func syncQueue(payload: [String: Any]) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }

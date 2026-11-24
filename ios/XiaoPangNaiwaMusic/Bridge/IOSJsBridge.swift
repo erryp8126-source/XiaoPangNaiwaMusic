@@ -209,6 +209,10 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
               delete _secureSecrets[k];
               post('secureRemoveSecret', { key: k });
               return true;
+            },
+            clearNeteaseCookies: function() {
+              post('clearNeteaseCookies', {});
+              return true;
             }
           };
 
@@ -292,6 +296,8 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         case "secureRemoveSecret":
             let key = (payload["key"] as? String) ?? ""
             _ = secureStore.removeSecret(key: key)
+        case "clearNeteaseCookies":
+            clearNativeNeteaseCookies(completion: nil)
         default:
             break
         }
@@ -487,8 +493,43 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
                         }
                     }
                 }
+            case "clear-netease-cookies":
+                self.clearNativeNeteaseCookies {
+                    self.callbackDispatcher(callbackId, true, "true")
+                }
             default:
                 self.callbackDispatcher(callbackId, true, "null")
+            }
+        }
+    }
+
+    internal func clearNativeNeteaseCookies(completion: (() -> Void)? = nil) {
+        audioManager.clearNativeUserCookie()
+        if let sharedCookies = HTTPCookieStorage.shared.cookies {
+            for cookie in sharedCookies {
+                let domain = cookie.domain.lowercased()
+                if domain.contains("127.0.0.1") || domain.contains("localhost") || domain.contains("163.com") || domain.contains("netease") {
+                    HTTPCookieStorage.shared.deleteCookie(cookie)
+                }
+            }
+        }
+        DispatchQueue.main.async {
+            let cookieStore = WKWebsiteDataStore.default().httpCookieStore
+            cookieStore.getAllCookies { cookies in
+                guard !cookies.isEmpty else {
+                    completion?()
+                    return
+                }
+                let group = DispatchGroup()
+                for cookie in cookies {
+                    group.enter()
+                    cookieStore.delete(cookie) {
+                        group.leave()
+                    }
+                }
+                group.notify(queue: .main) {
+                    completion?()
+                }
             }
         }
     }
