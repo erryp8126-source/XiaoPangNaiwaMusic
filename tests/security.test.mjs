@@ -2408,3 +2408,95 @@ test("account switch & logout: User page capsules, BasicTab account item, non-re
   );
   assert.match(iosPlayerSwift, /func\s+clearNativeUserCookie\(/);
 });
+
+test("security hardening final: LX runner blocks private/loopback/supabase URLs & Supabase schema prioritizes cf-connecting-ip", async () => {
+  const lxRunnerUrl = pathToFileURL(
+    path.join(repoRoot, "upstream/src/renderer/services/LxMusicSourceRunner.ts")
+  ).href;
+  const { assertSafeLxRequestUrl } = await import(lxRunnerUrl);
+  assert.equal(typeof assertSafeLxRequestUrl, "function");
+
+  const blockedUrls = [
+    "http://127.0.0.1:30488",
+    "http://127.0.0.1:30488/health",
+    "http://localhost",
+    "http://api.localhost:30488",
+    "http://0.0.0.0:30488",
+    "http://169.254.169.254",
+    "http://169.254.169.254/latest/meta-data/",
+    "http://192.168.1.1",
+    "http://10.0.0.1",
+    "http://172.16.0.1",
+    "http://100.64.0.1",
+    "http://[::1]:30488",
+    "http://[::ffff:127.0.0.1]:30488",
+    "http://[fc00::1]/api",
+    "http://[fe80::1]/api",
+    "https://xxx.supabase.co",
+    "https://xxx.supabase.co/rest/v1/rpc/get_sync_blob",
+    "https://supabase.co",
+    "file:///etc/passwd",
+    "javascript:alert(1)"
+  ];
+  for (const target of blockedUrls) {
+    assert.throws(
+      () => assertSafeLxRequestUrl(target),
+      /Blocked/,
+      `LX runner must reject unsafe URL: ${target}`
+    );
+  }
+
+  const allowedUrls = [
+    "https://music.gdstudio.xyz/api.php?types=url&id=123",
+    "https://api.example-lx-source.com/url/tx/001/320k",
+    "http://93.184.216.34/audio/test.mp3"
+  ];
+  for (const target of allowedUrls) {
+    assert.doesNotThrow(
+      () => {
+        const normalized = assertSafeLxRequestUrl(target);
+        assert.equal(normalized, new URL(target).toString());
+      },
+      `LX runner must allow valid public audio source URL: ${target}`
+    );
+  }
+
+  const runnerSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/services/LxMusicSourceRunner.ts"),
+    "utf-8"
+  );
+  const handleHttpIdx = runnerSrc.indexOf("private handleHttpRequest(");
+  const guardCallIdx = runnerSrc.indexOf("assertSafeLxRequestUrl(url)", handleHttpIdx);
+  const nativeCallIdx = runnerSrc.indexOf(".lxMusicHttpRequest(", handleHttpIdx);
+  const fetchCallIdx = runnerSrc.indexOf("fetch(safeUrl", handleHttpIdx);
+  assert.ok(guardCallIdx > handleHttpIdx, "handleHttpRequest must validate URL via assertSafeLxRequestUrl");
+  assert.ok(guardCallIdx < nativeCallIdx && guardCallIdx < fetchCallIdx, "URL guard must execute before native bridge and fetch()");
+
+  const windowApiSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/utils/bridge/windowApi.ts"),
+    "utf-8"
+  );
+  assert.match(windowApiSrc, /assertSafeLxRequestUrl\(params\.url\)/);
+  assert.ok(
+    windowApiSrc.indexOf("assertSafeLxRequestUrl(params.url)") <
+      windowApiSrc.indexOf("invokeAndroidAsync(\r\n        'http-request'") ||
+      windowApiSrc.indexOf("assertSafeLxRequestUrl(params.url)") <
+        windowApiSrc.indexOf("invokeAndroidAsync(\n        'http-request'"),
+    "windowApi.lxMusicHttpRequest must validate URL before invokeAndroidAsync('http-request')"
+  );
+
+  const schemaSql = fs.readFileSync(
+    path.join(repoRoot, "sync-server/supabase/schema.sql"),
+    "utf-8"
+  );
+  const extractIpBlock = schemaSql.slice(
+    schemaSql.indexOf("create or replace function public.extract_sync_client_ip()"),
+    schemaSql.indexOf("create or replace function public.check_sync_rate_limit(")
+  );
+  const cfIdx = extractIpBlock.indexOf("'cf-connecting-ip'");
+  const xRealIdx = extractIpBlock.indexOf("'x-real-ip'");
+  const xffIdx = extractIpBlock.indexOf("'x-forwarded-for'");
+  assert.ok(cfIdx > 0 && xRealIdx > cfIdx && xffIdx > xRealIdx, "extract_sync_client_ip must prioritize cf-connecting-ip, then x-real-ip, then x-forwarded-for");
+  assert.doesNotMatch(extractIpBlock, /split_part\(/i, "extract_sync_client_ip must not take first comma-separated segment of x-forwarded-for");
+  assert.match(extractIpBlock, /order\s+by\s+ord\s+desc/i, "extract_sync_client_ip must take rightmost non-empty x-forwarded-for segment as fallback");
+});

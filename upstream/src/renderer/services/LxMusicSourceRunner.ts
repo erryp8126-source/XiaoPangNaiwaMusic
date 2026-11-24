@@ -92,6 +92,191 @@ type PendingInvocation = {
   timeoutId: number;
 };
 
+const LOCAL_SERVER_DEFAULT_PORT = '30488';
+
+const parseIpv4Octets = (host: string): [number, number, number, number] | null => {
+  const match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!match) return null;
+  const nums = [Number(match[1]), Number(match[2]), Number(match[3]), Number(match[4])];
+  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+  return nums as [number, number, number, number];
+};
+
+const isBlockedIpv4 = ([b0, b1, b2]: [number, number, number, number]): boolean => {
+  if (b0 === 0) return true; // 0.0.0.0/8
+  if (b0 === 10) return true; // 10.0.0.0/8
+  if (b0 === 100 && b1 >= 64 && b1 <= 127) return true; // 100.64.0.0/10 CGNAT
+  if (b0 === 127) return true; // 127.0.0.0/8 loopback
+  if (b0 === 169 && b1 === 254) return true; // 169.254.0.0/16 link-local / cloud metadata
+  if (b0 === 172 && b1 >= 16 && b1 <= 31) return true; // 172.16.0.0/12
+  if (b0 === 192 && b1 === 0 && b2 === 0) return true; // 192.0.0.0/24 IETF protocol
+  if (b0 === 192 && b1 === 168) return true; // 192.168.0.0/16
+  if (b0 >= 224) return true; // 224.0.0.0/4 multicast & 240.0.0.0/4 reserved
+  return false;
+};
+
+const parseIpv6Hextets = (rawAddr: string): number[] | null => {
+  const addr = rawAddr.split('%')[0].toLowerCase();
+  if (!addr) return null;
+  const doubleColonParts = addr.split('::');
+  if (doubleColonParts.length > 2) return null;
+
+  const parseSegmentList = (segStr: string, allowEmbeddedIpv4: boolean): number[] | null => {
+    if (!segStr) return [];
+    const parts = segStr.split(':');
+    const out: number[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (!part) return null;
+      if (part.includes('.')) {
+        if (!allowEmbeddedIpv4 || i !== parts.length - 1) return null;
+        const v4 = parseIpv4Octets(part);
+        if (!v4) return null;
+        out.push((v4[0] << 8) | v4[1], (v4[2] << 8) | v4[3]);
+      } else {
+        if (!/^[0-9a-f]{1,4}$/.test(part)) return null;
+        out.push(parseInt(part, 16));
+      }
+    }
+    return out;
+  };
+
+  if (doubleColonParts.length === 1) {
+    const groups = parseSegmentList(doubleColonParts[0], true);
+    return groups && groups.length === 8 ? groups : null;
+  }
+
+  const head = parseSegmentList(doubleColonParts[0], false);
+  const tail = parseSegmentList(doubleColonParts[1], true);
+  if (!head || !tail) return null;
+  const zeroFill = 8 - (head.length + tail.length);
+  if (zeroFill < 1) return null;
+  return [...head, ...new Array<number>(zeroFill).fill(0), ...tail];
+};
+
+const isBlockedIpv6 = (host: string): boolean => {
+  const h = parseIpv6Hextets(host);
+  if (!h) return true; // 格式异常按 fail-closed 拦截
+
+  const allZero = h.every((v) => v === 0);
+  if (allZero) return true; // ::
+
+  const isLoopback = h.slice(0, 7).every((v) => v === 0) && h[7] === 1;
+  if (isLoopback) return true; // ::1
+
+  const isV4Mapped = h.slice(0, 5).every((v) => v === 0) && h[5] === 0xffff;
+  const isV4Compat = h.slice(0, 6).every((v) => v === 0);
+  const isNat64 = h[0] === 0x0064 && h[1] === 0xff9b && h.slice(2, 6).every((v) => v === 0);
+  if (isV4Mapped || isV4Compat || isNat64) {
+    const v4: [number, number, number, number] = [
+      (h[6] >> 8) & 0xff,
+      h[6] & 0xff,
+      (h[7] >> 8) & 0xff,
+      h[7] & 0xff
+    ];
+    return isBlockedIpv4(v4);
+  }
+
+  if ((h[0] & 0xfe00) === 0xfc00) return true; // fc00::/7 ULA
+  if ((h[0] & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  if ((h[0] & 0xffc0) === 0xfec0) return true; // fec0::/10 site-local
+  if ((h[0] & 0xff00) === 0xff00) return true; // ff00::/8 multicast
+  return false;
+};
+
+const getLocalServerPorts = (): Set<string> => {
+  const ports = new Set<string>([LOCAL_SERVER_DEFAULT_PORT]);
+  if (typeof window !== 'undefined') {
+    try {
+      const cfgRaw = (window as any).AlgerAndroid?.getServerConfig?.();
+      if (typeof cfgRaw === 'string' && cfgRaw.trim()) {
+        const cfg = JSON.parse(cfgRaw);
+        const p = Number(cfg?.localPort);
+        if (Number.isInteger(p) && p > 0 && p <= 65535) {
+          ports.add(String(p));
+        }
+      }
+    } catch {
+      // ignore
+    }
+    if (window.location?.port) {
+      ports.add(String(window.location.port));
+    }
+  }
+  return ports;
+};
+
+/**
+ * 校验第三方 LX 音源脚本发起的网络请求 URL：
+ * 仅放行公网 HTTP(S) 音源请求，严禁探测本机服务、内网/链路本地网段及云同步后端域名
+ */
+export const assertSafeLxRequestUrl = (rawUrl: string): string => {
+  if (typeof rawUrl !== 'string' || !rawUrl.trim()) {
+    throw new Error('Blocked empty LX HTTP request URL');
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl.trim());
+  } catch {
+    throw new Error('Blocked malformed LX HTTP request URL');
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Blocked disallowed LX protocol: ${parsed.protocol}`);
+  }
+
+  const normalizedHost = parsed.hostname.toLowerCase().replace(/\.+$/, '');
+  const bareHost =
+    normalizedHost.startsWith('[') && normalizedHost.endsWith(']')
+      ? normalizedHost.slice(1, -1)
+      : normalizedHost;
+
+  if (!bareHost) {
+    throw new Error('Blocked LX request with empty host');
+  }
+
+  if (
+    bareHost === 'localhost' ||
+    bareHost.endsWith('.localhost') ||
+    bareHost === 'supabase.co' ||
+    bareHost.endsWith('.supabase.co') ||
+    bareHost === 'appassets.androidplatform.net' ||
+    bareHost.endsWith('.local') ||
+    bareHost.endsWith('.internal')
+  ) {
+    throw new Error(`Blocked restricted LX host: ${bareHost}`);
+  }
+
+  const ipv4 = parseIpv4Octets(bareHost);
+  if (ipv4 && isBlockedIpv4(ipv4)) {
+    throw new Error(`Blocked private/loopback IPv4 LX host: ${bareHost}`);
+  }
+
+  if (bareHost.includes(':') && isBlockedIpv6(bareHost)) {
+    throw new Error(`Blocked private/loopback IPv6 LX host: ${bareHost}`);
+  }
+
+  const explicitPort = parsed.port;
+  if (explicitPort === LOCAL_SERVER_DEFAULT_PORT) {
+    throw new Error(`Blocked local server port in LX request: ${LOCAL_SERVER_DEFAULT_PORT}`);
+  }
+
+  if (typeof window !== 'undefined' && window.location?.hostname) {
+    const appHost = window.location.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '');
+    const localPorts = getLocalServerPorts();
+    if (
+      bareHost === appHost &&
+      ((explicitPort && localPorts.has(explicitPort)) ||
+        (window.location.protocol === 'http:' && (bareHost === '127.0.0.1' || bareHost === 'localhost')))
+    ) {
+      throw new Error(`Blocked same-origin local service target in LX request: ${bareHost}`);
+    }
+  }
+
+  return parsed.toString();
+};
+
 /**
  * 解析脚本头部注释中的元信息
  */
@@ -387,7 +572,19 @@ export class LxMusicSourceRunner {
     options: any,
     callback: (err: Error | null, resp: any, body: any) => void
   ): () => void {
-    console.log(`[LxMusicRunner] HTTP 请求: ${options.method || 'GET'} ${url}`);
+    let safeUrl: string;
+    try {
+      safeUrl = assertSafeLxRequestUrl(url);
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error('Blocked unsafe LX HTTP request URL');
+      console.warn('[LxMusicRunner] 已拦截不安全的 LX 网络请求:', url, err.message);
+      queueMicrotask(() => {
+        callback(err, null, null);
+      });
+      return () => {};
+    }
+
+    console.log(`[LxMusicRunner] HTTP 请求: ${options.method || 'GET'} ${safeUrl}`);
 
     const timeout = options.timeout || 30000;
     const requestId = `lx_http_${Date.now()}_${Math.random().toString(36).substring(7)}`;
@@ -397,7 +594,7 @@ export class LxMusicSourceRunner {
     if (hasMainProcessHttp) {
       window.api
         .lxMusicHttpRequest({
-          url,
+          url: safeUrl,
           options: {
             ...options,
             timeout
@@ -459,7 +656,7 @@ export class LxMusicSourceRunner {
       controller.abort();
     }, timeout);
 
-    fetch(url, fetchOptions)
+    fetch(safeUrl, fetchOptions)
       .then(async (response) => {
         clearTimeout(timeoutId);
         const rawBody = await response.text();

@@ -22,7 +22,7 @@ create index if not exists idx_sync_rate_limits_updated_at on public.sync_rate_l
 alter table public.sync_rate_limits enable row level security;
 revoke all on table public.sync_rate_limits from public, anon, authenticated;
 
--- 内部辅助函数：从 PostgREST request.headers 的 x-forwarded-for 提取首段来源 IP
+-- 内部辅助函数：优先读取 Cloudflare 网关注入的 cf-connecting-ip（其次 x-real-ip），仅均缺失时才回退解析 x-forwarded-for 末尾可信段，防首段伪造
 create or replace function public.extract_sync_client_ip()
 returns text
 language plpgsql
@@ -46,14 +46,22 @@ begin
     return 'unknown';
   end;
 
-  v_xff := coalesce(
-    v_headers ->> 'x-forwarded-for',
-    v_headers ->> 'cf-connecting-ip',
-    v_headers ->> 'x-real-ip',
-    ''
-  );
-  v_ip := trim(split_part(v_xff, ',', 1));
-  if v_ip = '' then
+  v_ip := nullif(trim(v_headers ->> 'cf-connecting-ip'), '');
+  if v_ip is null then
+    v_ip := nullif(trim(v_headers ->> 'x-real-ip'), '');
+  end if;
+  if v_ip is null then
+    v_xff := nullif(trim(v_headers ->> 'x-forwarded-for'), '');
+    if v_xff is not null then
+      select nullif(trim(part), '')
+      into v_ip
+      from unnest(string_to_array(v_xff, ',')) with ordinality as t(part, ord)
+      where trim(part) <> ''
+      order by ord desc
+      limit 1;
+    end if;
+  end if;
+  if v_ip is null or v_ip = '' then
     return 'unknown';
   end if;
   return left(v_ip, 64);

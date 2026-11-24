@@ -1,3 +1,4 @@
+import { assertSafeLxRequestUrl } from '../../services/LxMusicSourceRunner';
 import {
   emitAndroidEvent,
   getNativeCapabilities,
@@ -63,6 +64,7 @@ export function installAndroidWindowApi(): void {
 
     // CORS-free HTTP request for LX Music scripts, GDMusic, and Custom API plugins
     lxMusicHttpRequest: async (params: { url: string; options?: any; requestId?: string }) => {
+      const safeUrl = assertSafeLxRequestUrl(params.url);
       const rawBody = params.options?.body;
       const normalizedBody =
         rawBody === undefined || rawBody === null
@@ -73,7 +75,7 @@ export function installAndroidWindowApi(): void {
       return invokeAndroidAsync(
         'http-request',
         {
-          url: params.url,
+          url: safeUrl,
           method: params.options?.method || 'GET',
           headers: params.options?.headers || {},
           body: normalizedBody,
