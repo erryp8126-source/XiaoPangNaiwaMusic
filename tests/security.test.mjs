@@ -2594,3 +2594,68 @@ test("media session custom controls: monochrome vectors, lockscreen-safe lyric t
   assert.match(playbackTabSrc, /onAndroidEvent\('floating-lyric-state-changed'/);
   assert.match(playbackTabSrc, /offAndroidEvent\('floating-lyric-state-changed'/);
 });
+
+test("configurable audio cache limit: whitelist tiers, concurrency-safe SimpleCache update, bridge & settings UI", () => {
+  const appPrefsSrc = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/config/AppPrefs.kt"),
+    "utf-8"
+  );
+  assert.match(appPrefsSrc, /DEFAULT_AUDIO_CACHE_MAX_MB\s*(?::\s*Int)?\s*=\s*500/);
+  assert.match(appPrefsSrc, /AUDIO_CACHE_MAX_MB_OPTIONS[\s\S]*listOf\(200,\s*500,\s*1024,\s*2048\)/);
+  assert.match(appPrefsSrc, /fun normalizeAudioCacheMaxMb\(/);
+  assert.match(appPrefsSrc, /var audioCacheMaxMb\s*:\s*Int/);
+
+  const cacheMgrSrc = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/player/AudioCacheManager.kt"),
+    "utf-8"
+  );
+  assert.doesNotMatch(cacheMgrSrc, /MAX_CACHE_BYTES\s*=\s*200L/, "Must not hardcode 200 MB cache cap");
+  assert.match(cacheMgrSrc, /fun getMaxCacheMb\(/);
+  assert.match(cacheMgrSrc, /fun setMaxCacheMb\(/);
+  assert.match(cacheMgrSrc, /AppPrefs\(context\.applicationContext\)\.audioCacheMaxMb/);
+  assert.match(cacheMgrSrc, /requiresRestart/);
+  const setMaxStart = cacheMgrSrc.indexOf("fun setMaxCacheMb(");
+  const getCacheStart = cacheMgrSrc.indexOf("fun getCache(", setMaxStart);
+  assert.ok(setMaxStart > 0 && getCacheStart > setMaxStart);
+  const setMaxBody = cacheMgrSrc.slice(setMaxStart, getCacheStart);
+  assert.doesNotMatch(setMaxBody, /\.release\(/, "setMaxCacheMb must never call SimpleCache.release() on active cache");
+
+  const bridgeSrc = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/bridge/AndroidJsBridge.kt"),
+    "utf-8"
+  );
+  assert.match(bridgeSrc, /@JavascriptInterface\s+fun getAudioCacheMaxMb\(\):\s*Int/);
+  assert.match(bridgeSrc, /@JavascriptInterface\s+fun setAudioCacheMaxMb\(mb: Int\):\s*String/);
+
+  const bridgeTypesSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/utils/bridge/types.ts"),
+    "utf-8"
+  );
+  assert.match(bridgeTypesSrc, /interface AudioCacheLimitUpdateResult/);
+  assert.match(bridgeTypesSrc, /getAudioCacheMaxMb\?\(\):\s*number/);
+  assert.match(bridgeTypesSrc, /setAudioCacheMaxMb\?\(mb:\s*number\):\s*string/);
+
+  const bridgeCoreSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/utils/bridge/core.ts"),
+    "utf-8"
+  );
+  assert.match(bridgeCoreSrc, /AUDIO_CACHE_MAX_MB_OPTIONS\s*=\s*\[200,\s*500,\s*1024,\s*2048\]/);
+  assert.match(bridgeCoreSrc, /DEFAULT_AUDIO_CACHE_MAX_MB\s*=\s*500/);
+  assert.match(bridgeCoreSrc, /export function getNativeAudioCacheMaxMb\(/);
+  assert.match(bridgeCoreSrc, /export function setNativeAudioCacheMaxMb\(/);
+
+  const playbackTabSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/set/tabs/PlaybackTab.vue"),
+    "utf-8"
+  );
+  assert.doesNotMatch(playbackTabSrc, /上限 200 MB/, "PlaybackTab must not display hardcoded 200 MB limit");
+  assert.match(playbackTabSrc, /audioCacheMaxOptions/);
+  assert.match(playbackTabSrc, /handleSelectAudioCacheMaxMb/);
+  assert.match(playbackTabSrc, /重启应用后生效/);
+
+  const mobileSettingsSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/player/MobilePlayerSettings.vue"),
+    "utf-8"
+  );
+  assert.match(mobileSettingsSrc, /audioCacheMaxLabel/);
+});

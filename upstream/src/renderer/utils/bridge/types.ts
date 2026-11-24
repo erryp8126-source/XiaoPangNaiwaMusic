@@ -20,6 +20,12 @@ export interface NativeCapabilities {
   supportsAudioCache: boolean;
 }
 
+export interface AudioCacheLimitUpdateResult {
+  maxMb: number;
+  activeMaxMb: number;
+  requiresRestart: boolean;
+}
+
 export interface AndroidBridgeInterface {
   getCapabilities?(): string;
   getServerConfig(): string;
@@ -63,6 +69,8 @@ export interface AndroidBridgeInterface {
   exitApp?(): void;
   getAudioCacheSize?(): number;
   clearAudioCache?(): boolean;
+  getAudioCacheMaxMb?(): number;
+  setAudioCacheMaxMb?(mb: number): string;
   getListeningStats?(): string;
   resetListeningStats?(): boolean;
   mergeListeningStats?(statsJson: string): string;

@@ -156,11 +156,18 @@
 
       <setting-item
         v-if="nativeCapabilities.supportsAudioCache"
-        inline
         title="音频边听边缓存"
-        :description="`已缓存 ${audioCacheSizeText} / 上限 200 MB（常听歌曲自动秒开、省流量）`"
+        :description="`已缓存 ${audioCacheSizeText} / ${audioCacheMaxLabel}（常听歌曲自动秒开、省流量）`"
       >
-        <s-btn @click="handleClearAudioCache">清理缓存</s-btn>
+        <div class="flex items-center gap-2 max-md:w-full">
+          <s-select
+            :model-value="audioCacheMaxMb"
+            :options="audioCacheMaxOptions"
+            width="w-28 max-md:flex-1"
+            @update:model-value="handleSelectAudioCacheMaxMb"
+          />
+          <s-btn @click="handleClearAudioCache">清理缓存</s-btn>
+        </div>
       </setting-item>
 
       <setting-item
@@ -280,7 +287,15 @@ import AudioDeviceSettings from '@/components/settings/AudioDeviceSettings.vue';
 import MusicSourceSettings from '@/components/settings/MusicSourceSettings.vue';
 import { type Platform } from '@/types/music';
 import { isAndroid, isElectron, isNative } from '@/utils';
-import { getNativeCapabilities, offAndroidEvent, onAndroidEvent } from '@/utils/androidBridge';
+import {
+  AUDIO_CACHE_MAX_MB_OPTIONS,
+  formatAudioCacheLimitMb,
+  getNativeAudioCacheMaxMb,
+  getNativeCapabilities,
+  offAndroidEvent,
+  onAndroidEvent,
+  setNativeAudioCacheMaxMb
+} from '@/utils/androidBridge';
 import {
   getEffectiveLaunchAutoPlayMode,
   getEffectiveLaunchHomeMode,
@@ -426,11 +441,31 @@ const audioCacheBytes = ref<number>(
     : 0
 );
 const audioCacheSizeText = computed(() => formatCacheBytes(audioCacheBytes.value));
+const audioCacheMaxMb = ref<number>(
+  nativeCapabilities.supportsAudioCache ? getNativeAudioCacheMaxMb() : 500
+);
+const audioCacheMaxOptions = AUDIO_CACHE_MAX_MB_OPTIONS.map((mb) => ({
+  label: formatAudioCacheLimitMb(mb),
+  value: mb
+}));
+const audioCacheMaxLabel = computed(() => formatAudioCacheLimitMb(audioCacheMaxMb.value));
+
+const handleSelectAudioCacheMaxMb = (val: string | number | boolean) => {
+  if (!nativeCapabilities.supportsAudioCache) return;
+  const res = setNativeAudioCacheMaxMb(Number(val));
+  audioCacheMaxMb.value = res.maxMb;
+  showBottomToast(
+    res.requiresRestart
+      ? `缓存上限已设为 ${formatAudioCacheLimitMb(res.maxMb)}，重启应用后生效`
+      : `缓存上限已设为 ${formatAudioCacheLimitMb(res.maxMb)}`
+  );
+};
 
 const handleClearAudioCache = () => {
   if (!nativeCapabilities.supportsAudioCache) return;
   const ok = Boolean((window as any).AlgerAndroid?.clearAudioCache?.());
   audioCacheBytes.value = Number((window as any).AlgerAndroid?.getAudioCacheSize?.() || 0);
+  audioCacheMaxMb.value = getNativeAudioCacheMaxMb();
   showBottomToast(ok ? '已清理音频缓存' : '缓存清理失败');
 };
 

@@ -15,6 +15,16 @@ data class ServerConfig(
 )
 
 class AppPrefs(context: Context) {
+    companion object {
+        const val DEFAULT_AUDIO_CACHE_MAX_MB: Int = 500
+        val AUDIO_CACHE_MAX_MB_OPTIONS: List<Int> = listOf(200, 500, 1024, 2048)
+        private const val KEY_AUDIO_CACHE_MAX_MB = "audio_cache_max_mb"
+
+        fun normalizeAudioCacheMaxMb(value: Int): Int {
+            return if (value in AUDIO_CACHE_MAX_MB_OPTIONS) value else DEFAULT_AUDIO_CACHE_MAX_MB
+        }
+    }
+
     private val prefs: SharedPreferences =
         context.getSharedPreferences("alger_music_prefs", Context.MODE_PRIVATE)
     private val gson = Gson()
@@ -70,4 +80,13 @@ class AppPrefs(context: Context) {
     var deviceId: String
         get() = prefs.getString("ncm_device_id", "") ?: ""
         set(value) = prefs.edit().putString("ncm_device_id", value).apply()
+
+    var audioCacheMaxMb: Int
+        get() = normalizeAudioCacheMaxMb(
+            prefs.getInt(KEY_AUDIO_CACHE_MAX_MB, DEFAULT_AUDIO_CACHE_MAX_MB)
+        )
+        set(value) {
+            val normalized = normalizeAudioCacheMaxMb(value)
+            prefs.edit().putInt(KEY_AUDIO_CACHE_MAX_MB, normalized).apply()
+        }
 }

@@ -121,7 +121,7 @@
                 <div class="pr-3">
                   <div class="text-sm font-semibold text-white">音频边听缓存</div>
                   <div class="text-xs text-slate-400 mt-0.5">
-                    当前占用 {{ audioCacheSizeText }}（清理不影响已下载与收藏）
+                    当前占用 {{ audioCacheSizeText }} / {{ audioCacheMaxLabel }}（清理不影响已下载与收藏）
                   </div>
                 </div>
                 <button
@@ -352,6 +352,8 @@ import { usePlayerStore } from '@/store/modules/player';
 import { useSettingsStore } from '@/store/modules/settings';
 import { isAndroid } from '@/utils';
 import {
+  formatAudioCacheLimitMb,
+  getNativeAudioCacheMaxMb,
   getNativeCapabilities,
   offAndroidEvent,
   onAndroidEvent,
@@ -405,9 +407,13 @@ const currentMetaSummary = computed(() => {
 });
 
 const audioCacheBytes = ref<number>(0);
+const audioCacheMaxMb = ref<number>(
+  nativeCapabilities.supportsAudioCache ? getNativeAudioCacheMaxMb() : 500
+);
 const refreshAudioCacheSize = () => {
   if (nativeCapabilities.supportsAudioCache) {
     audioCacheBytes.value = Number((window as any).AlgerAndroid?.getAudioCacheSize?.() || 0);
+    audioCacheMaxMb.value = getNativeAudioCacheMaxMb();
   }
 };
 const audioCacheSizeText = computed(() => {
@@ -416,6 +422,7 @@ const audioCacheSizeText = computed(() => {
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
   return `${(b / (1024 * 1024)).toFixed(1)} MB`;
 });
+const audioCacheMaxLabel = computed(() => formatAudioCacheLimitMb(audioCacheMaxMb.value));
 const handleClearCacheInDrawer = () => {
   if (!nativeCapabilities.supportsAudioCache) return;
   const ok = Boolean((window as any).AlgerAndroid?.clearAudioCache?.());

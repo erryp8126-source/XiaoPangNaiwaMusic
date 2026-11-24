@@ -1,4 +1,10 @@
-import type { AndroidServerConfig, HapticStyle, NativeCapabilities, NativeEventListener } from './types';
+import type {
+  AndroidServerConfig,
+  AudioCacheLimitUpdateResult,
+  HapticStyle,
+  NativeCapabilities,
+  NativeEventListener
+} from './types';
 
 export const isAndroid = (): boolean => {
   return typeof window !== 'undefined' && typeof window.AlgerAndroid !== 'undefined';
@@ -145,6 +151,61 @@ export async function fetchNativeOfflinePlayableIds(): Promise<OfflinePlayableId
   } catch {
     return empty;
   }
+}
+
+export const AUDIO_CACHE_MAX_MB_OPTIONS = [200, 500, 1024, 2048] as const;
+export const DEFAULT_AUDIO_CACHE_MAX_MB = 500;
+
+export function normalizeAudioCacheMaxMb(mb: unknown): number {
+  const num = Number(mb);
+  return (AUDIO_CACHE_MAX_MB_OPTIONS as readonly number[]).includes(num)
+    ? num
+    : DEFAULT_AUDIO_CACHE_MAX_MB;
+}
+
+export function formatAudioCacheLimitMb(mb: number): string {
+  const normalized = normalizeAudioCacheMaxMb(mb);
+  return normalized >= 1024 ? `${normalized / 1024} GB` : `${normalized} MB`;
+}
+
+export function getNativeAudioCacheMaxMb(): number {
+  if (!isAndroid()) return DEFAULT_AUDIO_CACHE_MAX_MB;
+  try {
+    return normalizeAudioCacheMaxMb(window.AlgerAndroid?.getAudioCacheMaxMb?.());
+  } catch {
+    return DEFAULT_AUDIO_CACHE_MAX_MB;
+  }
+}
+
+export function setNativeAudioCacheMaxMb(mb: number): AudioCacheLimitUpdateResult {
+  const normalized = normalizeAudioCacheMaxMb(mb);
+  if (!isAndroid()) {
+    return {
+      maxMb: normalized,
+      activeMaxMb: normalized,
+      requiresRestart: false
+    };
+  }
+  try {
+    const raw = window.AlgerAndroid?.setAudioCacheMaxMb?.(normalized);
+    if (typeof raw === 'string' && raw.length > 0) {
+      const parsed = JSON.parse(raw) as Partial<AudioCacheLimitUpdateResult>;
+      const maxMb = normalizeAudioCacheMaxMb(parsed.maxMb ?? normalized);
+      const activeMaxMb = normalizeAudioCacheMaxMb(parsed.activeMaxMb ?? maxMb);
+      return {
+        maxMb,
+        activeMaxMb,
+        requiresRestart: Boolean(parsed.requiresRestart)
+      };
+    }
+  } catch {
+    // ignore
+  }
+  return {
+    maxMb: normalized,
+    activeMaxMb: normalized,
+    requiresRestart: false
+  };
 }
 
 /**

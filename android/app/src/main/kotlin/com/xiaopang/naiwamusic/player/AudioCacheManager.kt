@@ -15,10 +15,11 @@ import androidx.media3.datasource.cache.CacheDataSink
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
+import com.xiaopang.naiwamusic.config.AppPrefs
 import java.io.File
 
 /**
- * 原生 ExoPlayer 边听边缓存管理器（200 MB LRU 磁盘缓存）
+ * 原生 ExoPlayer 边听边缓存管理器（支持配置 200 / 500 / 1024 / 2048 MB LRU 磁盘缓存，默认 500 MB）
  * - 仅对远端在线 HTTP(S) 音频流启用磁盘缓存，跳过本地文件与 127.0.0.1 回环流
  * - 开启 FLAG_IGNORE_CACHE_ON_ERROR，异常时自动透明回退网络播放，绝不中断听歌
  */
@@ -26,24 +27,77 @@ import java.io.File
 object AudioCacheManager {
     private const val TAG = "AudioCacheManager"
     private const val CACHE_DIR_NAME = "media_audio_cache"
-    const val MAX_CACHE_BYTES: Long = 200L * 1024L * 1024L // 200 MB
+    const val BYTES_PER_MB: Long = 1024L * 1024L
+
+    data class CacheLimitUpdateResult(
+        val maxMb: Int,
+        val activeMaxMb: Int,
+        val requiresRestart: Boolean
+    )
 
     @Volatile
     private var simpleCache: SimpleCache? = null
+    @Volatile
+    private var activeCacheMaxMb: Int? = null
     private val lock = Any()
+
+    fun normalizeMaxCacheMb(mb: Int): Int = AppPrefs.normalizeAudioCacheMaxMb(mb)
+
+    fun maxBytesForMb(mb: Int): Long = normalizeMaxCacheMb(mb).toLong() * BYTES_PER_MB
+
+    internal fun resolveUpdateRequiresRestart(
+        cacheInitialized: Boolean,
+        activeMaxMb: Int?,
+        newMaxMb: Int
+    ): Boolean {
+        return cacheInitialized && activeMaxMb != null && activeMaxMb != newMaxMb
+    }
+
+    fun getMaxCacheMb(context: Context): Int {
+        return AppPrefs(context.applicationContext).audioCacheMaxMb
+    }
+
+    /**
+     * 更新音频缓存上限配置：
+     * - SimpleCache 尚未创建时直接生效（requiresRestart = false）
+     * - SimpleCache 已被 ExoPlayer / CacheDataSource 持有时，严禁销毁正在使用的实例以防文件锁崩溃，
+     *   保存新上限并返回 requiresRestart = true（重启应用后生效）
+     */
+    fun setMaxCacheMb(context: Context, requestedMb: Int): CacheLimitUpdateResult {
+        val normalizedMb = normalizeMaxCacheMb(requestedMb)
+        return synchronized(lock) {
+            AppPrefs(context.applicationContext).audioCacheMaxMb = normalizedMb
+            val initialized = simpleCache != null
+            val currentActiveMb = if (initialized) (activeCacheMaxMb ?: normalizedMb) else normalizedMb
+            val requiresRestart = resolveUpdateRequiresRestart(initialized, activeCacheMaxMb, normalizedMb)
+            Log.i(
+                TAG,
+                "Audio cache max updated: configured=${normalizedMb}MB, active=${currentActiveMb}MB, requiresRestart=$requiresRestart"
+            )
+            CacheLimitUpdateResult(
+                maxMb = normalizedMb,
+                activeMaxMb = currentActiveMb,
+                requiresRestart = requiresRestart
+            )
+        }
+    }
 
     fun getCache(context: Context): SimpleCache? {
         simpleCache?.let { return it }
         synchronized(lock) {
             simpleCache?.let { return it }
             return runCatching {
-                val dir = File(context.applicationContext.cacheDir, CACHE_DIR_NAME)
+                val appCtx = context.applicationContext
+                val dir = File(appCtx.cacheDir, CACHE_DIR_NAME)
                 if (!dir.exists()) dir.mkdirs()
-                val evictor = LeastRecentlyUsedCacheEvictor(MAX_CACHE_BYTES)
-                val dbProvider = StandaloneDatabaseProvider(context.applicationContext)
+                val maxMb = getMaxCacheMb(appCtx)
+                val maxBytes = maxBytesForMb(maxMb)
+                val evictor = LeastRecentlyUsedCacheEvictor(maxBytes)
+                val dbProvider = StandaloneDatabaseProvider(appCtx)
                 SimpleCache(dir, evictor, dbProvider).also {
                     simpleCache = it
-                    Log.i(TAG, "SimpleCache initialized at ${dir.absolutePath}, max=${MAX_CACHE_BYTES / (1024 * 1024)}MB")
+                    activeCacheMaxMb = maxMb
+                    Log.i(TAG, "SimpleCache initialized at ${dir.absolutePath}, max=${maxMb}MB")
                 }
             }.onFailure {
                 Log.w(TAG, "SimpleCache init failed, fallback to direct streaming: ${it.message}")

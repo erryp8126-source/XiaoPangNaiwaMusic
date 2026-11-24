@@ -564,6 +564,23 @@ class AndroidJsBridge(
     }
 
     @JavascriptInterface
+    fun getAudioCacheMaxMb(): Int {
+        return AudioCacheManager.getMaxCacheMb(activity)
+    }
+
+    @JavascriptInterface
+    fun setAudioCacheMaxMb(mb: Int): String {
+        val result = AudioCacheManager.setMaxCacheMb(activity, mb)
+        return gson.toJson(
+            mapOf(
+                "maxMb" to result.maxMb,
+                "activeMaxMb" to result.activeMaxMb,
+                "requiresRestart" to result.requiresRestart
+            )
+        )
+    }
+
+    @JavascriptInterface
     fun getListeningStats(): String {
         return ListeningStatsTracker.getStatsJson(activity)
     }
