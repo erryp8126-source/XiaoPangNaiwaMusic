@@ -1,10 +1,8 @@
 import { useThrottleFn } from '@vueuse/core';
 import { debounce } from 'lodash';
-import { createDiscreteApi } from 'naive-ui';
 import { defineStore, storeToRefs } from 'pinia';
 import { computed, ref, shallowRef, triggerRef } from 'vue';
 
-import i18n from '@/../i18n/renderer';
 import { useSongDetail } from '@/hooks/usePlayerHooks';
 import { preloadService } from '@/services/preloadService';
 import type { SongResult } from '@/types/music';
@@ -15,18 +13,24 @@ import {
   type PlaybackFailureCode,
   shouldRetrySingleTrack
 } from '@/utils/playbackDiagnostics';
+import {
+  notifyPlaybackBufferingRetry,
+  notifyPlaybackUnavailable
+} from '@/utils/playbackFeedback';
 import { performShuffle, preloadCoverImage } from '@/utils/playerUtils';
 import { syncPlaylistIndexWithCurrentTrack } from '@/utils/playlistIndexSync';
 
 import { useIntelligenceModeStore } from './intelligenceMode';
+import { useOfflineAvailabilityStore } from './offlineAvailability';
 import { usePlayerCoreStore } from './playerCore';
 import { useSleepTimerStore } from './sleepTimer';
 
-// 延迟初始化 message，避免 chunk 循环依赖导致 TDZ 错误
-let _message: ReturnType<typeof createDiscreteApi>['message'] | null = null;
-const getMessage = () => {
-  if (!_message) _message = createDiscreteApi(['message']).message;
-  return _message;
+const isOfflineNow = (): boolean => {
+  try {
+    return useOfflineAvailabilityStore().isOffline;
+  } catch {
+    return typeof navigator !== 'undefined' && navigator.onLine === false;
+  }
 };
 
 /**
@@ -205,8 +209,9 @@ export const usePlaylistStore = defineStore(
           if (nextSong.playMusicUrl) {
             preloadService.load(nextSong);
           }
-          if (nextSong.picUrl) {
-            preloadCoverImage(nextSong.picUrl, getImgUrl);
+          const nextPic = nextSong.picUrl || nextSong.al?.picUrl || '';
+          if (nextPic) {
+            preloadCoverImage(nextPic, getImgUrl);
           }
         }
       } catch (error) {
@@ -581,7 +586,9 @@ export const usePlaylistStore = defineStore(
         // 检查是否超过最大连续失败次数
         if (consecutiveFailCount.value >= MAX_CONSECUTIVE_FAILS) {
           console.error(`[nextPlay] 连续${MAX_CONSECUTIVE_FAILS}首歌曲播放失败，停止播放`);
-          getMessage().warning(i18n.global.t('player.consecutiveFailsError'));
+          notifyPlaybackUnavailable(playerCore.playMusic?.name, {
+            isOffline: isOfflineNow()
+          });
           consecutiveFailCount.value = 0; // 重置计数器
           playerCore.setIsPlay(false);
           return;
@@ -656,6 +663,7 @@ export const usePlaylistStore = defineStore(
             console.log(
               `[nextPlay] 单曲重试 ${singleTrackRetryCount + 1}/${SINGLE_TRACK_MAX_RETRIES}`
             );
+            notifyPlaybackBufferingRetry(nextSong.name, { isOffline: isOfflineNow() });
             // 不更新索引，重试同一首歌
             setTimeout(() => {
               _nextPlay(singleTrackRetryCount + 1);
@@ -667,8 +675,8 @@ export const usePlaylistStore = defineStore(
               `[nextPlay] 单曲重试用尽 (reason=${failureCode})，连续失败计数: ${consecutiveFailCount.value}/${MAX_CONSECUTIVE_FAILS}`
             );
 
-            if (failureCode === 'offline') {
-              getMessage().warning('当前无网络连接，请检查网络或播放离线歌曲');
+            // 离线安静模式：由顶部 OfflineBanner 静默告知离线状态，切勿连环弹窗
+            if (failureCode === 'offline' || isOfflineNow()) {
               playerCore.setIsPlay(false);
               return;
             }
@@ -676,9 +684,10 @@ export const usePlaylistStore = defineStore(
             if (playList.value.length > 1) {
               // 更新索引到失败的歌曲位置，这样下次递归调用会继续往下
               playListIndex.value = nowPlayListIndex;
-              getMessage().warning(
-                playerCore.lastPlaybackError || i18n.global.t('player.parseFailedPlayNext')
-              );
+              notifyPlaybackUnavailable(nextSong.name, {
+                isOffline: isOfflineNow(),
+                isLocal: Boolean(nextSong.playMusicUrl?.startsWith('local://'))
+              });
 
               // 延迟后尝试下一首（重置单曲重试计数）
               setTimeout(() => {
@@ -686,7 +695,10 @@ export const usePlaylistStore = defineStore(
               }, 500);
             } else {
               // 只有一首歌且失败
-              getMessage().error(playerCore.lastPlaybackError || i18n.global.t('player.playFailed'));
+              notifyPlaybackUnavailable(nextSong.name, {
+                isOffline: isOfflineNow(),
+                isLocal: Boolean(nextSong.playMusicUrl?.startsWith('local://'))
+              });
               playerCore.setIsPlay(false);
             }
           }
@@ -774,7 +786,10 @@ export const usePlaylistStore = defineStore(
         } else {
           console.error(`[prevPlay] 播放上一首失败，保持当前索引: ${currentIndex}`);
           playerCore.setIsPlay(false);
-          getMessage().error(i18n.global.t('player.playFailed'));
+          notifyPlaybackUnavailable(prevSong.name, {
+            isOffline: isOfflineNow(),
+            isLocal: Boolean(prevSong.playMusicUrl?.startsWith('local://'))
+          });
         }
       } catch (error) {
         console.error('切换上一首出错:', error);
@@ -858,7 +873,10 @@ export const usePlaylistStore = defineStore(
               const recovered = await playerCore.handlePlayMusic(recoverSong, true);
               if (!recovered) {
                 playerCore.setIsPlay(false);
-                getMessage().error(i18n.global.t('player.playFailed'));
+                notifyPlaybackUnavailable(song.name, {
+                  isOffline: isOfflineNow(),
+                  isLocal: isLocalTrack
+                });
               }
             }
           }

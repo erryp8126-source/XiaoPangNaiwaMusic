@@ -24,9 +24,9 @@
         aria-hidden="true"
       >
         <div
-          v-if="playMusic?.picUrl && dynamicBackgroundEnabled"
+          v-if="coverRawUrl && dynamicBackgroundEnabled"
           class="aurora-cover-layer"
-          :style="{ backgroundImage: `url(${getImgUrl(playMusic.picUrl, '300y300')})` }"
+          :style="{ backgroundImage: `url(${getImgUrl(coverRawUrl, '300y300')})` }"
         ></div>
         <div class="aurora-base-glow"></div>
         <div class="aurora-warm-orb"></div>
@@ -148,13 +148,27 @@
             @click="handleCoverClick"
           >
             <div class="img-wrapper">
-              <n-image
+              <div
+                class="cover-placeholder"
+                :class="{ 'is-hidden': Boolean(resolvedCoverSrc && isCoverLoaded && !isCoverError) }"
+                aria-hidden="true"
+              >
+                <i class="ri-disc-fill"></i>
+              </div>
+              <img
+                v-if="resolvedCoverSrc && !isCoverError"
+                :key="coverRenderKey"
                 ref="PicImgRef"
-                :src="getImgUrl(playMusic?.picUrl, '500y500')"
-                lazy
-                preview-disabled
+                :src="resolvedCoverSrc"
+                alt=""
+                decoding="async"
                 class="cover-image"
-                :class="{ 'full-blend': config.mobileCoverStyle === 'full' }"
+                :class="{
+                  'full-blend': config.mobileCoverStyle === 'full',
+                  'is-loaded': isCoverLoaded
+                }"
+                @load="handleCoverLoad"
+                @error="handleCoverError"
               />
             </div>
           </div>
@@ -228,12 +242,27 @@
             @click="cycleCoverStyle"
           >
             <div class="img-wrapper">
-              <n-image
-                :src="getImgUrl(playMusic?.picUrl, '500y500')"
-                lazy
-                preview-disabled
+              <div
+                class="cover-placeholder"
+                :class="{ 'is-hidden': Boolean(resolvedCoverSrc && isCoverLoaded && !isCoverError) }"
+                aria-hidden="true"
+              >
+                <i class="ri-disc-fill"></i>
+              </div>
+              <img
+                v-if="resolvedCoverSrc && !isCoverError"
+                :key="coverRenderKey"
+                ref="landscapeCoverImgRef"
+                :src="resolvedCoverSrc"
+                alt=""
+                decoding="async"
                 class="cover-image"
-                :class="{ 'full-blend': config.mobileCoverStyle === 'full' }"
+                :class="{
+                  'full-blend': config.mobileCoverStyle === 'full',
+                  'is-loaded': isCoverLoaded
+                }"
+                @load="handleCoverLoad"
+                @error="handleCoverError"
               />
             </div>
           </div>
@@ -475,11 +504,54 @@ import {
 } from '@/utils/coverColorExtractor';
 import { animateGradient, getHoverBackgroundColor, getTextColors } from '@/utils/linearColor';
 import { formatPlaybackBadgeText, inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
+import { isCoverImagePreloaded } from '@/utils/playerUtils';
 import { showBottomToast } from '@/utils/shortcutToast';
 
 const { t } = useI18n();
 const playerStore = usePlayerStore();
 const settingsStore = useSettingsStore();
+
+// 封面加载与音画同步（切歌时通过 key 立即卸载旧图，加载完成前显示柔和占位底图并淡入）
+const coverRawUrl = computed(() => playMusic.value?.picUrl || playMusic.value?.al?.picUrl || '');
+const resolvedCoverSrc = computed(() =>
+  coverRawUrl.value ? getImgUrl(coverRawUrl.value, '500y500') : ''
+);
+const coverRenderKey = computed(() => `${playMusic.value?.id ?? ''}|${resolvedCoverSrc.value}`);
+const PicImgRef = ref<HTMLImageElement | null>(null);
+const landscapeCoverImgRef = ref<HTMLImageElement | null>(null);
+const isCoverLoaded = ref(false);
+const isCoverError = ref(false);
+
+watch(
+  coverRenderKey,
+  () => {
+    isCoverError.value = false;
+    isCoverLoaded.value = Boolean(
+      resolvedCoverSrc.value && isCoverImagePreloaded(resolvedCoverSrc.value)
+    );
+    nextTick(() => {
+      const portraitEl = PicImgRef.value;
+      const landscapeEl = landscapeCoverImgRef.value;
+      if (
+        (portraitEl && portraitEl.complete && portraitEl.naturalWidth > 0) ||
+        (landscapeEl && landscapeEl.complete && landscapeEl.naturalWidth > 0)
+      ) {
+        isCoverLoaded.value = true;
+      }
+    });
+  },
+  { immediate: true }
+);
+
+const handleCoverLoad = () => {
+  isCoverLoaded.value = true;
+  isCoverError.value = false;
+};
+
+const handleCoverError = () => {
+  isCoverLoaded.value = false;
+  isCoverError.value = true;
+};
 
 // 封面动态弥散背景（默认开启，24x24 离屏 Canvas 主/次色采样 + URL 缓存 + 对比度兜底）
 const dynamicBackgroundEnabled = computed(
@@ -489,7 +561,7 @@ const dynamicPalette = ref<DynamicCoverPalette>(DEFAULT_DYNAMIC_PALETTE);
 let paletteReqSeq = 0;
 
 watch(
-  [() => playMusic.value?.picUrl, dynamicBackgroundEnabled],
+  [coverRawUrl, dynamicBackgroundEnabled],
   async ([picUrl, enabled]) => {
     const seq = ++paletteReqSeq;
     if (!enabled || !picUrl) {
@@ -1697,6 +1769,7 @@ const getWordStyle = (lineIndex: number, _wordIndex: number, word: any) => {
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
 
       &::after {
         content: '';
@@ -1712,9 +1785,18 @@ const getWordStyle = (lineIndex: number, _wordIndex: number, word: any) => {
     }
 
     .cover-image {
-      @apply w-full h-full rounded-full border-[2px] border-gray-900;
+      @apply w-full h-full rounded-full border-[2px] border-gray-900 object-cover;
+      position: relative;
+      z-index: 1;
+      display: block;
+      opacity: 0;
+      transition: opacity 0.24s ease-out;
       animation: spin 20s linear infinite;
       animation-play-state: running;
+
+      &.is-loaded {
+        opacity: 1;
+      }
     }
 
     &.paused .cover-image {
@@ -2405,6 +2487,24 @@ const getWordStyle = (lineIndex: number, _wordIndex: number, word: any) => {
 }
 
 .cover-container {
+  .cover-placeholder {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    color: rgba(255, 209, 71, 0.48);
+    font-size: 52px;
+    transition: opacity 0.24s ease;
+
+    &.is-hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+  }
+
   // 方形封面样式（圆润大卡 + 播放呼吸感）
   &.square-style {
     @apply w-[82%] max-w-[330px] rounded-[28px] overflow-hidden mt-14 aspect-square;
@@ -2418,9 +2518,25 @@ const getWordStyle = (lineIndex: number, _wordIndex: number, word: any) => {
       box-shadow: 0 12px 28px rgba(0, 0, 0, 0.32);
     }
 
+    .img-wrapper {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    }
+
     .cover-image {
-      @apply w-full h-full;
-      transition: transform 0.3s ease-out;
+      @apply w-full h-full object-cover;
+      position: relative;
+      z-index: 1;
+      display: block;
+      opacity: 0;
+      transition: transform 0.3s ease-out, opacity 0.24s ease-out;
+
+      &.is-loaded {
+        opacity: 1;
+      }
 
       &:active {
         transform: scale(0.96);
@@ -2431,6 +2547,13 @@ const getWordStyle = (lineIndex: number, _wordIndex: number, word: any) => {
   // 全屏封面样式
   &.full-style {
     @apply w-full max-h-[50vh] relative overflow-hidden;
+
+    .img-wrapper {
+      position: relative;
+      width: 100%;
+      min-height: 220px;
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    }
 
     &::after {
       content: '';
@@ -2444,12 +2567,21 @@ const getWordStyle = (lineIndex: number, _wordIndex: number, word: any) => {
         var(--player-bg-color, rgba(18, 24, 38, 1)) 70%,
         var(--player-bg-color, rgba(18, 24, 38, 1))
       );
-      z-index: 1;
+      z-index: 2;
       pointer-events: none;
     }
 
     .cover-image {
       @apply w-full h-auto shadow-lg;
+      position: relative;
+      z-index: 1;
+      display: block;
+      opacity: 0;
+      transition: opacity 0.24s ease-out;
+
+      &.is-loaded {
+        opacity: 1;
+      }
 
       &.full-blend {
         mix-blend-mode: luminosity;

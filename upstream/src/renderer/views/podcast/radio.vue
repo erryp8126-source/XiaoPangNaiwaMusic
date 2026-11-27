@@ -172,9 +172,11 @@ import { useRoute } from 'vue-router';
 import { getDjDetail, getDjProgram, getDjSublist, subscribeDj } from '@/api/podcast';
 import ProgramList from '@/components/podcast/ProgramList.vue';
 import { usePlayerStore, usePlaylistStore, useUserStore } from '@/store';
+import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';
 import type { SongResult } from '@/types/music';
 import type { DjProgram, DjRadio } from '@/types/podcast';
 import { formatNumber, getImgUrl } from '@/utils';
+import { isOfflineQuietError } from '@/utils/playbackFeedback';
 import { mapDjProgramToSongResult } from '@/utils/podcastUtils';
 
 defineOptions({
@@ -187,6 +189,7 @@ const route = useRoute();
 const playlistStore = usePlaylistStore();
 const playerStore = usePlayerStore();
 const userStore = useUserStore();
+const offlineStore = useOfflineAvailabilityStore();
 
 // 本地状态
 const currentRadio = ref<DjRadio | null>(null);
@@ -214,7 +217,9 @@ const loadRadioDetail = async () => {
     currentRadio.value = res.data?.data || null;
   } catch (error) {
     console.error('获取电台详情失败:', error);
-    message.error(t('common.loadFailed'));
+    if (!isOfflineQuietError(error, offlineStore.isOffline)) {
+      message.error(t('common.loadFailed'));
+    }
   } finally {
     isLoading.value = false;
   }
@@ -292,7 +297,9 @@ const handlePlayAll = async () => {
     }
   } catch (error) {
     console.error('获取全部节目失败:', error);
-    message.error(t('common.loadFailed'));
+    if (!isOfflineQuietError(error, offlineStore.isOffline)) {
+      message.error(t('common.loadFailed'));
+    }
   }
 };
 

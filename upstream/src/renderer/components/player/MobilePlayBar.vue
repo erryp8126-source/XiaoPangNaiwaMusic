@@ -30,11 +30,18 @@
       <!-- 歌曲信息（点击展开全屏播放器） -->
       <div class="mini-song-info" @click="setMusicFull">
         <div class="mini-cover-ring" :class="{ 'is-playing': play }">
-          <n-image
-            :src="getImgUrl(playMusic?.picUrl, '120y120')"
+          <span class="mini-cover-placeholder" aria-hidden="true"></span>
+          <img
+            v-if="miniCoverSrc && !isMiniCoverError"
+            :key="miniCoverKey"
+            ref="miniCoverImgRef"
+            :src="miniCoverSrc"
+            alt=""
+            decoding="async"
             class="mini-song-cover"
-            lazy
-            preview-disabled
+            :class="{ 'is-loaded': isMiniCoverLoaded }"
+            @load="handleMiniCoverLoad"
+            @error="handleMiniCoverError"
           />
           <span class="mini-cover-center"></span>
         </div>
@@ -77,7 +84,7 @@
 <script lang="ts" setup>
 import { useSwipe } from '@vueuse/core';
 import type { Ref } from 'vue';
-import { computed, inject, onMounted, ref, watch } from 'vue';
+import { computed, inject, nextTick, onMounted, ref, watch } from 'vue';
 
 import MusicFullWrapper from '@/components/lyric/MusicFullWrapper.vue';
 import { allTime, artistList, nowTime, playMusic } from '@/hooks/MusicHook';
@@ -90,6 +97,7 @@ import {
   type DynamicCoverPalette,
   extractCoverPalette
 } from '@/utils/coverColorExtractor';
+import { isCoverImagePreloaded } from '@/utils/playerUtils';
 
 const shouldShowMobileMenu = inject('shouldShowMobileMenu') as Ref<boolean>;
 const isImmersiveHomeActive = inject<Ref<boolean>>('isImmersiveHomeActive', ref(false));
@@ -101,6 +109,42 @@ const play = computed(() => playerStore.isPlay);
 const isPlayLoading = computed(() =>
   Boolean(playMusic.value?.playLoading || playerStore.isBuffering)
 );
+const miniCoverRawUrl = computed(() => playMusic.value?.picUrl || playMusic.value?.al?.picUrl || '');
+const miniCoverSrc = computed(() =>
+  miniCoverRawUrl.value ? getImgUrl(miniCoverRawUrl.value, '120y120') : ''
+);
+const miniCoverKey = computed(() => `${playMusic.value?.id ?? ''}|${miniCoverSrc.value}`);
+const miniCoverImgRef = ref<HTMLImageElement | null>(null);
+const isMiniCoverLoaded = ref(false);
+const isMiniCoverError = ref(false);
+
+watch(
+  miniCoverKey,
+  () => {
+    isMiniCoverError.value = false;
+    isMiniCoverLoaded.value = Boolean(
+      miniCoverSrc.value && isCoverImagePreloaded(miniCoverSrc.value)
+    );
+    nextTick(() => {
+      const el = miniCoverImgRef.value;
+      if (el && el.complete && el.naturalWidth > 0) {
+        isMiniCoverLoaded.value = true;
+      }
+    });
+  },
+  { immediate: true }
+);
+
+const handleMiniCoverLoad = () => {
+  isMiniCoverLoaded.value = true;
+  isMiniCoverError.value = false;
+};
+
+const handleMiniCoverError = () => {
+  isMiniCoverLoaded.value = false;
+  isMiniCoverError.value = true;
+};
+
 const background = ref('#131926');
 
 const dynamicBackgroundEnabled = computed(
@@ -110,7 +154,7 @@ const dynamicPalette = ref<DynamicCoverPalette>(DEFAULT_DYNAMIC_PALETTE);
 let miniPaletteSeq = 0;
 
 watch(
-  [() => playMusic.value?.picUrl, dynamicBackgroundEnabled],
+  [miniCoverRawUrl, dynamicBackgroundEnabled],
   async ([picUrl, enabled]) => {
     const seq = ++miniPaletteSeq;
     if (!enabled || !picUrl) {
@@ -316,12 +360,29 @@ watch(
         animation-play-state: running;
       }
 
+      .mini-cover-placeholder {
+        position: absolute;
+        inset: 2.5px;
+        border-radius: 9999px;
+        background: linear-gradient(135deg, #1f2937 0%, #0f172a 100%);
+        pointer-events: none;
+      }
+
       .mini-song-cover {
-        @apply w-full h-full rounded-full overflow-hidden block;
+        @apply w-full h-full rounded-full overflow-hidden block object-cover;
+        position: relative;
+        z-index: 1;
+        opacity: 0;
+        transition: opacity 0.22s ease-out;
+
+        &.is-loaded {
+          opacity: 1;
+        }
       }
 
       .mini-cover-center {
         position: absolute;
+        z-index: 2;
         top: 50%;
         left: 50%;
         width: 8px;

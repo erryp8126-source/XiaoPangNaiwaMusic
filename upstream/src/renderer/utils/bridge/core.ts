@@ -38,6 +38,77 @@ export function isExternalAudioOutputConnected(): boolean {
   }
 }
 
+/**
+ * 读取或设置 Android 桌面歌词在横屏时是否自动暂时隐藏（默认关闭）
+ */
+export function getFloatingLyricHideInLandscape(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const fn = window.AlgerAndroid?.isFloatingLyricHideInLandscape;
+    return typeof fn === 'function' ? Boolean(fn.call(window.AlgerAndroid)) : false;
+  } catch {
+    return false;
+  }
+}
+
+export function setFloatingLyricHideInLandscape(enabled: boolean): boolean {
+  const next = Boolean(enabled);
+  if (typeof window === 'undefined') return next;
+  try {
+    const fn = window.AlgerAndroid?.setFloatingLyricHideInLandscape;
+    const actual = typeof fn === 'function' ? Boolean(fn.call(window.AlgerAndroid, next)) : next;
+    emitAndroidEvent('floating-lyric-landscape-setting-changed', { enabled: actual });
+    return actual;
+  } catch {
+    return next;
+  }
+}
+
+/**
+ * 读取或设置 Android 蓝牙耳机/车机重新连接时自动续播（默认关闭）
+ */
+export function getAutoResumeOnBluetoothConnect(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const fn = window.AlgerAndroid?.isAutoResumeOnBluetoothConnect;
+    return typeof fn === 'function' ? Boolean(fn.call(window.AlgerAndroid)) : false;
+  } catch {
+    return false;
+  }
+}
+
+export function setAutoResumeOnBluetoothConnect(enabled: boolean): boolean {
+  const next = Boolean(enabled);
+  if (typeof window === 'undefined') return next;
+  try {
+    const fn = window.AlgerAndroid?.setAutoResumeOnBluetoothConnect;
+    return typeof fn === 'function' ? Boolean(fn.call(window.AlgerAndroid, next)) : next;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 读取或清空 Android 最近一次未捕获崩溃日志（已脱敏且限制最大 16 KB）
+ */
+export function getNativeLastCrashLog(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    return String(window.AlgerAndroid?.getLastCrashLog?.() || '');
+  } catch {
+    return '';
+  }
+}
+
+export function clearNativeLastCrashLog(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return Boolean(window.AlgerAndroid?.clearLastCrashLog?.());
+  } catch {
+    return false;
+  }
+}
+
 export function nativeSecureSetSecret(key: string, value: string): boolean {
   if (typeof window === 'undefined' || !key) return false;
   try {

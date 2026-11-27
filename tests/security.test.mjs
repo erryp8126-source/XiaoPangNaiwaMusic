@@ -3093,3 +3093,481 @@ test("candidate track scoring & buffering feedback: prevents wrong songs/live/du
   assert.match(androidUnblock, /fun stripBracketGroups\(/);
   assert.match(iosUnblock, /\\\{[^\r\n]*?\\\}/);
 });
+
+test("4 UX & stability optimizations: cover sync/preload, landscape lyric hide, BT auto-resume guard, cache self-heal & redacted crash log", () => {
+  // 1. Cover sync & next-track cover preloading
+  const playerUtilsSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/utils/playerUtils.ts"),
+    "utf-8"
+  );
+  assert.match(playerUtilsSrc, /MAX_PRELOADED_COVER_URLS\s*=\s*64/);
+  assert.match(playerUtilsSrc, /export const isCoverImagePreloaded/);
+  assert.match(playerUtilsSrc, /export const preloadNextTrackCover/);
+
+  const musicHookSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/hooks/MusicHook.ts"),
+    "utf-8"
+  );
+  assert.match(musicHookSrc, /setupNextCoverPreloader/);
+  assert.match(musicHookSrc, /preloadNextTrackCover\(/);
+
+  for (const vueRel of [
+    "upstream/src/renderer/views/home/components/ImmersiveVinylHome.vue",
+    "upstream/src/renderer/components/lyric/MusicFullMobile.vue",
+  ]) {
+    const vueSrc = fs.readFileSync(path.join(repoRoot, vueRel), "utf-8");
+    assert.match(vueSrc, /:key="coverRenderKey"/);
+    assert.match(vueSrc, /isCoverImagePreloaded/);
+  }
+  const miniBarSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/player/MobilePlayBar.vue"),
+    "utf-8"
+  );
+  assert.match(miniBarSrc, /:key="miniCoverKey"/);
+
+  // 2. Desktop lyric landscape auto-hide without mutating master switch
+  const appPrefsSrc = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/config/AppPrefs.kt"),
+    "utf-8"
+  );
+  assert.match(appPrefsSrc, /DEFAULT_FLOATING_LYRIC_HIDE_IN_LANDSCAPE:\s*Boolean\s*=\s*false/);
+  assert.match(appPrefsSrc, /DEFAULT_AUTO_RESUME_ON_BLUETOOTH_CONNECT:\s*Boolean\s*=\s*false/);
+  assert.match(appPrefsSrc, /var floatingLyricHideInLandscape:\s*Boolean/);
+  assert.match(appPrefsSrc, /var autoResumeOnBluetoothConnect:\s*Boolean/);
+
+  const floatingMgrSrc = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/lyric/FloatingLyricManager.kt"),
+    "utf-8"
+  );
+  assert.match(floatingMgrSrc, /ComponentCallbacks/);
+  assert.match(floatingMgrSrc, /unregisterComponentCallbacks/);
+  assert.match(floatingMgrSrc, /isHiddenForLandscape/);
+  assert.match(floatingMgrSrc, /class LandscapeVisibilityController/);
+
+  const playbackTabSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/set/tabs/PlaybackTab.vue"),
+    "utf-8"
+  );
+  assert.match(playbackTabSrc, /floatingLyricHideInLandscape/);
+  assert.match(playbackTabSrc, /autoResumeOnBluetoothConnect/);
+  assert.match(playbackTabSrc, /v-if="isRealAndroid"[\s\S]*autoResumeOnBluetoothConnect/);
+
+  const mobileSettingsSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/player/MobilePlayerSettings.vue"),
+    "utf-8"
+  );
+  assert.match(mobileSettingsSrc, /floatingLyricHideInLandscape/);
+
+  // 3. Bluetooth reconnect auto-resume without runtime BLUETOOTH_CONNECT permission
+  const manifestXml = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/AndroidManifest.xml"),
+    "utf-8"
+  );
+  assert.doesNotMatch(
+    manifestXml,
+    /BLUETOOTH_CONNECT/,
+    "Must use AudioDeviceCallback without requesting BLUETOOTH_CONNECT runtime permission"
+  );
+  const serviceSrc = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/player/MusicPlaybackService.kt"),
+    "utf-8"
+  );
+  assert.match(serviceSrc, /AudioDeviceCallback/);
+  assert.match(serviceSrc, /registerAudioDeviceCallback/);
+  assert.match(serviceSrc, /unregisterAudioDeviceCallback/);
+  assert.match(serviceSrc, /BluetoothAutoResumeGuard/);
+
+  // 4. Cold-start SimpleCache self-heal + redacted crash log (16KB cap)
+  const cacheMgrSrc = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/player/AudioCacheManager.kt"),
+    "utf-8"
+  );
+  assert.match(cacheMgrSrc, /initCacheWithSelfHeal\(/);
+  assert.match(cacheMgrSrc, /deleteRecursively\(\)/);
+
+  const crashMgrSrc = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/config/CrashLogManager.kt"),
+    "utf-8"
+  );
+  assert.match(crashMgrSrc, /MAX_CRASH_LOG_BYTES\s*=\s*16\s*\*\s*1024/);
+  assert.match(crashMgrSrc, /sanitizeCrashText/);
+  assert.match(crashMgrSrc, /previousHandler\?\.uncaughtException/);
+
+  const appKtSrc = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/NaiwaApp.kt"),
+    "utf-8"
+  );
+  assert.match(appKtSrc, /CrashLogManager\.install\(this\)/);
+
+  const bridgeSrc = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/bridge/AndroidJsBridge.kt"),
+    "utf-8"
+  );
+  assert.match(bridgeSrc, /@JavascriptInterface\s+fun isFloatingLyricHideInLandscape\(\):\s*Boolean/);
+  assert.match(bridgeSrc, /@JavascriptInterface\s+fun setFloatingLyricHideInLandscape\(enabled:\s*Boolean\):\s*Boolean/);
+  assert.match(bridgeSrc, /@JavascriptInterface\s+fun isAutoResumeOnBluetoothConnect\(\):\s*Boolean/);
+  assert.match(bridgeSrc, /@JavascriptInterface\s+fun setAutoResumeOnBluetoothConnect\(enabled:\s*Boolean\):\s*Boolean/);
+  assert.match(bridgeSrc, /@JavascriptInterface\s+fun getLastCrashLog\(\):\s*String/);
+  assert.match(bridgeSrc, /@JavascriptInterface\s+fun clearLastCrashLog\(\):\s*Boolean/);
+
+  const aboutTabSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/set/tabs/AboutTab.vue"),
+    "utf-8"
+  );
+  assert.match(aboutTabSrc, /getNativeLastCrashLog/);
+  assert.match(aboutTabSrc, /clearNativeLastCrashLog/);
+  assert.match(aboutTabSrc, /最近崩溃日志/);
+});
+
+test("music-api observability & tiered rate limits: health syncs package.json version + 7-char commit, isolates unblock/write buckets", async () => {
+  const envKeys = [
+    "APP_API_SECRET",
+    "COMMIT_REF",
+    "RATE_LIMIT_MAX",
+    "RATE_LIMIT_WINDOW_SEC",
+    "RATE_LIMIT_STRICT_MAX",
+    "RATE_LIMIT_STRICT_WINDOW_SEC",
+    "RATE_LIMIT_UNBLOCK_MAX",
+    "RATE_LIMIT_WRITE_MAX",
+  ];
+  const savedEnv = Object.fromEntries(envKeys.map((k) => [k, process.env[k]]));
+  for (const k of envKeys) delete process.env[k];
+
+  const ncmApi = require("netease-cloud-music-api-alger");
+  const originalLoginStatus = ncmApi.login_status;
+
+  try {
+    const rootPkg = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf-8"));
+    assert.equal(musicApiMod.SERVICE_VERSION, rootPkg.version);
+    assert.equal(musicApiMod.FALLBACK_SERVICE_VERSION, rootPkg.version);
+
+    const musicApiSrc = fs.readFileSync(path.join(repoRoot, "netlify/functions/music-api.mts"), "utf-8");
+    assert.doesNotMatch(musicApiSrc, /"5\.1\.4"/, "Legacy hardcoded version 5.1.4 must be removed");
+
+    // 1. /api/health returns synced version & "local" when COMMIT_REF is unset
+    const localHealth = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/health", {
+        headers: { Origin: TRUSTED_ORIGIN, "x-nf-client-connection-ip": "198.51.100.205" },
+      }),
+      {}
+    );
+    assert.equal(localHealth.status, 200);
+    const localBody = await localHealth.json();
+    assert.deepEqual(Object.keys(localBody).sort(), ["commit", "ok", "service", "version"]);
+    assert.equal(localBody.ok, true);
+    assert.equal(localBody.service, "xiaopang-naiwa-music-api");
+    assert.equal(localBody.version, rootPkg.version);
+    assert.equal(localBody.commit, "local");
+
+    // 2. /api/health returns 7-char short commit hash when COMMIT_REF is set
+    process.env.COMMIT_REF = "f1895404efe3f460935b8043e797da778c8f1de7";
+    const deployedHealth = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/health", {
+        headers: { Origin: TRUSTED_ORIGIN, "x-nf-client-connection-ip": "198.51.100.206" },
+      }),
+      {}
+    );
+    assert.equal(deployedHealth.status, 200);
+    const deployedBody = await deployedHealth.json();
+    assert.deepEqual(Object.keys(deployedBody).sort(), ["commit", "ok", "service", "version"]);
+    assert.equal(deployedBody.version, rootPkg.version);
+    assert.equal(deployedBody.commit, "f189540");
+
+    // 3. Tiered rate-limit policy defaults & env overrides
+    for (const stdRoute of ["/health", "/search/default", "/cloudsearch"]) {
+      assert.deepEqual(musicApiMod.resolveRateLimitPolicy(stdRoute), {
+        tier: "standard",
+        maxReq: 120,
+        windowSec: 60,
+      });
+    }
+    for (const unblockRoute of ["/music", "/music/unblock"]) {
+      assert.deepEqual(musicApiMod.resolveRateLimitPolicy(unblockRoute), {
+        tier: "unblock",
+        maxReq: 30,
+        windowSec: 60,
+      });
+    }
+    for (const writeRoute of [
+      "/login/qr/check",
+      "/login/cellphone",
+      "/login/status",
+      "/logout",
+      "/like",
+      "/playlist/create",
+    ]) {
+      assert.deepEqual(musicApiMod.resolveRateLimitPolicy(writeRoute), {
+        tier: "write",
+        maxReq: 30,
+        windowSec: 60,
+      });
+    }
+
+    process.env.RATE_LIMIT_STRICT_MAX = "15";
+    assert.equal(musicApiMod.resolveRateLimitPolicy("/music/unblock").maxReq, 15);
+    assert.equal(musicApiMod.resolveRateLimitPolicy("/login/status").maxReq, 15);
+    assert.equal(musicApiMod.resolveRateLimitPolicy("/search/default").maxReq, 120);
+    delete process.env.RATE_LIMIT_STRICT_MAX;
+
+    // 4. Runtime bucket isolation on the same client IP
+    const testIp = "198.51.100.210";
+    process.env.RATE_LIMIT_MAX = "5";
+    process.env.RATE_LIMIT_UNBLOCK_MAX = "2";
+    process.env.RATE_LIMIT_WRITE_MAX = "2";
+    process.env.RATE_LIMIT_WINDOW_SEC = "60";
+
+    for (let i = 0; i < 2; i++) {
+      const unblockOk = await musicApiHandler(
+        new Request("https://xiaopang-naiwa-music.netlify.app/api/music/unblock?id=invalid", {
+          headers: { Origin: TRUSTED_ORIGIN, "x-nf-client-connection-ip": testIp },
+        }),
+        {}
+      );
+      assert.equal(unblockOk.status, 400);
+      assert.equal(unblockOk.headers.get("x-ratelimit-tier"), "unblock");
+      assert.equal(unblockOk.headers.get("x-ratelimit-limit"), "2");
+    }
+    const unblockLimited = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/music/unblock?id=invalid", {
+        headers: { Origin: TRUSTED_ORIGIN, "x-nf-client-connection-ip": testIp },
+      }),
+      {}
+    );
+    assert.equal(unblockLimited.status, 429);
+    assert.equal(unblockLimited.headers.get("x-ratelimit-tier"), "unblock");
+    assert.ok(Number(unblockLimited.headers.get("retry-after")) >= 1);
+
+    // Exhausting unblock bucket must NOT block standard /api/health on the same IP
+    const standardHealth = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/health", {
+        headers: { Origin: TRUSTED_ORIGIN, "x-nf-client-connection-ip": testIp },
+      }),
+      {}
+    );
+    assert.equal(standardHealth.status, 200);
+    assert.equal(standardHealth.headers.get("x-ratelimit-tier"), "standard");
+    assert.equal(standardHealth.headers.get("x-ratelimit-limit"), "5");
+
+    // Exhausting unblock bucket must NOT block write/auth bucket on the same IP, yet 3rd write hits 429
+    ncmApi.login_status = async () => ({ status: 200, body: { data: { code: 200 } }, cookie: [] });
+    for (let i = 0; i < 2; i++) {
+      const writeOk = await musicApiHandler(
+        new Request("https://xiaopang-naiwa-music.netlify.app/api/login/status", {
+          headers: { Origin: TRUSTED_ORIGIN, "x-nf-client-connection-ip": testIp },
+        }),
+        {}
+      );
+      assert.equal(writeOk.status, 200);
+      assert.equal(writeOk.headers.get("x-ratelimit-tier"), "write");
+      assert.equal(writeOk.headers.get("x-ratelimit-limit"), "2");
+    }
+    const writeLimited = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/login/status", {
+        headers: { Origin: TRUSTED_ORIGIN, "x-nf-client-connection-ip": testIp },
+      }),
+      {}
+    );
+    assert.equal(writeLimited.status, 429);
+    assert.equal(writeLimited.headers.get("x-ratelimit-tier"), "write");
+    assert.ok(Number(writeLimited.headers.get("retry-after")) >= 1);
+  } finally {
+    ncmApi.login_status = originalLoginStatus;
+    for (const k of envKeys) {
+      if (savedEnv[k] !== undefined) process.env[k] = savedEnv[k];
+      else delete process.env[k];
+    }
+  }
+});
+
+test("iteration 1 UX: unified playback feedback throttling, offline quiet mode, TrackOriginTag & unified My Music hub", async () => {
+  const feedbackMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/playbackFeedback.ts")).href
+  );
+
+  // 1. Canonical human-readable copy & sanitizer
+  assert.equal(feedbackMod.PLAYBACK_FEEDBACK_COPY.AUTO_FALLBACK, "当前音源不可用，已自动切换");
+  assert.equal(feedbackMod.PLAYBACK_FEEDBACK_COPY.BUFFERING_BETTER_SOURCE, "正在缓冲更稳定的版本");
+  assert.equal(feedbackMod.PLAYBACK_FEEDBACK_COPY.UNAVAILABLE, "该歌曲暂不可播放");
+  assert.equal(feedbackMod.PLAYBACK_FEEDBACK_COPY.SEARCH_OTHER_VERSION, "搜其他版本");
+  assert.equal(
+    feedbackMod.PLAYBACK_FEEDBACK_COPY.OFFLINE_BANNER,
+    "当前处于离线状态 · 可播放本地与已缓存曲目"
+  );
+
+  for (const rawLeak of [
+    "Request failed with status code 502",
+    "ETIMEDOUT /api/music/unblock",
+    "gdmusic returned empty url",
+    "ExoPlayer error",
+  ]) {
+    assert.equal(
+      feedbackMod.sanitizePlaybackFeedbackText(rawLeak, "unavailable"),
+      "该歌曲暂不可播放"
+    );
+  }
+  assert.equal(
+    feedbackMod.sanitizePlaybackFeedbackText("当前音源不可用，已自动切换", "auto-fallback"),
+    "当前音源不可用，已自动切换"
+  );
+
+  // 2. Throttler dedup, severity precedence & offline quiet suppression
+  let now = 10_000;
+  const throttler = new feedbackMod.PlaybackFeedbackThrottle(() => now);
+
+  const firstFallback = throttler.evaluate("auto-fallback", { trackName: "晴天" });
+  assert.equal(firstFallback.shouldShow, true);
+  assert.equal(firstFallback.text, "当前音源不可用，已自动切换");
+
+  now += 500;
+  const dupFallback = throttler.evaluate("auto-fallback", { trackName: "七里香" });
+  assert.equal(dupFallback.shouldShow, false);
+  assert.equal(dupFallback.suppressedReason, "throttled");
+
+  now += 200; // within rapid skip window for buffering-retry
+  const rapidRetry = throttler.evaluate("buffering-retry", { trackName: "晴天" });
+  assert.equal(rapidRetry.shouldShow, false);
+
+  // Final unavailable CAN supersede transient fallback/retry and exposes "搜其他版本"
+  const unavailSupersede = throttler.evaluate("unavailable", { trackName: "晴天" });
+  assert.equal(unavailSupersede.shouldShow, true);
+  assert.equal(unavailSupersede.text, "该歌曲暂不可播放");
+  assert.equal(unavailSupersede.actionLabel, "搜其他版本");
+  assert.equal(unavailSupersede.searchKeyword, "晴天");
+
+  // Same unavailable throttled within cooldown
+  now += 1000;
+  assert.equal(throttler.evaluate("unavailable", { trackName: "晴天" }).shouldShow, false);
+
+  // Offline quiet mode suppresses online failure toasts, while still reporting local-missing
+  now += 5000;
+  const offlineOnline = throttler.evaluate("unavailable", { trackName: "晴天", isOffline: true });
+  assert.equal(offlineOnline.shouldShow, false);
+  assert.equal(offlineOnline.suppressedReason, "offline");
+
+  const offlineLocal = throttler.evaluate("unavailable", {
+    trackName: "本地歌曲",
+    isOffline: true,
+    isLocal: true,
+  });
+  assert.equal(offlineLocal.shouldShow, true);
+  assert.equal(offlineLocal.text, "本地音频文件暂不可用");
+  assert.equal(offlineLocal.actionLabel, undefined);
+
+  assert.equal(feedbackMod.isOfflineQuietError(undefined, true), true);
+  assert.equal(feedbackMod.isOfflineQuietError({ isOfflineError: true }, false), true);
+  assert.equal(feedbackMod.isOfflineQuietError(new Error("Normal failure"), false), false);
+
+  // 3. Actionable toast & offline quiet mode static contracts
+  const shortcutToastSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/utils/shortcutToast.ts"),
+    "utf-8"
+  );
+  assert.match(shortcutToastSrc, /actionLabel/);
+  assert.match(shortcutToastSrc, /onAction/);
+  assert.match(shortcutToastSrc, /export function hideFloatingToast\(/);
+
+  const floatingToastVue = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/common/AppFloatingToast.vue"),
+    "utf-8"
+  );
+  assert.match(floatingToastVue, /has-action/);
+  assert.match(floatingToastVue, /app-floating-toast-action/);
+  assert.match(floatingToastVue, /handleAction/);
+
+  const offlineBannerVue = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/common/OfflineBanner.vue"),
+    "utf-8"
+  );
+  assert.match(offlineBannerVue, /offlineStore\.isOffline/);
+  assert.match(offlineBannerVue, /PLAYBACK_FEEDBACK_COPY\.OFFLINE_BANNER/);
+
+  const immersiveVinylVue = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/home/components/ImmersiveVinylHome.vue"),
+    "utf-8"
+  );
+  assert.match(immersiveVinylVue, /<offline-banner\s+immersive\s*\/>/);
+
+  const offlineStoreSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/offlineAvailability.ts"),
+    "utf-8"
+  );
+  assert.match(offlineStoreSrc, /const isOffline = computed\(/);
+  assert.match(offlineStoreSrc, /const getTrackOrigin =/);
+  assert.match(offlineStoreSrc, /const isTrackUnavailableOffline =/);
+
+  const requestTs = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/utils/request.ts"),
+    "utf-8"
+  );
+  assert.match(requestTs, /isOfflineError\s*=\s*true/);
+
+  // 4. Playback error/fallback/retry routes go through playbackFeedback.ts
+  for (const rel of [
+    "upstream/src/renderer/store/modules/playerCore.ts",
+    "upstream/src/renderer/store/modules/playlist.ts",
+    "upstream/src/renderer/hooks/MusicHook.ts",
+    "upstream/src/renderer/hooks/usePlayerHooks.ts",
+    "upstream/src/renderer/services/audioService.ts",
+  ]) {
+    const src = fs.readFileSync(path.join(repoRoot, rel), "utf-8");
+    assert.match(src, /playbackFeedback/, `${rel} must use unified playbackFeedback helper`);
+  }
+
+  // 5. Shared TrackOriginTag & queue / song-item offline distinction
+  const originTagPath = path.join(repoRoot, "upstream/src/renderer/components/common/TrackOriginTag.vue");
+  assert.equal(fs.existsSync(originTagPath), true, "TrackOriginTag.vue must exist");
+  const originTagSrc = fs.readFileSync(originTagPath, "utf-8");
+  for (const label of ["本地", "已下载", "已缓存", "在线", "html.dark"]) {
+    assert.ok(originTagSrc.includes(label), `TrackOriginTag.vue must include "${label}"`);
+  }
+  assert.doesNotMatch(originTagSrc, /:global\(\.dark\)/);
+
+  for (const rel of [
+    "upstream/src/renderer/views/library/MyMusicLibrary.vue",
+    "upstream/src/renderer/components/player/PlayingListDrawer.vue",
+    "upstream/src/renderer/components/common/songItemCom/MiniSongItem.vue",
+    "upstream/src/renderer/components/common/songItemCom/StandardSongItem.vue",
+    "upstream/src/renderer/components/common/songItemCom/ListSongItem.vue",
+    "upstream/src/renderer/components/common/songItemCom/CompactSongItem.vue",
+    "upstream/src/renderer/components/common/songItemCom/HomeSongItem.vue",
+  ]) {
+    const src = fs.readFileSync(path.join(repoRoot, rel), "utf-8");
+    assert.match(src, /TrackOriginTag|track-origin-tag/, `${rel} must render shared TrackOriginTag`);
+  }
+
+  for (const rel of [
+    "upstream/src/renderer/components/common/songItemCom/BaseSongItem.vue",
+    "upstream/src/renderer/components/common/songItemCom/HomeSongItem.vue",
+    "upstream/src/renderer/views/library/MyMusicLibrary.vue",
+  ]) {
+    const src = fs.readFileSync(path.join(repoRoot, rel), "utf-8");
+    assert.match(src, /is-offline-unavailable/, `${rel} must support offline unavailable dimming`);
+  }
+
+  // 6. Unified "我的音乐" nav entry & hub (with 歌单 + 手机音乐 + 收藏 + 账号入口) + desktop PlayBar cover :key
+  const menuStoreSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/menu.ts"),
+    "utf-8"
+  );
+  assert.match(menuStoreSrc, /path\s*===\s*'\/library'/);
+
+  const appMenuSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/layout/components/AppMenu.vue"),
+    "utf-8"
+  );
+  assert.match(appMenuSrc, /'\/library'[\s\S]*我的音乐/);
+
+  const librarySrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/library/MyMusicLibrary.vue"),
+    "utf-8"
+  );
+  for (const token of ["我的音乐", "手机音乐", "歌单", "account-entry-pill", "xiaopang_custom_playlists_v1"]) {
+    assert.ok(librarySrc.includes(token), `MyMusicLibrary.vue must include "${token}"`);
+  }
+
+  const playBarSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/player/PlayBar.vue"),
+    "utf-8"
+  );
+  assert.match(playBarSrc, /:key="`?\$\{playMusic\?\.id/);
+});

@@ -1,6 +1,7 @@
 <template>
   <div
     class="song-item"
+    :class="{ 'is-offline-unavailable': isOfflineUnavailable }"
     @contextmenu.prevent="handleContextMenu"
     @touchstart.passive="handleLongPressTouchStart"
     @touchmove.passive="handleLongPressTouchMove"
@@ -62,6 +63,9 @@ const {
   isFavorite,
   isDislike,
   offlineBadge,
+  trackOrigin,
+  isOffline,
+  isOfflineUnavailable,
   artists,
   showDropdown,
   dropdownX,
@@ -116,6 +120,9 @@ defineExpose({
   isFavorite,
   isDislike,
   offlineBadge,
+  trackOrigin,
+  isOffline,
+  isOfflineUnavailable,
   artists,
   isHovering
 });
@@ -128,6 +135,14 @@ defineExpose({
   -ms-user-select: none;
   user-select: none;
   @apply rounded-xl p-3 flex items-center transition bg-transparent dark:text-white text-gray-900;
+
+  &.is-offline-unavailable {
+    opacity: 0.46;
+
+    :deep(img) {
+      filter: grayscale(0.35);
+    }
+  }
 }
 
 .text-ellipsis {

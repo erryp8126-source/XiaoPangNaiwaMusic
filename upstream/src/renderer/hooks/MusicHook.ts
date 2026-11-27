@@ -8,7 +8,7 @@ import { playbackRequestManager } from '@/services/playbackRequestManager';
 import type { usePlayerStore } from '@/store';
 import { useFavoriteStore } from '@/store/modules/favorite';
 import type { Artist, ILyricText, SongResult } from '@/types/music';
-import { isAndroid, isElectron } from '@/utils';
+import { getImgUrl, isAndroid, isElectron } from '@/utils';
 import {
   isAndroidAudioCached,
   isCloudFavoriteSupportedSong,
@@ -18,6 +18,11 @@ import {
 } from '@/utils/androidBridge';
 import { getTextColors } from '@/utils/linearColor';
 import { inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
+import { preloadNextTrackCover } from '@/utils/playerUtils';
+import {
+  notifyPlaybackBufferingRetry,
+  notifyPlaybackUnavailable
+} from '@/utils/playbackFeedback';
 import { showBottomToast } from '@/utils/shortcutToast';
 import { parseLyrics } from '@/utils/yrcParser';
 
@@ -41,6 +46,7 @@ export const initMusicHook = (store: ReturnType<typeof usePlayerStore>) => {
   setupMusicWatchers();
   setupCorrectionTimeWatcher();
   setupPlayStateWatcher();
+  setupNextCoverPreloader();
   setupAndroidFloatingLyricSync();
   setupAndroidBackgroundSync();
   setupColdStartResumePersistence();
@@ -244,6 +250,32 @@ export const applyNativeTrackSync = (payload: any, fromTrackTransition: boolean 
   } catch (e) {
     console.error('[MusicHook] 处理原生曲目同步失败:', e);
   }
+};
+
+let nextCoverPreloaderInitialized = false;
+const setupNextCoverPreloader = () => {
+  if (nextCoverPreloaderInitialized) return;
+  nextCoverPreloaderInitialized = true;
+
+  watch(
+    () => [
+      getPlayerStore().playMusic?.id,
+      getPlayerStore().playList,
+      getPlayerStore().playList?.length,
+      getPlayerStore().playListIndex,
+      getPlayerStore().playMode
+    ],
+    () => {
+      const store = getPlayerStore();
+      preloadNextTrackCover(
+        store.playList || [],
+        store.playListIndex ?? 0,
+        store.playMusic?.id,
+        getImgUrl
+      );
+    },
+    { immediate: true }
+  );
 };
 
 let androidBgSyncInitialized = false;
@@ -1448,7 +1480,24 @@ export const initAudioListeners = async () => {
 audioService.on('url_expired', async (expiredTrack) => {
   if (!expiredTrack) return;
 
+  let isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  let isOfflinePlayable = false;
+  try {
+    const { useOfflineAvailabilityStore } = await import('@/store/modules/offlineAvailability');
+    const offlineStore = useOfflineAvailabilityStore();
+    isOffline = offlineStore.isOffline;
+    isOfflinePlayable = offlineStore.isOfflinePlayable(expiredTrack);
+  } catch {
+    // ignore if Pinia is not ready
+  }
+
+  // 离线安静模式下，非离线可播曲目过期时静默结束，不弹出网络错误提示
+  if (isOffline && !isOfflinePlayable) {
+    return;
+  }
+
   console.log('检测到URL过期事件，准备重新获取URL', expiredTrack.name);
+  notifyPlaybackBufferingRetry(expiredTrack.name, { isOffline });
 
   try {
     // 使用 handlePlayMusic 重新播放，它会自动处理 URL 获取和状态跟踪
@@ -1460,11 +1509,12 @@ audioService.on('url_expired', async (expiredTrack) => {
     };
 
     await getPlayerStore().handlePlayMusic(trackToPlay, getPlayerStore().play);
-
-    message.success('已自动恢复播放');
   } catch (error) {
     console.error('处理URL过期事件失败:', error);
-    message.error('恢复播放失败，请手动点击播放');
+    notifyPlaybackUnavailable(expiredTrack.name, {
+      isOffline,
+      isLocal: Boolean(expiredTrack.playMusicUrl?.startsWith('local://'))
+    });
   }
 });
 

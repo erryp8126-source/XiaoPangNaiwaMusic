@@ -12,6 +12,7 @@ import {
   syncNativeAudioEnhancement
 } from '@/utils/androidBridge';
 import { isAutoplayBlockedError } from '@/utils/launchPolicy';
+import { isOfflineQuietError, notifyPlaybackBufferingRetry } from '@/utils/playbackFeedback';
 
 class AudioService {
   private currentSound: Howl | null = null;
@@ -721,6 +722,9 @@ class AudioService {
                 // 预加载的音频通常已经 loaded，不应重试
                 retryCount++;
                 console.log(`Retrying playback (${retryCount}/${maxRetries})...`);
+                notifyPlaybackBufferingRetry(track?.name, {
+                  isOffline: isOfflineQuietError(error)
+                });
                 setTimeout(tryPlay, 1000 * retryCount);
               } else {
                 this.emit('url_expired', track);
@@ -750,6 +754,9 @@ class AudioService {
               if (retryCount < maxRetries) {
                 retryCount++;
                 console.log(`Retrying playback (${retryCount}/${maxRetries})...`);
+                notifyPlaybackBufferingRetry(track?.name, {
+                  isOffline: isOfflineQuietError(error)
+                });
                 setTimeout(tryPlay, 1000 * retryCount);
               } else {
                 this.emit('url_expired', track);
@@ -1517,7 +1524,9 @@ class AudioService {
       } catch (error) {
         console.warn('[AudioService] Failed to toggle favorite from native media control:', error);
         window.AlgerAndroid?.setMediaFavoriteState?.(songIdStr, wasFavorite);
-        showBottomToast('收藏状态同步失败，请稍后重试');
+        if (!isOfflineQuietError(error)) {
+          showBottomToast('收藏状态同步失败，请稍后重试');
+        }
       }
     } finally {
       this.favoriteToggleInFlight = false;

@@ -104,32 +104,117 @@ export const performShuffle = (list: SongResult[], currentSong?: SongResult): So
   return result;
 };
 
+const MAX_PRELOADED_COVER_URLS = 64;
+const preloadedCoverUrls = new Set<string>();
+const inFlightCoverUrls = new Map<string, HTMLImageElement>();
+
+const markCoverPreloaded = (imageUrl: string) => {
+  if (!imageUrl) return;
+  if (preloadedCoverUrls.has(imageUrl)) {
+    preloadedCoverUrls.delete(imageUrl);
+  }
+  preloadedCoverUrls.add(imageUrl);
+  while (preloadedCoverUrls.size > MAX_PRELOADED_COVER_URLS) {
+    const oldest = preloadedCoverUrls.values().next().value;
+    if (!oldest) break;
+    preloadedCoverUrls.delete(oldest);
+  }
+};
+
+export const isCoverImagePreloaded = (resolvedUrl?: string | null): boolean => {
+  return Boolean(resolvedUrl && preloadedCoverUrls.has(resolvedUrl));
+};
+
 /**
- * 预加载封面图片
+ * 预加载封面图片（带内存上限去重缓存，避免重复请求同一张图）
  */
 export const preloadCoverImage = (
   picUrl: string,
-  getImgUrl: (url: string, size: string) => string
-) => {
-  if (!picUrl) return;
+  getImgUrl: (url: string, size: string) => string,
+  size: string = '500y500'
+): string | null => {
+  if (!picUrl || typeof Image === 'undefined') return null;
 
   try {
-    const imageUrl = getImgUrl(picUrl, '500y500');
-    console.log('预加载封面图片:', imageUrl);
+    const imageUrl = getImgUrl(picUrl, size);
+    if (!imageUrl) return null;
 
-    // 创建一个 Image 对象来预加载图片
+    if (preloadedCoverUrls.has(imageUrl) || inFlightCoverUrls.has(imageUrl)) {
+      return imageUrl;
+    }
+
     const img = new Image();
+    img.decoding = 'async';
+    inFlightCoverUrls.set(imageUrl, img);
+
+    const handleLoaded = () => {
+      inFlightCoverUrls.delete(imageUrl);
+      markCoverPreloaded(imageUrl);
+    };
+    const handleFailed = () => {
+      inFlightCoverUrls.delete(imageUrl);
+    };
+
+    img.onload = handleLoaded;
+    img.onerror = handleFailed;
     img.src = imageUrl;
 
-    // 可选：添加加载完成和错误的回调
-    img.onload = () => {
-      console.log('封面图片预加载成功:', imageUrl);
-    };
+    if (img.complete && img.naturalWidth > 0) {
+      handleLoaded();
+    }
 
-    img.onerror = () => {
-      console.error('封面图片预加载失败:', imageUrl);
-    };
+    return imageUrl;
   } catch (error) {
     console.error('预加载封面图片出错:', error);
+    return null;
   }
+};
+
+/**
+ * 计算播放列表中的下一首曲目
+ */
+export const getNextTrackInQueue = (
+  list: SongResult[],
+  currentIndex: number,
+  currentSongId?: string | number | null
+): SongResult | null => {
+  if (!Array.isArray(list) || list.length <= 1) return null;
+
+  let resolvedIndex = -1;
+  if (
+    currentIndex >= 0 &&
+    currentIndex < list.length &&
+    (currentSongId == null ||
+      currentSongId === '' ||
+      String(list[currentIndex]?.id) === String(currentSongId))
+  ) {
+    resolvedIndex = currentIndex;
+  } else if (currentSongId != null && currentSongId !== '') {
+    resolvedIndex = list.findIndex((item) => String(item?.id) === String(currentSongId));
+  }
+
+  if (resolvedIndex === -1) {
+    resolvedIndex = Math.max(0, Math.min(list.length - 1, currentIndex || 0));
+  }
+
+  const nextIndex = (resolvedIndex + 1) % list.length;
+  return list[nextIndex] ?? null;
+};
+
+/**
+ * 在当前曲目起播或队列变化时提前预加载下一首封面图（500y500 主图 + 120y120 缩略图）
+ */
+export const preloadNextTrackCover = (
+  list: SongResult[],
+  currentIndex: number,
+  currentSongId: string | number | null | undefined,
+  getImgUrl: (url: string, size: string) => string
+): string | null => {
+  const nextTrack = getNextTrackInQueue(list, currentIndex, currentSongId);
+  const nextPic = nextTrack?.picUrl || nextTrack?.al?.picUrl || '';
+  if (!nextPic) return null;
+
+  const mainUrl = preloadCoverImage(nextPic, getImgUrl, '500y500');
+  preloadCoverImage(nextPic, getImgUrl, '120y120');
+  return mainUrl;
 };

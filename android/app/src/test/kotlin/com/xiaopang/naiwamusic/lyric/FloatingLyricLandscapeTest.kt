@@ -1,0 +1,194 @@
+package com.xiaopang.naiwamusic.lyric
+
+import com.xiaopang.naiwamusic.config.AppPrefs
+import com.xiaopang.naiwamusic.lyric.FloatingLyricManager.LandscapeVisibilityController
+import com.xiaopang.naiwamusic.lyric.FloatingLyricManager.OverlayAction
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class FloatingLyricLandscapeTest {
+
+    @Test
+    fun defaultsToDisabledSoLandscapeKeepsShowingUntilUserEnablesSetting() {
+        assertFalse(AppPrefs.DEFAULT_FLOATING_LYRIC_HIDE_IN_LANDSCAPE)
+        val controller = LandscapeVisibilityController()
+        assertFalse(controller.hideInLandscape)
+
+        val enabled = controller.onUserSetEnabled(
+            enabled = true,
+            hasOverlayPermission = true,
+            landscape = false
+        )
+        assertEquals(OverlayAction.SHOW, enabled.action)
+
+        val rotatedLandscape = controller.onConfigurationOrientationChanged(
+            landscape = true,
+            hasOverlayPermission = true
+        )
+        assertEquals(OverlayAction.NOOP, rotatedLandscape.action)
+        assertTrue(rotatedLandscape.shouldShowOverlay)
+        assertFalse(controller.isHiddenForLandscape)
+
+        // 用户按需开启横屏自动隐藏后，当前横屏立即暂隐
+        val optedIn = controller.onHideInLandscapeChanged(
+            hide = true,
+            landscape = true,
+            hasOverlayPermission = true
+        )
+        assertEquals(OverlayAction.HIDE_TEMPORARY_FOR_LANDSCAPE, optedIn.action)
+        assertTrue(controller.isHiddenForLandscape)
+        assertTrue(controller.isLogicallyEnabled())
+    }
+
+    @Test
+    fun landscapeTemporarilyHidesWithoutMutatingUserMasterSwitchAndRestoresInPortrait() {
+        val controller = LandscapeVisibilityController(
+            initialUserEnabled = false,
+            initialHideInLandscape = true,
+            initialLandscape = false
+        )
+
+        val enabledTransition = controller.onUserSetEnabled(
+            enabled = true,
+            hasOverlayPermission = true,
+            landscape = false
+        )
+        assertEquals(OverlayAction.SHOW, enabledTransition.action)
+        assertTrue(enabledTransition.isUserEnabled)
+        assertFalse(enabledTransition.isHiddenForLandscape)
+        assertTrue(enabledTransition.shouldMutateUserPref)
+        assertTrue(controller.isLogicallyEnabled())
+
+        // 切换到横屏：仅临时隐藏视图，绝不关闭用户主开关与通知栏「词」开关
+        val toLandscape = controller.onConfigurationOrientationChanged(
+            landscape = true,
+            hasOverlayPermission = true
+        )
+        assertEquals(OverlayAction.HIDE_TEMPORARY_FOR_LANDSCAPE, toLandscape.action)
+        assertTrue(toLandscape.isUserEnabled)
+        assertTrue(toLandscape.isHiddenForLandscape)
+        assertFalse(toLandscape.shouldShowOverlay)
+        assertFalse(toLandscape.shouldMutateUserPref)
+        assertFalse(toLandscape.shouldNotifyMediaSession)
+        assertTrue(controller.isLogicallyEnabled())
+
+        // 切回竖屏：自动恢复悬浮显示，依然无需改动用户主开关
+        val backToPortrait = controller.onConfigurationOrientationChanged(
+            landscape = false,
+            hasOverlayPermission = true
+        )
+        assertEquals(OverlayAction.SHOW, backToPortrait.action)
+        assertTrue(backToPortrait.isUserEnabled)
+        assertFalse(backToPortrait.isHiddenForLandscape)
+        assertTrue(backToPortrait.shouldShowOverlay)
+        assertFalse(backToPortrait.shouldMutateUserPref)
+        assertFalse(backToPortrait.shouldNotifyMediaSession)
+    }
+
+    @Test
+    fun manualCloseDuringLandscapeClearsHiddenFlagSoPortraitWillNotResurrect() {
+        val controller = LandscapeVisibilityController(
+            initialUserEnabled = false,
+            initialHideInLandscape = true,
+            initialLandscape = false
+        )
+        controller.onUserSetEnabled(enabled = true, hasOverlayPermission = true, landscape = false)
+        controller.onConfigurationOrientationChanged(landscape = true, hasOverlayPermission = true)
+        assertTrue(controller.isHiddenForLandscape)
+
+        val manualClose = controller.onUserSetEnabled(
+            enabled = false,
+            hasOverlayPermission = true,
+            landscape = true
+        )
+        assertEquals(OverlayAction.HIDE_USER_DISABLED, manualClose.action)
+        assertFalse(manualClose.isUserEnabled)
+        assertFalse(manualClose.isHiddenForLandscape)
+        assertTrue(manualClose.shouldMutateUserPref)
+        assertTrue(manualClose.shouldNotifyMediaSession)
+        assertFalse(controller.isLogicallyEnabled())
+
+        val backToPortrait = controller.onConfigurationOrientationChanged(
+            landscape = false,
+            hasOverlayPermission = true
+        )
+        assertEquals(OverlayAction.NOOP, backToPortrait.action)
+        assertFalse(backToPortrait.shouldShowOverlay)
+        assertFalse(controller.isLogicallyEnabled())
+    }
+
+    @Test
+    fun enablingWhileAlreadyLandscapeHonorsAutoHideRuleAndShowsLaterInPortrait() {
+        val controller = LandscapeVisibilityController(
+            initialUserEnabled = false,
+            initialHideInLandscape = true,
+            initialLandscape = true
+        )
+
+        val enableInLandscape = controller.onUserSetEnabled(
+            enabled = true,
+            hasOverlayPermission = true,
+            landscape = true
+        )
+        assertEquals(OverlayAction.HIDE_TEMPORARY_FOR_LANDSCAPE, enableInLandscape.action)
+        assertTrue(enableInLandscape.isUserEnabled)
+        assertTrue(enableInLandscape.isHiddenForLandscape)
+        assertFalse(enableInLandscape.shouldShowOverlay)
+        assertTrue(enableInLandscape.shouldMutateUserPref)
+        assertTrue(enableInLandscape.shouldNotifyMediaSession)
+        assertTrue(controller.isLogicallyEnabled())
+
+        val rotateToPortrait = controller.onConfigurationOrientationChanged(
+            landscape = false,
+            hasOverlayPermission = true
+        )
+        assertEquals(OverlayAction.SHOW, rotateToPortrait.action)
+        assertTrue(rotateToPortrait.shouldShowOverlay)
+        assertFalse(rotateToPortrait.isHiddenForLandscape)
+    }
+
+    @Test
+    fun togglingHideInLandscapeSettingUpdatesCurrentOverlayVisibilitySafely() {
+        val controller = LandscapeVisibilityController(
+            initialUserEnabled = false,
+            initialHideInLandscape = false,
+            initialLandscape = true
+        )
+        val enabled = controller.onUserSetEnabled(
+            enabled = true,
+            hasOverlayPermission = true,
+            landscape = true
+        )
+        assertEquals(OverlayAction.SHOW, enabled.action)
+
+        // hideInLandscape=false 时横屏仍持续显示
+        val stillVisible = controller.onConfigurationOrientationChanged(
+            landscape = true,
+            hasOverlayPermission = true
+        )
+        assertEquals(OverlayAction.NOOP, stillVisible.action)
+        assertTrue(stillVisible.shouldShowOverlay)
+
+        // 用户在横屏下开启「横屏自动隐藏」：立刻暂隐且保留主开关
+        val enableAutoHide = controller.onHideInLandscapeChanged(
+            hide = true,
+            landscape = true,
+            hasOverlayPermission = true
+        )
+        assertEquals(OverlayAction.HIDE_TEMPORARY_FOR_LANDSCAPE, enableAutoHide.action)
+        assertTrue(controller.isLogicallyEnabled())
+        assertTrue(controller.isHiddenForLandscape)
+
+        // 用户在横屏下关闭「横屏自动隐藏」：立刻恢复显示
+        val disableAutoHide = controller.onHideInLandscapeChanged(
+            hide = false,
+            landscape = true,
+            hasOverlayPermission = true
+        )
+        assertEquals(OverlayAction.SHOW, disableAutoHide.action)
+        assertFalse(controller.isHiddenForLandscape)
+        assertTrue(disableAutoHide.shouldShowOverlay)
+    }
+}

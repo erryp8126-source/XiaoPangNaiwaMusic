@@ -1,17 +1,23 @@
 import { cloneDeep } from 'lodash';
-import { createDiscreteApi } from 'naive-ui';
 
-import i18n from '@/../i18n/renderer';
 import { getMusicLrc, getMusicUrl, getParsingMusicUrl } from '@/api/music';
 import { playbackRequestManager } from '@/services/playbackRequestManager';
 import { SongSourceConfigManager } from '@/services/SongSourceConfigManager';
+import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';
 import type { ILyric, ILyricText, IWordData, SongResult } from '@/types/music';
 import { getImgUrl, isElectron } from '@/utils';
 import { getImageLinearBackground } from '@/utils/linearColor';
+import { notifyPlaybackBufferingRetry } from '@/utils/playbackFeedback';
 import { buildPlaybackMeta, inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
 import { parseLyrics as parseYrcLyrics } from '@/utils/yrcParser';
 
-const { message } = createDiscreteApi(['message']);
+const isOfflineNow = (): boolean => {
+  try {
+    return useOfflineAvailabilityStore().isOffline;
+  } catch {
+    return typeof navigator !== 'undefined' && navigator.onLine === false;
+  }
+};
 
 type DiskCacheResolveResult = {
   url?: string;
@@ -149,14 +155,14 @@ export const getSongUrl = async (
           return await resolveCachedPlaybackUrl(customResult.data.data.url, songData);
         } else {
           console.log('自定义API解析失败，将使用默认降级流程...');
-          message.warning(i18n.global.t('player.reparse.customApiFailed'));
+          notifyPlaybackBufferingRetry(songData?.name, { isOffline: isOfflineNow() });
         }
       } catch (error) {
         console.error('调用自定义API时发生错误:', error);
         if ((error as Error).message === 'Request cancelled') {
           throw error;
         }
-        message.error(i18n.global.t('player.reparse.customApiError'));
+        notifyPlaybackBufferingRetry(songData?.name, { isOffline: isOfflineNow() });
       }
     }
 

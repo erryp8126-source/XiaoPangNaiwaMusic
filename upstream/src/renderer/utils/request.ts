@@ -134,6 +134,19 @@ request.interceptors.response.use(
     console.error('error', error);
     const config = error.config as CustomAxiosRequestConfig;
 
+    // 离线安静模式：断网时立即快速失败并打标，避免无意义重试与重复弹窗
+    let storeOffline = false;
+    try {
+      storeOffline = useOfflineAvailabilityStore().isOffline;
+    } catch {
+      // ignore if Pinia is not active yet
+    }
+    const navigatorOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+    if (storeOffline || navigatorOffline) {
+      (error as any).isOfflineError = true;
+      return Promise.reject(error);
+    }
+
     // 如果没有配置，直接返回错误
     if (!config) {
       return Promise.reject(error);

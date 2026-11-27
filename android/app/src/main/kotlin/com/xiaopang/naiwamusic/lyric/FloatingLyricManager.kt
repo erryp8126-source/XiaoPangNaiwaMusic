@@ -4,8 +4,10 @@ import android.app.KeyguardManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ComponentCallbacks
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
@@ -67,6 +69,272 @@ class FloatingLyricManager(
         var activeInstance: FloatingLyricManager? = null
     }
 
+    internal enum class OverlayAction {
+        SHOW,
+        HIDE_TEMPORARY_FOR_LANDSCAPE,
+        HIDE_USER_DISABLED,
+        NOOP
+    }
+
+    internal data class LandscapeOverlayTransition(
+        val action: OverlayAction,
+        val isUserEnabled: Boolean,
+        val isHiddenForLandscape: Boolean,
+        val shouldShowOverlay: Boolean,
+        val shouldMutateUserPref: Boolean,
+        val shouldNotifyMediaSession: Boolean
+    )
+
+    /**
+     * 桌面歌词横屏自动暂隐纯状态机：
+     * - 横屏触发临时隐藏时，绝不改动 userEnabled 用户主开关或媒体会话按钮状态
+     * - 切回竖屏时，仅在 userEnabled 为 true 且此前因横屏被暂隐时恢复悬浮窗
+     * - 横屏期间若用户手动关闭桌面歌词，则清掉暂隐标记，切回竖屏后不再自动弹回
+     */
+    internal class LandscapeVisibilityController(
+        initialUserEnabled: Boolean = false,
+        initialHideInLandscape: Boolean = AppPrefs.DEFAULT_FLOATING_LYRIC_HIDE_IN_LANDSCAPE,
+        initialLandscape: Boolean = false
+    ) {
+        var userEnabled: Boolean = initialUserEnabled
+            private set
+        var hideInLandscape: Boolean = initialHideInLandscape
+            private set
+        var isLandscape: Boolean = initialLandscape
+            private set
+        var isHiddenForLandscape: Boolean = false
+            private set
+        var isOverlayVisible: Boolean = false
+            private set
+
+        fun isLogicallyEnabled(): Boolean = userEnabled
+
+        fun syncHideInLandscape(hide: Boolean) {
+            hideInLandscape = hide
+        }
+
+        fun onUserSetEnabled(
+            enabled: Boolean,
+            hasOverlayPermission: Boolean,
+            landscape: Boolean
+        ): LandscapeOverlayTransition {
+            isLandscape = landscape
+            if (!enabled || !hasOverlayPermission) {
+                userEnabled = false
+                isHiddenForLandscape = false
+                isOverlayVisible = false
+                return LandscapeOverlayTransition(
+                    action = OverlayAction.HIDE_USER_DISABLED,
+                    isUserEnabled = false,
+                    isHiddenForLandscape = false,
+                    shouldShowOverlay = false,
+                    shouldMutateUserPref = true,
+                    shouldNotifyMediaSession = true
+                )
+            }
+
+            userEnabled = true
+            return if (hideInLandscape && landscape) {
+                isHiddenForLandscape = true
+                isOverlayVisible = false
+                LandscapeOverlayTransition(
+                    action = OverlayAction.HIDE_TEMPORARY_FOR_LANDSCAPE,
+                    isUserEnabled = true,
+                    isHiddenForLandscape = true,
+                    shouldShowOverlay = false,
+                    shouldMutateUserPref = true,
+                    shouldNotifyMediaSession = true
+                )
+            } else {
+                isHiddenForLandscape = false
+                isOverlayVisible = true
+                LandscapeOverlayTransition(
+                    action = OverlayAction.SHOW,
+                    isUserEnabled = true,
+                    isHiddenForLandscape = false,
+                    shouldShowOverlay = true,
+                    shouldMutateUserPref = true,
+                    shouldNotifyMediaSession = true
+                )
+            }
+        }
+
+        fun onConfigurationOrientationChanged(
+            landscape: Boolean,
+            hasOverlayPermission: Boolean
+        ): LandscapeOverlayTransition {
+            isLandscape = landscape
+            if (!userEnabled) {
+                isHiddenForLandscape = false
+                return LandscapeOverlayTransition(
+                    action = OverlayAction.NOOP,
+                    isUserEnabled = false,
+                    isHiddenForLandscape = false,
+                    shouldShowOverlay = false,
+                    shouldMutateUserPref = false,
+                    shouldNotifyMediaSession = false
+                )
+            }
+
+            if (landscape && hideInLandscape) {
+                return if (isOverlayVisible || !isHiddenForLandscape) {
+                    isHiddenForLandscape = true
+                    isOverlayVisible = false
+                    LandscapeOverlayTransition(
+                        action = OverlayAction.HIDE_TEMPORARY_FOR_LANDSCAPE,
+                        isUserEnabled = true,
+                        isHiddenForLandscape = true,
+                        shouldShowOverlay = false,
+                        shouldMutateUserPref = false,
+                        shouldNotifyMediaSession = false
+                    )
+                } else {
+                    LandscapeOverlayTransition(
+                        action = OverlayAction.NOOP,
+                        isUserEnabled = true,
+                        isHiddenForLandscape = true,
+                        shouldShowOverlay = false,
+                        shouldMutateUserPref = false,
+                        shouldNotifyMediaSession = false
+                    )
+                }
+            }
+
+            if (!landscape && isHiddenForLandscape) {
+                return if (hasOverlayPermission) {
+                    isHiddenForLandscape = false
+                    isOverlayVisible = true
+                    LandscapeOverlayTransition(
+                        action = OverlayAction.SHOW,
+                        isUserEnabled = true,
+                        isHiddenForLandscape = false,
+                        shouldShowOverlay = true,
+                        shouldMutateUserPref = false,
+                        shouldNotifyMediaSession = false
+                    )
+                } else {
+                    isHiddenForLandscape = false
+                    isOverlayVisible = false
+                    LandscapeOverlayTransition(
+                        action = OverlayAction.NOOP,
+                        isUserEnabled = true,
+                        isHiddenForLandscape = false,
+                        shouldShowOverlay = false,
+                        shouldMutateUserPref = false,
+                        shouldNotifyMediaSession = false
+                    )
+                }
+            }
+
+            return LandscapeOverlayTransition(
+                action = OverlayAction.NOOP,
+                isUserEnabled = userEnabled,
+                isHiddenForLandscape = isHiddenForLandscape,
+                shouldShowOverlay = isOverlayVisible,
+                shouldMutateUserPref = false,
+                shouldNotifyMediaSession = false
+            )
+        }
+
+        fun onHideInLandscapeChanged(
+            hide: Boolean,
+            landscape: Boolean,
+            hasOverlayPermission: Boolean
+        ): LandscapeOverlayTransition {
+            hideInLandscape = hide
+            isLandscape = landscape
+            if (!userEnabled) {
+                return LandscapeOverlayTransition(
+                    action = OverlayAction.NOOP,
+                    isUserEnabled = false,
+                    isHiddenForLandscape = false,
+                    shouldShowOverlay = false,
+                    shouldMutateUserPref = false,
+                    shouldNotifyMediaSession = false
+                )
+            }
+            if (hide && landscape) {
+                isHiddenForLandscape = true
+                isOverlayVisible = false
+                return LandscapeOverlayTransition(
+                    action = OverlayAction.HIDE_TEMPORARY_FOR_LANDSCAPE,
+                    isUserEnabled = true,
+                    isHiddenForLandscape = true,
+                    shouldShowOverlay = false,
+                    shouldMutateUserPref = false,
+                    shouldNotifyMediaSession = false
+                )
+            }
+            if (!hide && isHiddenForLandscape && hasOverlayPermission) {
+                isHiddenForLandscape = false
+                isOverlayVisible = true
+                return LandscapeOverlayTransition(
+                    action = OverlayAction.SHOW,
+                    isUserEnabled = true,
+                    isHiddenForLandscape = false,
+                    shouldShowOverlay = true,
+                    shouldMutateUserPref = false,
+                    shouldNotifyMediaSession = false
+                )
+            }
+            return LandscapeOverlayTransition(
+                action = OverlayAction.NOOP,
+                isUserEnabled = userEnabled,
+                isHiddenForLandscape = isHiddenForLandscape,
+                shouldShowOverlay = isOverlayVisible,
+                shouldMutateUserPref = false,
+                shouldNotifyMediaSession = false
+            )
+        }
+
+        fun onShowRequested(
+            hasOverlayPermission: Boolean,
+            landscape: Boolean
+        ): LandscapeOverlayTransition {
+            if (!hasOverlayPermission) {
+                return LandscapeOverlayTransition(
+                    action = OverlayAction.NOOP,
+                    isUserEnabled = userEnabled,
+                    isHiddenForLandscape = isHiddenForLandscape,
+                    shouldShowOverlay = false,
+                    shouldMutateUserPref = false,
+                    shouldNotifyMediaSession = false
+                )
+            }
+            userEnabled = true
+            isLandscape = landscape
+            return if (hideInLandscape && landscape) {
+                isHiddenForLandscape = true
+                isOverlayVisible = false
+                LandscapeOverlayTransition(
+                    action = OverlayAction.HIDE_TEMPORARY_FOR_LANDSCAPE,
+                    isUserEnabled = true,
+                    isHiddenForLandscape = true,
+                    shouldShowOverlay = false,
+                    shouldMutateUserPref = false,
+                    shouldNotifyMediaSession = false
+                )
+            } else {
+                isHiddenForLandscape = false
+                isOverlayVisible = true
+                LandscapeOverlayTransition(
+                    action = OverlayAction.SHOW,
+                    isUserEnabled = true,
+                    isHiddenForLandscape = false,
+                    shouldShowOverlay = true,
+                    shouldMutateUserPref = false,
+                    shouldNotifyMediaSession = false
+                )
+            }
+        }
+
+        fun onForceHide() {
+            isOverlayVisible = false
+            isHiddenForLandscape = false
+            userEnabled = false
+        }
+    }
+
     private val appContext = context.applicationContext
     private val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -86,10 +354,27 @@ class FloatingLyricManager(
     @Volatile
     private var isShowing = false
     @Volatile
+    private var isHiddenForLandscape = false
+    @Volatile
     private var isPlayingState = false
     private var isExpanded = false
     private var isStyleExpanded = false
     private var isLocked = false
+
+    private val landscapeLock = Any()
+    private val landscapeController = LandscapeVisibilityController(
+        initialUserEnabled = prefs.floatingLyricEnabled,
+        initialHideInLandscape = prefs.floatingLyricHideInLandscape,
+        initialLandscape = isCurrentlyLandscape()
+    )
+    private var isConfigCallbackRegistered = false
+    private val configCallbacks = object : ComponentCallbacks {
+        override fun onConfigurationChanged(newConfig: Configuration) {
+            onOrientationChanged(newConfig.orientation)
+        }
+
+        override fun onLowMemory() = Unit
+    }
 
     private var highlightColor: Int = prefs.floatingLyricColor
     private var lyricTextSizeSp: Float = prefs.floatingLyricTextSize
@@ -126,6 +411,24 @@ class FloatingLyricManager(
 
     init {
         activeInstance = this
+        ensureConfigCallbacksRegistered()
+    }
+
+    private fun isCurrentlyLandscape(): Boolean {
+        return appContext.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    }
+
+    private fun ensureConfigCallbacksRegistered() {
+        synchronized(landscapeLock) {
+            if (!isConfigCallbackRegistered) {
+                runCatching {
+                    appContext.registerComponentCallbacks(configCallbacks)
+                    isConfigCallbackRegistered = true
+                }.onFailure {
+                    Log.w(TAG, "registerComponentCallbacks failed: ${it.message}")
+                }
+            }
+        }
     }
 
     private fun runOnMain(block: () -> Unit) {
@@ -136,7 +439,9 @@ class FloatingLyricManager(
         }
     }
 
-    fun isEnabled(): Boolean = isShowing
+    fun isEnabled(): Boolean = isShowing || isHiddenForLandscape
+
+    fun isHiddenForLandscapeState(): Boolean = isHiddenForLandscape
 
     fun isLockedState(): Boolean = isLocked
 
@@ -170,18 +475,137 @@ class FloatingLyricManager(
                     runCatching { appContext.startActivity(intent) }
                 }
             }
+            synchronized(landscapeLock) {
+                landscapeController.onUserSetEnabled(false, hasOverlayPermission = false, landscape = isCurrentlyLandscape())
+            }
+            isHiddenForLandscape = false
             prefs.floatingLyricEnabled = false
             MusicPlaybackService.instance?.onFloatingLyricStateChanged(false)
             return false
         }
-        show()
-        val enabledNow = if (Looper.myLooper() == Looper.getMainLooper()) isShowing else true
-        prefs.floatingLyricEnabled = enabledNow
-        MusicPlaybackService.instance?.onFloatingLyricStateChanged(enabledNow)
-        return enabledNow
+
+        ensureConfigCallbacksRegistered()
+        val transition = synchronized(landscapeLock) {
+            landscapeController.syncHideInLandscape(prefs.floatingLyricHideInLandscape)
+            landscapeController.onUserSetEnabled(
+                enabled = true,
+                hasOverlayPermission = true,
+                landscape = isCurrentlyLandscape()
+            )
+        }
+        isHiddenForLandscape = transition.isHiddenForLandscape
+        prefs.floatingLyricEnabled = true
+        MusicPlaybackService.instance?.onFloatingLyricStateChanged(true)
+
+        if (transition.action == OverlayAction.HIDE_TEMPORARY_FOR_LANDSCAPE) {
+            hideOverlayViewOnly()
+            runOnMain {
+                runCatching {
+                    Toast.makeText(
+                        appContext,
+                        "已开启桌面歌词（横屏时自动隐藏，竖屏后自动显示）",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+            return true
+        }
+
+        attachOverlayView()
+        if (Looper.myLooper() == Looper.getMainLooper() && !isShowing) {
+            synchronized(landscapeLock) {
+                landscapeController.onForceHide()
+            }
+            isHiddenForLandscape = false
+            prefs.floatingLyricEnabled = false
+            MusicPlaybackService.instance?.onFloatingLyricStateChanged(false)
+            return false
+        }
+        return true
     }
 
     fun show() {
+        ensureConfigCallbacksRegistered()
+        if (!Settings.canDrawOverlays(appContext)) return
+        val transition = synchronized(landscapeLock) {
+            landscapeController.syncHideInLandscape(prefs.floatingLyricHideInLandscape)
+            landscapeController.onShowRequested(
+                hasOverlayPermission = true,
+                landscape = isCurrentlyLandscape()
+            )
+        }
+        isHiddenForLandscape = transition.isHiddenForLandscape
+        when (transition.action) {
+            OverlayAction.HIDE_TEMPORARY_FOR_LANDSCAPE -> hideOverlayViewOnly()
+            OverlayAction.SHOW -> attachOverlayView()
+            else -> Unit
+        }
+    }
+
+    fun onOrientationChanged(orientation: Int) {
+        runOnMain {
+            if (!prefs.floatingLyricEnabled) {
+                synchronized(landscapeLock) {
+                    landscapeController.onForceHide()
+                }
+                isHiddenForLandscape = false
+                return@runOnMain
+            }
+            val landscape = orientation == Configuration.ORIENTATION_LANDSCAPE
+            val transition = synchronized(landscapeLock) {
+                landscapeController.syncHideInLandscape(prefs.floatingLyricHideInLandscape)
+                landscapeController.onConfigurationOrientationChanged(
+                    landscape = landscape,
+                    hasOverlayPermission = Settings.canDrawOverlays(appContext)
+                )
+            }
+            isHiddenForLandscape = transition.isHiddenForLandscape
+            when (transition.action) {
+                OverlayAction.HIDE_TEMPORARY_FOR_LANDSCAPE -> hideOverlayViewOnly()
+                OverlayAction.SHOW -> attachOverlayView()
+                else -> Unit
+            }
+        }
+    }
+
+    fun onHideInLandscapeSettingChanged(enabled: Boolean) {
+        runOnMain {
+            val transition = synchronized(landscapeLock) {
+                landscapeController.onHideInLandscapeChanged(
+                    hide = enabled,
+                    landscape = isCurrentlyLandscape(),
+                    hasOverlayPermission = Settings.canDrawOverlays(appContext)
+                )
+            }
+            isHiddenForLandscape = transition.isHiddenForLandscape
+            when (transition.action) {
+                OverlayAction.HIDE_TEMPORARY_FOR_LANDSCAPE -> hideOverlayViewOnly()
+                OverlayAction.SHOW -> {
+                    if (prefs.floatingLyricEnabled) {
+                        attachOverlayView()
+                    }
+                }
+                else -> Unit
+            }
+        }
+    }
+
+    fun release() {
+        lyricFetchJob?.cancel()
+        lyricFetchJob = null
+        synchronized(landscapeLock) {
+            if (isConfigCallbackRegistered) {
+                runCatching { appContext.unregisterComponentCallbacks(configCallbacks) }
+                isConfigCallbackRegistered = false
+            }
+        }
+        hide()
+        if (activeInstance === this) {
+            activeInstance = null
+        }
+    }
+
+    private fun attachOverlayView() {
         runOnMain {
             if (isShowing) return@runOnMain
             if (!Settings.canDrawOverlays(appContext)) return@runOnMain
@@ -741,6 +1165,14 @@ class FloatingLyricManager(
     }
 
     fun hide() {
+        synchronized(landscapeLock) {
+            landscapeController.onForceHide()
+        }
+        isHiddenForLandscape = false
+        hideOverlayViewOnly()
+    }
+
+    private fun hideOverlayViewOnly() {
         runOnMain {
             mainHandler.removeCallbacks(autoCollapseRunnable)
             mainHandler.removeCallbacks(lyricTicker)

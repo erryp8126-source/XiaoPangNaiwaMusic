@@ -1,11 +1,12 @@
 <template>
   <div
     class="home-song-card group flex cursor-pointer items-center gap-3 md:gap-4 rounded-2xl p-2.5 transition-all duration-200 active:scale-[0.985]"
-    :class="
+    :class="[
       isPlaying
         ? 'bg-amber-50/95 dark:bg-amber-500/15 ring-1 ring-amber-300/70 dark:ring-amber-400/30 shadow-sm'
-        : 'bg-white/85 dark:bg-[#131316] ring-1 ring-sky-100/80 dark:ring-white/[0.08] hover:bg-white dark:hover:bg-[#1C1C22] shadow-naiwa-sm'
-    "
+        : 'bg-white/85 dark:bg-[#131316] ring-1 ring-sky-100/80 dark:ring-white/[0.08] hover:bg-white dark:hover:bg-[#1C1C22] shadow-naiwa-sm',
+      { 'is-offline-unavailable': isOfflineUnavailable }
+    ]"
     @click="onPlayMusic"
     @contextmenu.prevent="handleContextMenu"
     @touchstart.passive="handleLongPressTouchStart"
@@ -50,19 +51,7 @@
         >
           {{ item.name }}
         </n-ellipsis>
-        <span
-          v-if="offlineBadge"
-          class="px-1.5 py-[1px] rounded text-[10px] font-bold leading-tight flex-shrink-0"
-          :class="
-            offlineBadge === 'downloaded'
-              ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/25'
-              : offlineBadge === 'cached'
-                ? 'bg-sky-500/15 text-sky-600 dark:text-sky-300 border border-sky-500/25'
-                : 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/25'
-          "
-        >
-          {{ offlineBadge === 'downloaded' ? '已下载' : offlineBadge === 'cached' ? '已缓存' : '本地' }}
-        </span>
+        <track-origin-tag :song="item" :show-online="showOrigin || isOffline" />
       </div>
       <n-ellipsis
         class="artist-name text-xs md:text-sm text-slate-500 dark:text-slate-400 mt-0.5"
@@ -110,6 +99,7 @@
 <script lang="ts" setup>
 import { NEllipsis, NImage } from 'naive-ui';
 
+import TrackOriginTag from '@/components/common/TrackOriginTag.vue';
 import { useSongItem } from '@/hooks/useSongItem';
 import type { SongResult } from '@/types/music';
 import { getImgUrl, isNative } from '@/utils';
@@ -125,6 +115,7 @@ const props = withDefaults(
     canRemove?: boolean;
     isNext?: boolean;
     index?: number;
+    showOrigin?: boolean;
   }>(),
   {
     favorite: true,
@@ -132,7 +123,8 @@ const props = withDefaults(
     selected: false,
     canRemove: false,
     isNext: false,
-    index: undefined
+    index: undefined,
+    showOrigin: false
   }
 );
 
@@ -143,7 +135,8 @@ const {
   isPlaying,
   isFavorite,
   isDislike,
-  offlineBadge,
+  isOffline,
+  isOfflineUnavailable,
   artists,
   showDropdown,
   dropdownX,
@@ -175,6 +168,12 @@ const onMenuClick = (event: MouseEvent) => handleMenuClick(event);
 
 <style lang="scss" scoped>
 .home-song-card {
-  // 所有样式都已在模板中通过 Tailwind 类定义
+  &.is-offline-unavailable {
+    opacity: 0.46;
+
+    :deep(img) {
+      filter: grayscale(0.35);
+    }
+  }
 }
 </style>

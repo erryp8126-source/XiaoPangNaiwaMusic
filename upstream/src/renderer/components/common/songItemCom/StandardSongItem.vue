@@ -44,13 +44,7 @@
             :class="{ 'text-primary font-bold': isPlaying }"
             >{{ item.name }}</n-ellipsis
           >
-          <span
-            v-if="offlineBadge"
-            class="offline-badge flex-shrink-0"
-            :class="`badge-${offlineBadge}`"
-          >
-            {{ offlineBadge === 'downloaded' ? '已下载' : offlineBadge === 'cached' ? '已缓存' : '本地' }}
-          </span>
+          <track-origin-tag :song="item" :show-online="showOrigin || isOffline" />
         </div>
         <div class="song-item-content-name">
           <n-ellipsis class="text-ellipsis" line-clamp="1">
@@ -102,6 +96,7 @@ import { NCheckbox, NEllipsis, NImage, NTooltip } from 'naive-ui';
 import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
+import TrackOriginTag from '@/components/common/TrackOriginTag.vue';
 import { usePlayerStore } from '@/store';
 import type { SongResult } from '@/types/music';
 import { getImgUrl } from '@/utils';
@@ -120,6 +115,7 @@ const props = withDefaults(
     canRemove?: boolean;
     isNext?: boolean;
     index?: number;
+    showOrigin?: boolean;
   }>(),
   {
     favorite: true,
@@ -127,7 +123,8 @@ const props = withDefaults(
     selected: false,
     canRemove: false,
     isNext: false,
-    index: undefined
+    index: undefined,
+    showOrigin: false
   }
 );
 
@@ -139,7 +136,7 @@ const play = computed(() => playerStore.isPlay);
 const isPlaying = computed(() => baseItem.value?.isPlaying || false);
 const playLoading = computed(() => baseItem.value?.playLoading || false);
 const isFavorite = computed(() => baseItem.value?.isFavorite || false);
-const offlineBadge = computed(() => baseItem.value?.offlineBadge || null);
+const isOffline = computed(() => baseItem.value?.isOffline || false);
 const artists = computed(() => baseItem.value?.artists || []);
 
 // 包装方法，避免直接访问可能为undefined的ref
@@ -184,22 +181,6 @@ const onPlayNext = () => {
 
     &-title {
       @apply text-[14.5px] font-semibold text-slate-800 dark:text-slate-100;
-
-      .offline-badge {
-        @apply px-1.5 py-[1px] rounded text-[10px] font-bold leading-tight tracking-tight;
-
-        &.badge-downloaded {
-          @apply bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/25;
-        }
-
-        &.badge-cached {
-          @apply bg-sky-500/15 text-sky-600 dark:text-sky-300 border border-sky-500/25;
-        }
-
-        &.badge-local {
-          @apply bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/25;
-        }
-      }
     }
 
     &-name {

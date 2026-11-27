@@ -1,15 +1,15 @@
 <template>
   <div class="my-library-page h-full w-full flex flex-col bg-transparent overflow-hidden">
-    <!-- 顶部标题与总存储占用卡片 -->
+    <!-- 顶部标题、账号入口与总存储占用卡片 -->
     <div class="flex-shrink-0 page-padding pt-3 pb-2 space-y-3">
       <div
-        class="rounded-[22px] p-4 bg-white/85 dark:bg-[#171e2a]/85 backdrop-blur-xl border border-sky-100/80 dark:border-white/10 shadow-[0_6px_22px_rgba(82,134,168,0.08)]"
+        class="rounded-[22px] p-4 bg-white/88 dark:bg-[#131316]/95 backdrop-blur-xl border border-sky-100/80 dark:border-white/[0.08] shadow-[0_6px_22px_rgba(82,134,168,0.08)] dark:shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
       >
         <div class="flex items-start justify-between gap-3">
-          <div class="min-w-0">
-            <div class="flex items-center gap-2">
-              <h1 class="text-lg md:text-xl font-extrabold text-slate-900 dark:text-white tracking-tight">
-                我的音乐库
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2 flex-wrap">
+              <h1 class="text-lg md:text-xl font-extrabold text-slate-900 dark:text-[#FAFAFA] tracking-tight">
+                我的音乐
               </h1>
               <span
                 v-if="invalidFileCount > 0"
@@ -18,15 +18,15 @@
                 {{ invalidFileCount }} 项失效
               </span>
             </div>
-            <div class="mt-1 flex items-center gap-2 flex-wrap text-xs text-slate-500 dark:text-slate-400">
+            <div class="mt-1 flex items-center gap-2 flex-wrap text-xs text-slate-500 dark:text-[#A1A1AA]">
               <span>
                 总存储占用
-                <b class="text-slate-800 dark:text-slate-100 font-extrabold">{{ totalStorageText }}</b>
+                <b class="text-slate-800 dark:text-[#FAFAFA] font-extrabold">{{ totalStorageText }}</b>
               </span>
               <span class="opacity-40">·</span>
               <span>已下载 {{ formatBytes(downloadedTotalBytes) }}</span>
               <span class="opacity-40">·</span>
-              <span>本地 {{ formatBytes(localTotalBytes) }}</span>
+              <span>手机本地 {{ formatBytes(localTotalBytes) }}</span>
               <template v-if="nativeCapabilities.supportsAudioCache">
                 <span class="opacity-40">·</span>
                 <span>缓存 {{ formatBytes(audioCacheBytes) }}</span>
@@ -34,20 +34,37 @@
             </div>
           </div>
 
-          <!-- 每页突出一个主操作 -->
-          <button
-            v-if="primaryActionLabel"
-            type="button"
-            class="px-3.5 py-2 rounded-full text-xs font-extrabold text-white shadow-md active:scale-95 transition-all flex items-center gap-1.5 flex-shrink-0"
-            style="background: linear-gradient(135deg, #ffc21c 0%, #eb8f00 100%)"
-            @click="handlePrimaryAction"
-          >
-            <i :class="primaryActionIcon" class="text-sm"></i>
-            <span>{{ primaryActionLabel }}</span>
-          </button>
+          <!-- 账号快捷入口 + 当前分页主操作 -->
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <button
+              type="button"
+              class="account-entry-pill px-2.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 active:scale-95 transition-all bg-slate-100/90 text-slate-700 hover:bg-slate-200/80 dark:bg-[#1C1C22] dark:text-[#FAFAFA] dark:border dark:border-white/[0.08]"
+              @click="goToUserAccount"
+            >
+              <img
+                v-if="userStore.user?.avatarUrl"
+                :src="getImgUrl(userStore.user.avatarUrl, '50y50')"
+                alt=""
+                class="w-4 h-4 rounded-full object-cover"
+              />
+              <i v-else class="ri-user-smile-line text-sm text-amber-500 dark:text-[#FFC533]"></i>
+              <span class="max-w-[72px] truncate">{{ userStore.user?.nickname || '账号' }}</span>
+            </button>
+
+            <button
+              v-if="primaryActionLabel"
+              type="button"
+              class="px-3.5 py-2 rounded-full text-xs font-extrabold text-white shadow-md active:scale-95 transition-all flex items-center gap-1.5 flex-shrink-0"
+              style="background: linear-gradient(135deg, #ffc21c 0%, #eb8f00 100%)"
+              @click="handlePrimaryAction"
+            >
+              <i :class="primaryActionIcon" class="text-sm"></i>
+              <span>{{ primaryActionLabel }}</span>
+            </button>
+          </div>
         </div>
 
-        <!-- 5 分类标签栏 -->
+        <!-- 6 分类统一标签栏：收藏 · 已下载 · 手机音乐 · 已缓存 · 最近播放 · 歌单 -->
         <div class="mt-3 flex items-center gap-1.5 overflow-x-auto scrollbar-hide pb-0.5">
           <button
             v-for="tab in libraryTabs"
@@ -56,8 +73,8 @@
             class="px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all active:scale-95 flex items-center gap-1"
             :class="
               activeTab === tab.id
-                ? 'bg-slate-900 text-white dark:bg-amber-400 dark:text-slate-950 shadow-sm'
-                : 'bg-slate-100/90 text-slate-600 dark:bg-slate-800/80 dark:text-slate-300 hover:bg-slate-200/70'
+                ? 'bg-slate-900 text-white dark:bg-[#FFC533] dark:text-[#1E1404] shadow-sm'
+                : 'bg-slate-100/90 text-slate-600 dark:bg-[#1C1C22] dark:text-[#A1A1AA] hover:bg-slate-200/70 dark:hover:bg-[#27272F]'
             "
             @click="switchTab(tab.id)"
           >
@@ -67,7 +84,7 @@
         </div>
       </div>
 
-      <!-- 批量管理条（仅在已下载 / 手机本地 / 已缓存标签显示） -->
+      <!-- 批量管理条（仅在已下载 / 手机音乐 / 已缓存标签显示） -->
       <div
         v-if="canBatchDeleteCurrentTab"
         class="flex items-center justify-between gap-2 px-1"
@@ -78,8 +95,8 @@
             class="px-3 py-1 rounded-full text-xs font-bold transition-colors border"
             :class="
               batchMode
-                ? 'bg-amber-500/15 border-amber-400/50 text-amber-700 dark:text-amber-300'
-                : 'bg-white/80 dark:bg-slate-800/80 border-slate-200/80 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                ? 'bg-amber-500/15 border-amber-400/50 text-amber-700 dark:text-[#FFC533]'
+                : 'bg-white/80 dark:bg-[#1C1C22] border-slate-200/80 dark:border-white/[0.08] text-slate-600 dark:text-[#A1A1AA]'
             "
             @click="toggleBatchMode"
           >
@@ -90,7 +107,7 @@
           <button
             v-if="batchMode && currentSelectableKeys.length > 0"
             type="button"
-            class="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300"
+            class="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-100 dark:bg-[#1C1C22] text-slate-600 dark:text-[#A1A1AA]"
             @click="toggleSelectAll"
           >
             {{ isAllSelected ? '取消全选' : '全选' }}
@@ -99,7 +116,7 @@
           <button
             v-if="!batchMode && activeTab === 'local'"
             type="button"
-            class="px-2.5 py-1 rounded-full text-xs font-semibold bg-white/80 dark:bg-slate-800/80 border border-slate-200/80 dark:border-slate-700 text-slate-600 dark:text-slate-300"
+            class="px-2.5 py-1 rounded-full text-xs font-semibold bg-white/80 dark:bg-[#1C1C22] border border-slate-200/80 dark:border-white/[0.08] text-slate-600 dark:text-[#A1A1AA]"
             :disabled="localMusicStore.scanning"
             @click="handleImportOrScanLocal"
           >
@@ -133,21 +150,29 @@
 
     <!-- 内容区 -->
     <div class="flex-1 min-h-0 overflow-hidden page-padding pb-32">
-      <!-- Tab 1: 已下载 -->
-      <n-scrollbar v-if="activeTab === 'downloaded'" class="h-full">
+      <!-- Tab 1: 收藏（复用现有 Favorite 视图并统一来源徽标，永不受批量删文件影响） -->
+      <div
+        v-if="activeTab === 'favorite'"
+        class="h-full rounded-[24px] overflow-hidden bg-white/80 dark:bg-[#131316] border border-sky-100/70 dark:border-white/[0.08]"
+      >
+        <favorite-view class="h-full" show-origin />
+      </div>
+
+      <!-- Tab 2: 已下载 -->
+      <n-scrollbar v-else-if="activeTab === 'downloaded'" class="h-full">
         <div v-if="loadingDownloaded" class="py-16 flex justify-center">
           <n-spin size="medium" />
         </div>
         <div v-else-if="downloadedItems.length === 0" class="py-16 text-center space-y-2">
-          <i class="ri-download-cloud-2-line text-4xl text-slate-300 dark:text-slate-600"></i>
-          <p class="text-sm text-slate-500 dark:text-slate-400">暂无已下载歌曲</p>
-          <p class="text-xs text-slate-400">在播放页或歌单菜单中点击下载，即可离线随心畅听</p>
+          <i class="ri-download-cloud-2-line text-4xl text-slate-300 dark:text-[#71717A]"></i>
+          <p class="text-sm text-slate-500 dark:text-[#A1A1AA]">暂无已下载歌曲</p>
+          <p class="text-xs text-slate-400 dark:text-[#71717A]">在播放页或歌单菜单中点击下载，即可离线随心畅听</p>
         </div>
         <div v-else class="space-y-2 pb-16">
           <div
             v-for="item in downloadedItems"
             :key="item.key"
-            class="flex items-center gap-3 p-3 rounded-2xl bg-white/80 dark:bg-[#171e2a]/80 border border-slate-200/70 dark:border-white/5 hover:bg-white dark:hover:bg-[#1d2636] transition-all cursor-pointer"
+            class="flex items-center gap-3 p-3 rounded-2xl bg-white/85 dark:bg-[#131316] border border-slate-200/70 dark:border-white/[0.08] hover:bg-white dark:hover:bg-[#1C1C22] transition-all cursor-pointer"
             @click="batchMode ? toggleSelect(item.key) : playDownloadedItem(item)"
           >
             <div
@@ -156,7 +181,7 @@
               :class="
                 selectedKeys.has(item.key)
                   ? 'bg-amber-500 border-amber-500 text-white'
-                  : 'border-slate-300 dark:border-slate-600'
+                  : 'border-slate-300 dark:border-zinc-600'
               "
             >
               <i v-if="selectedKeys.has(item.key)" class="ri-check-line text-xs"></i>
@@ -167,11 +192,12 @@
             </div>
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-1.5 min-w-0">
-                <span class="text-sm font-bold text-slate-900 dark:text-white truncate">
+                <span class="text-sm font-bold text-slate-900 dark:text-[#FAFAFA] truncate">
                   {{ item.name }}
                 </span>
+                <track-origin-tag origin="downloaded" />
                 <span
-                  class="px-1.5 py-0.5 rounded text-[10px] font-bold flex-shrink-0 bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                  class="px-1.5 py-0.5 rounded text-[10px] font-bold flex-shrink-0 bg-amber-500/15 text-amber-700 dark:text-[#FFC533]"
                 >
                   {{ item.qualityLabel }}
                 </span>
@@ -182,20 +208,20 @@
                   文件已失效
                 </span>
               </div>
-              <div class="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">
+              <div class="text-xs text-slate-500 dark:text-[#A1A1AA] truncate mt-0.5">
                 {{ item.artist }} · {{ formatBytes(item.size) }}
               </div>
             </div>
-            <i v-if="!batchMode" class="ri-play-circle-line text-xl text-amber-500 flex-shrink-0"></i>
+            <i v-if="!batchMode" class="ri-play-circle-line text-xl text-amber-500 dark:text-[#FFC533] flex-shrink-0"></i>
           </div>
         </div>
       </n-scrollbar>
 
-      <!-- Tab 2: 手机本地 -->
+      <!-- Tab 3: 手机音乐（本地扫描） -->
       <n-scrollbar v-else-if="activeTab === 'local'" class="h-full">
         <div v-if="localItems.length === 0" class="py-16 text-center space-y-3">
-          <i class="ri-folder-music-line text-4xl text-slate-300 dark:text-slate-600"></i>
-          <p class="text-sm text-slate-500 dark:text-slate-400">还没有导入手机本地音乐</p>
+          <i class="ri-folder-music-line text-4xl text-slate-300 dark:text-[#71717A]"></i>
+          <p class="text-sm text-slate-500 dark:text-[#A1A1AA]">还没有导入手机音乐</p>
           <button
             type="button"
             class="px-5 py-2 rounded-full text-xs font-extrabold text-white shadow-md"
@@ -209,7 +235,7 @@
           <div
             v-for="item in localItems"
             :key="item.key"
-            class="flex items-center gap-3 p-3 rounded-2xl bg-white/80 dark:bg-[#171e2a]/80 border border-slate-200/70 dark:border-white/5 hover:bg-white dark:hover:bg-[#1d2636] transition-all cursor-pointer"
+            class="flex items-center gap-3 p-3 rounded-2xl bg-white/85 dark:bg-[#131316] border border-slate-200/70 dark:border-white/[0.08] hover:bg-white dark:hover:bg-[#1C1C22] transition-all cursor-pointer"
             @click="batchMode ? toggleSelect(item.key) : playLocalItem(item)"
           >
             <div
@@ -218,20 +244,21 @@
               :class="
                 selectedKeys.has(item.key)
                   ? 'bg-amber-500 border-amber-500 text-white'
-                  : 'border-slate-300 dark:border-slate-600'
+                  : 'border-slate-300 dark:border-zinc-600'
               "
             >
               <i v-if="selectedKeys.has(item.key)" class="ri-check-line text-xs"></i>
             </div>
-            <div class="w-11 h-11 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-300 flex items-center justify-center flex-shrink-0 overflow-hidden">
+            <div class="w-11 h-11 rounded-xl bg-amber-500/10 text-amber-600 dark:text-[#FFC533] flex items-center justify-center flex-shrink-0 overflow-hidden">
               <img v-if="item.picUrl" :src="item.picUrl" class="w-full h-full object-cover" />
               <i v-else class="ri-disc-line text-lg"></i>
             </div>
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-1.5 min-w-0">
-                <span class="text-sm font-bold text-slate-900 dark:text-white truncate">
+                <span class="text-sm font-bold text-slate-900 dark:text-[#FAFAFA] truncate">
                   {{ item.name }}
                 </span>
+                <track-origin-tag origin="local" />
                 <span
                   class="px-1.5 py-0.5 rounded text-[10px] font-bold flex-shrink-0 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
                 >
@@ -244,25 +271,25 @@
                   文件已失效
                 </span>
               </div>
-              <div class="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">
+              <div class="text-xs text-slate-500 dark:text-[#A1A1AA] truncate mt-0.5">
                 {{ item.artist }} · {{ formatBytes(item.size) }}
               </div>
             </div>
-            <i v-if="!batchMode" class="ri-play-circle-line text-xl text-amber-500 flex-shrink-0"></i>
+            <i v-if="!batchMode" class="ri-play-circle-line text-xl text-amber-500 dark:text-[#FFC533] flex-shrink-0"></i>
           </div>
         </div>
       </n-scrollbar>
 
-      <!-- Tab 3: 已缓存 -->
+      <!-- Tab 4: 已缓存 -->
       <n-scrollbar v-else-if="activeTab === 'cached'" class="h-full">
         <div v-if="cachedItems.length === 0" class="py-16 text-center space-y-2">
-          <i class="ri-hard-drive-2-line text-4xl text-slate-300 dark:text-slate-600"></i>
-          <p class="text-sm text-slate-500 dark:text-slate-400">暂无边听边缓存记录</p>
-          <p class="text-xs text-slate-400">
+          <i class="ri-hard-drive-2-line text-4xl text-slate-300 dark:text-[#71717A]"></i>
+          <p class="text-sm text-slate-500 dark:text-[#A1A1AA]">暂无边听边缓存记录</p>
+          <p class="text-xs text-slate-400 dark:text-[#71717A]">
             {{
               nativeCapabilities.supportsAudioCache
                 ? '听过的在线歌曲会自动缓存在本机，二次播放秒开且省流量'
-                : '当前平台暂未开启磁盘音频缓存，可使用「已下载」与「手机本地」实现离线畅听'
+                : '当前平台暂未开启磁盘音频缓存，可使用「已下载」与「手机音乐」实现离线畅听'
             }}
           </p>
         </div>
@@ -270,7 +297,7 @@
           <div
             v-for="item in cachedItems"
             :key="item.key"
-            class="flex items-center gap-3 p-3 rounded-2xl bg-white/80 dark:bg-[#171e2a]/80 border border-slate-200/70 dark:border-white/5 hover:bg-white dark:hover:bg-[#1d2636] transition-all cursor-pointer"
+            class="flex items-center gap-3 p-3 rounded-2xl bg-white/85 dark:bg-[#131316] border border-slate-200/70 dark:border-white/[0.08] hover:bg-white dark:hover:bg-[#1C1C22] transition-all cursor-pointer"
             @click="batchMode ? toggleSelect(item.key) : playCachedItem(item)"
           >
             <div
@@ -279,7 +306,7 @@
               :class="
                 selectedKeys.has(item.key)
                   ? 'bg-amber-500 border-amber-500 text-white'
-                  : 'border-slate-300 dark:border-slate-600'
+                  : 'border-slate-300 dark:border-zinc-600'
               "
             >
               <i v-if="selectedKeys.has(item.key)" class="ri-check-line text-xs"></i>
@@ -290,14 +317,15 @@
             </div>
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-1.5 min-w-0">
-                <span class="text-sm font-bold text-slate-900 dark:text-white truncate">
+                <span class="text-sm font-bold text-slate-900 dark:text-[#FAFAFA] truncate">
                   {{ item.name }}
                 </span>
+                <track-origin-tag origin="cached" />
                 <span class="px-1.5 py-0.5 rounded text-[10px] font-bold flex-shrink-0 bg-sky-500/15 text-sky-700 dark:text-sky-300">
-                  {{ item.qualityLabel }} · 已缓存
+                  {{ item.qualityLabel }}
                 </span>
               </div>
-              <div class="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">
+              <div class="text-xs text-slate-500 dark:text-[#A1A1AA] truncate mt-0.5">
                 {{ item.artist }}
               </div>
             </div>
@@ -306,20 +334,21 @@
         </div>
       </n-scrollbar>
 
-      <!-- Tab 4: 最近播放 -->
+      <!-- Tab 5: 最近播放 -->
       <n-scrollbar v-else-if="activeTab === 'recent'" class="h-full">
         <div v-if="recentItems.length === 0" class="py-16 text-center space-y-2">
-          <i class="ri-history-line text-4xl text-slate-300 dark:text-slate-600"></i>
-          <p class="text-sm text-slate-500 dark:text-slate-400">暂无最近播放记录</p>
+          <i class="ri-history-line text-4xl text-slate-300 dark:text-[#71717A]"></i>
+          <p class="text-sm text-slate-500 dark:text-[#A1A1AA]">暂无最近播放记录</p>
         </div>
         <div v-else class="space-y-2 pb-16">
           <div
             v-for="song in recentItems"
             :key="song.id"
-            class="flex items-center gap-3 p-3 rounded-2xl bg-white/80 dark:bg-[#171e2a]/80 border border-slate-200/70 dark:border-white/5 hover:bg-white dark:hover:bg-[#1d2636] transition-all cursor-pointer"
+            class="recent-track-row flex items-center gap-3 p-3 rounded-2xl bg-white/85 dark:bg-[#131316] border border-slate-200/70 dark:border-white/[0.08] hover:bg-white dark:hover:bg-[#1C1C22] transition-all cursor-pointer"
+            :class="{ 'is-offline-unavailable': offlineStore.isTrackUnavailableOffline(song) }"
             @click="playRecentSong(song)"
           >
-            <div class="w-11 h-11 rounded-xl overflow-hidden bg-slate-100 dark:bg-slate-800 flex-shrink-0">
+            <div class="w-11 h-11 rounded-xl overflow-hidden bg-slate-100 dark:bg-[#1C1C22] flex-shrink-0">
               <img v-if="song.picUrl || song.al?.picUrl" :src="getImgUrl(song.picUrl || song.al?.picUrl, '100y100')" class="w-full h-full object-cover" />
               <div v-else class="w-full h-full flex items-center justify-center text-slate-400">
                 <i class="ri-music-line"></i>
@@ -327,43 +356,138 @@
             </div>
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-1.5 min-w-0">
-                <span class="text-sm font-bold text-slate-900 dark:text-white truncate">
+                <span class="text-sm font-bold text-slate-900 dark:text-[#FAFAFA] truncate">
                   {{ song.name }}
                 </span>
-                <span
-                  v-if="offlineStore.getOfflineBadge(song)"
-                  class="px-1.5 py-0.5 rounded text-[10px] font-bold flex-shrink-0 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-                >
-                  {{ formatOfflineBadgeLabel(offlineStore.getOfflineBadge(song)) }}
-                </span>
+                <track-origin-tag :song="song" show-online />
               </div>
-              <div class="text-xs text-slate-500 dark:text-slate-400 truncate mt-0.5">
+              <div class="text-xs text-slate-500 dark:text-[#A1A1AA] truncate mt-0.5">
                 {{ formatArtists(song) }} · 听过 {{ song.count || 1 }} 次
               </div>
             </div>
-            <i class="ri-play-circle-line text-xl text-amber-500 flex-shrink-0"></i>
+            <i class="ri-play-circle-line text-xl text-amber-500 dark:text-[#FFC533] flex-shrink-0"></i>
           </div>
         </div>
       </n-scrollbar>
 
-      <!-- Tab 5: 收藏（复用现有 Favorite 视图，永不受批量删文件影响） -->
-      <div v-else class="h-full rounded-[24px] overflow-hidden bg-white/75 dark:bg-[#171e2a]/75 border border-sky-100/70 dark:border-white/10">
-        <favorite-view class="h-full" />
-      </div>
+      <!-- Tab 6: 歌单（本地自建歌单 + 云端创建/收藏歌单） -->
+      <n-scrollbar v-else class="h-full">
+        <div v-if="loadingPlaylists" class="py-16 flex justify-center">
+          <n-spin size="medium" />
+        </div>
+        <div v-else-if="customPlaylists.length === 0 && cloudPlaylists.length === 0" class="py-16 text-center space-y-3">
+          <i class="ri-play-list-2-line text-4xl text-slate-300 dark:text-[#71717A]"></i>
+          <p class="text-sm text-slate-500 dark:text-[#A1A1AA]">暂无自建或收藏歌单</p>
+          <p class="text-xs text-slate-400 dark:text-[#71717A]">
+            可在播放队列点击「存为歌单」保存到本地，或登录账号同步网易云歌单
+          </p>
+          <button
+            v-if="!userStore.user"
+            type="button"
+            class="px-5 py-2 rounded-full text-xs font-extrabold text-white shadow-md"
+            style="background: linear-gradient(135deg, #ffc21c 0%, #eb8f00 100%)"
+            @click="goToUserAccount"
+          >
+            登录同步网易云歌单
+          </button>
+        </div>
+        <div v-else class="space-y-4 pb-16">
+          <!-- 本地自建歌单 -->
+          <div v-if="customPlaylists.length > 0" class="space-y-2">
+            <div class="px-1 text-xs font-bold text-slate-500 dark:text-[#A1A1AA] flex items-center justify-between">
+              <span>本地自建歌单</span>
+              <span>{{ customPlaylists.length }} 个</span>
+            </div>
+            <div
+              v-for="pl in customPlaylists"
+              :key="pl.id"
+              class="flex items-center gap-3 p-3 rounded-2xl bg-white/85 dark:bg-[#131316] border border-slate-200/70 dark:border-white/[0.08] hover:bg-white dark:hover:bg-[#1C1C22] transition-all cursor-pointer"
+              @click="openCustomPlaylist(pl)"
+            >
+              <div class="w-12 h-12 rounded-xl overflow-hidden bg-amber-500/10 text-amber-500 dark:text-[#FFC533] flex items-center justify-center flex-shrink-0">
+                <img
+                  v-if="pl.tracks?.[0]?.picUrl || pl.tracks?.[0]?.al?.picUrl"
+                  :src="getImgUrl(pl.tracks[0].picUrl || pl.tracks[0].al?.picUrl, '100y100')"
+                  class="w-full h-full object-cover"
+                />
+                <i v-else class="ri-play-list-2-fill text-xl"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-1.5 min-w-0">
+                  <span class="text-sm font-bold text-slate-900 dark:text-[#FAFAFA] truncate">
+                    {{ pl.name }}
+                  </span>
+                  <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/12 text-amber-700 dark:text-[#FFC533] border border-amber-500/20 flex-shrink-0">
+                    自建
+                  </span>
+                </div>
+                <div class="text-xs text-slate-500 dark:text-[#A1A1AA] mt-0.5">
+                  {{ pl.tracks?.length || 0 }} 首歌曲
+                </div>
+              </div>
+              <i class="ri-arrow-right-s-line text-lg text-slate-400 dark:text-[#71717A] flex-shrink-0"></i>
+            </div>
+          </div>
+
+          <!-- 网易云创建与收藏歌单 -->
+          <div v-if="cloudPlaylists.length > 0" class="space-y-2">
+            <div class="px-1 text-xs font-bold text-slate-500 dark:text-[#A1A1AA] flex items-center justify-between">
+              <span>云端创建与收藏歌单</span>
+              <span>{{ cloudPlaylists.length }} 个</span>
+            </div>
+            <div
+              v-for="item in cloudPlaylists"
+              :key="item.id"
+              class="flex items-center gap-3 p-3 rounded-2xl bg-white/85 dark:bg-[#131316] border border-slate-200/70 dark:border-white/[0.08] hover:bg-white dark:hover:bg-[#1C1C22] transition-all cursor-pointer"
+              @click="openCloudPlaylist(item)"
+            >
+              <div class="w-12 h-12 rounded-xl overflow-hidden bg-slate-100 dark:bg-[#1C1C22] flex items-center justify-center flex-shrink-0">
+                <img
+                  v-if="item.coverImgUrl || item.picUrl"
+                  :src="getImgUrl(item.coverImgUrl || item.picUrl, '100y100')"
+                  class="w-full h-full object-cover"
+                />
+                <i v-else class="ri-disc-line text-xl text-slate-400"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-1.5 min-w-0">
+                  <span class="text-sm font-bold text-slate-900 dark:text-[#FAFAFA] truncate">
+                    {{ item.name }}
+                  </span>
+                  <span
+                    v-if="userStore.user && item.creator?.userId === userStore.user.userId"
+                    class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-500/12 text-sky-700 dark:text-sky-300 border border-sky-500/20 flex-shrink-0"
+                  >
+                    创建
+                  </span>
+                </div>
+                <div class="text-xs text-slate-500 dark:text-[#A1A1AA] truncate mt-0.5">
+                  {{ item.trackCount || 0 }} 首 · {{ item.creator?.nickname || '网易云歌单' }}
+                </div>
+              </div>
+              <i class="ri-arrow-right-s-line text-lg text-slate-400 dark:text-[#71717A] flex-shrink-0"></i>
+            </div>
+          </div>
+        </div>
+      </n-scrollbar>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { useDialog, useMessage } from 'naive-ui';
-import { computed, onMounted, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { computed, onActivated, onMounted, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 
+import { getUserPlaylist } from '@/api/user';
+import { navigateToMusicList } from '@/components/common/MusicListNavigator';
+import TrackOriginTag from '@/components/common/TrackOriginTag.vue';
 import { useFavoriteStore } from '@/store/modules/favorite';
 import { useLocalMusicStore } from '@/store/modules/localMusic';
 import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';
 import { usePlayerStore } from '@/store/modules/player';
 import { usePlayHistoryStore } from '@/store/modules/playHistory';
+import { useUserStore } from '@/store/modules/user';
 import type { SongResult } from '@/types/music';
 import { getImgUrl } from '@/utils';
 import { getNativeCapabilities, getNativeIpc, isAndroid, triggerHaptic } from '@/utils/androidBridge';
@@ -371,10 +495,17 @@ import { inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
 import FavoriteView from '@/views/favorite/index.vue';
 
 defineOptions({
-  name: 'MyMusicLibrary'
+  name: 'Library'
 });
 
-type LibraryTab = 'downloaded' | 'local' | 'cached' | 'recent' | 'favorite';
+type LibraryTab = 'favorite' | 'downloaded' | 'local' | 'cached' | 'recent' | 'playlists';
+
+interface CustomPlaylistEntry {
+  id: string;
+  name: string;
+  updatedAt?: number;
+  tracks: SongResult[];
+}
 
 interface LibraryFileRow {
   key: string;
@@ -389,7 +520,10 @@ interface LibraryFileRow {
   rawSong: SongResult;
 }
 
+const CUSTOM_PLAYLISTS_STORAGE_KEY = 'xiaopang_custom_playlists_v1';
+
 const route = useRoute();
+const router = useRouter();
 const message = useMessage();
 const dialog = useDialog();
 const playerStore = usePlayerStore();
@@ -397,13 +531,16 @@ const offlineStore = useOfflineAvailabilityStore();
 const localMusicStore = useLocalMusicStore();
 const playHistoryStore = usePlayHistoryStore();
 const favoriteStore = useFavoriteStore();
+const userStore = useUserStore();
 const nativeCapabilities = getNativeCapabilities();
 
-const activeTab = ref<LibraryTab>('downloaded');
+const activeTab = ref<LibraryTab>(offlineStore.isOffline ? 'downloaded' : 'favorite');
 const batchMode = ref(false);
 const selectedKeys = ref<Set<string>>(new Set());
 const loadingDownloaded = ref(false);
+const loadingPlaylists = ref(false);
 const rawDownloadedList = ref<any[]>([]);
+const customPlaylists = ref<CustomPlaylistEntry[]>([]);
 const invalidPathSet = ref<Set<string>>(new Set());
 const audioCacheBytes = ref<number>(0);
 
@@ -428,18 +565,44 @@ const inferQualityTag = (pathOrUrl?: string, existing?: any): string => {
   return meta.qualityLabel || '标准';
 };
 
-const formatOfflineBadgeLabel = (badge: 'downloaded' | 'cached' | 'local' | null): string => {
-  if (badge === 'downloaded') return '已下载';
-  if (badge === 'cached') return '已缓存';
-  if (badge === 'local') return '本地';
-  return '';
-};
-
 const refreshAudioCacheSize = () => {
   if (nativeCapabilities.supportsAudioCache) {
     audioCacheBytes.value = Number((window as any).AlgerAndroid?.getAudioCacheSize?.() || 0);
   } else {
     audioCacheBytes.value = 0;
+  }
+};
+
+const loadCustomPlaylists = () => {
+  try {
+    const raw = localStorage.getItem(CUSTOM_PLAYLISTS_STORAGE_KEY);
+    if (!raw) {
+      customPlaylists.value = [];
+      return;
+    }
+    const parsed = JSON.parse(raw);
+    customPlaylists.value = Array.isArray(parsed)
+      ? parsed.filter((item) => item && typeof item.name === 'string')
+      : [];
+  } catch {
+    customPlaylists.value = [];
+  }
+};
+
+const ensureCloudPlaylistsLoaded = async () => {
+  if (offlineStore.isOffline || !userStore.user?.userId || userStore.playList.length > 0) {
+    return;
+  }
+  loadingPlaylists.value = true;
+  try {
+    const res = await getUserPlaylist(userStore.user.userId);
+    if (Array.isArray(res?.data?.playlist)) {
+      userStore.playList = res.data.playlist;
+    }
+  } catch {
+    // 离线安静模式：拉取失败不打扰用户
+  } finally {
+    loadingPlaylists.value = false;
   }
 };
 
@@ -577,6 +740,7 @@ const cachedItems = computed<LibraryFileRow[]>(() => {
 });
 
 const recentItems = computed(() => playHistoryStore.musicHistory || []);
+const cloudPlaylists = computed(() => userStore.playList || []);
 
 const downloadedTotalBytes = computed(() =>
   downloadedItems.value.reduce((acc, i) => acc + (i.size || 0), 0)
@@ -594,11 +758,16 @@ const invalidFileCount = computed(
 );
 
 const libraryTabs = computed<Array<{ id: LibraryTab; label: string; count: number }>>(() => [
+  { id: 'favorite', label: '收藏', count: favoriteStore.favoriteList.length },
   { id: 'downloaded', label: '已下载', count: downloadedItems.value.length },
-  { id: 'local', label: '手机本地', count: localItems.value.length },
+  { id: 'local', label: '手机音乐', count: localItems.value.length },
   { id: 'cached', label: '已缓存', count: cachedItems.value.length },
   { id: 'recent', label: '最近播放', count: recentItems.value.length },
-  { id: 'favorite', label: '收藏', count: favoriteStore.favoriteList.length }
+  {
+    id: 'playlists',
+    label: '歌单',
+    count: customPlaylists.value.length + cloudPlaylists.value.length
+  }
 ]);
 
 const canBatchDeleteCurrentTab = computed(
@@ -631,11 +800,20 @@ const primaryActionIcon = computed(() => {
   return 'ri-play-fill';
 });
 
+const goToUserAccount = () => {
+  triggerHaptic('light');
+  void router.push('/user');
+};
+
 const switchTab = (tab: LibraryTab) => {
   triggerHaptic('selection');
   activeTab.value = tab;
   batchMode.value = false;
   selectedKeys.value = new Set();
+  if (tab === 'playlists') {
+    loadCustomPlaylists();
+    void ensureCloudPlaylistsLoaded();
+  }
 };
 
 const toggleBatchMode = () => {
@@ -709,6 +887,34 @@ const playCachedItem = async (item: LibraryFileRow) => {
 const playRecentSong = async (song: SongResult) => {
   playerStore.setPlayList(recentItems.value);
   await playerStore.setPlay(song);
+};
+
+const openCustomPlaylist = (pl: CustomPlaylistEntry) => {
+  triggerHaptic('light');
+  navigateToMusicList(router, {
+    id: pl.id,
+    type: 'custom',
+    name: pl.name,
+    songList: pl.tracks || [],
+    listInfo: {
+      id: pl.id,
+      name: pl.name,
+      coverImgUrl: pl.tracks?.[0]?.picUrl || pl.tracks?.[0]?.al?.picUrl || '',
+      description: '本地自建歌单'
+    },
+    canRemove: false
+  });
+};
+
+const openCloudPlaylist = (item: any) => {
+  triggerHaptic('light');
+  navigateToMusicList(router, {
+    id: item.id,
+    type: 'playlist',
+    name: item.name,
+    listInfo: item,
+    canRemove: item.creator?.userId === userStore.user?.userId
+  });
 };
 
 const handleImportOrScanLocal = async () => {
@@ -817,21 +1023,50 @@ watch(
   () => route.query.tab,
   (tab) => {
     const val = String(tab || '') as LibraryTab;
-    if (['downloaded', 'local', 'cached', 'recent', 'favorite'].includes(val)) {
+    if (['favorite', 'downloaded', 'local', 'cached', 'recent', 'playlists'].includes(val)) {
       activeTab.value = val;
     }
   },
   { immediate: true }
 );
 
-onMounted(async () => {
+const refreshLibraryData = async () => {
   offlineStore.ensureInitialized();
   refreshAudioCacheSize();
+  loadCustomPlaylists();
   await Promise.all([loadDownloadedFiles(), localMusicStore.loadFromCache()]);
   void verifyFileExistence(localMusicStore.musicList.map((e) => e.filePath).filter(Boolean));
+  if (activeTab.value === 'playlists') {
+    void ensureCloudPlaylistsLoaded();
+  }
+};
+
+onMounted(async () => {
+  await refreshLibraryData();
+  if (!route.query.tab && offlineStore.isOffline) {
+    if (downloadedItems.value.length === 0 && localItems.value.length > 0) {
+      activeTab.value = 'local';
+    } else {
+      activeTab.value = 'downloaded';
+    }
+  }
   if (route.query.autoScan === '1') {
     activeTab.value = 'local';
     await handleImportOrScanLocal();
   }
 });
+
+onActivated(() => {
+  void refreshLibraryData();
+});
 </script>
+
+<style lang="scss" scoped>
+.recent-track-row.is-offline-unavailable {
+  opacity: 0.46;
+
+  img {
+    filter: grayscale(0.35);
+  }
+}
+</style>

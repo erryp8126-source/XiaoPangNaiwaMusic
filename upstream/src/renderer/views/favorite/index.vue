@@ -100,6 +100,7 @@
             :key="song.id"
             :item="song"
             :favorite="false"
+            :show-origin="showOrigin"
             class="rounded-xl hover:bg-gray-100 dark:hover:bg-neutral-800 transition-colors"
             :class="[
               setAnimationClass('animate__bounceInLeft'),
@@ -222,6 +223,10 @@ const currentPage = ref(1);
 
 const props = defineProps({
   isComponent: {
+    type: Boolean,
+    default: false
+  },
+  showOrigin: {
     type: Boolean,
     default: false
   }

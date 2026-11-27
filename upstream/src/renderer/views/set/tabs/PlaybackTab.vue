@@ -138,6 +138,21 @@
       </setting-item>
 
       <setting-item
+        v-if="isAndroid && nativeCapabilities.supportsFloatingLyric"
+        inline
+        title="横屏时自动隐藏桌面歌词"
+        description="看视频或玩游戏进入横屏时临时隐藏悬浮歌词，切回竖屏自动恢复（默认关闭，不会关闭桌面歌词总开关）"
+      >
+        <n-switch
+          v-model:value="floatingLyricHideInLandscape"
+          @update:value="handleToggleFloatingLyricHideInLandscape"
+        >
+          <template #checked>{{ t('common.on') }}</template>
+          <template #unchecked>{{ t('common.off') }}</template>
+        </n-switch>
+      </setting-item>
+
+      <setting-item
         v-if="isAndroid"
         inline
         title="均衡器 (EQ)"
@@ -238,6 +253,21 @@
       </setting-item>
 
       <setting-item
+        v-if="isRealAndroid"
+        inline
+        title="蓝牙耳机 / 车机连接时自动续播"
+        description="蓝牙音频设备重新连接且当前存在暂停中的曲目时自动恢复播放（默认关闭，通话或被其他应用打断时不触发）"
+      >
+        <n-switch
+          v-model:value="autoResumeOnBluetoothConnect"
+          @update:value="handleToggleAutoResumeOnBluetoothConnect"
+        >
+          <template #checked>{{ t('common.on') }}</template>
+          <template #unchecked>{{ t('common.off') }}</template>
+        </n-switch>
+      </setting-item>
+
+      <setting-item
         v-if="isElectron"
         :title="t('settings.playback.audioDevice')"
         :description="t('settings.playback.audioDeviceDesc')"
@@ -286,14 +316,18 @@ import EqControl from '@/components/EQControl.vue';
 import AudioDeviceSettings from '@/components/settings/AudioDeviceSettings.vue';
 import MusicSourceSettings from '@/components/settings/MusicSourceSettings.vue';
 import { type Platform } from '@/types/music';
-import { isAndroid, isElectron, isNative } from '@/utils';
+import { isAndroid, isElectron, isNative, isRealAndroid } from '@/utils';
 import {
   AUDIO_CACHE_MAX_MB_OPTIONS,
   formatAudioCacheLimitMb,
+  getAutoResumeOnBluetoothConnect,
+  getFloatingLyricHideInLandscape,
   getNativeAudioCacheMaxMb,
   getNativeCapabilities,
   offAndroidEvent,
   onAndroidEvent,
+  setAutoResumeOnBluetoothConnect,
+  setFloatingLyricHideInLandscape,
   setNativeAudioCacheMaxMb
 } from '@/utils/androidBridge';
 import {
@@ -388,6 +422,26 @@ const floatingLyricLocked = ref<boolean>(
     ? Boolean((window as any).AlgerAndroid?.isFloatingLyricLocked?.())
     : false
 );
+const floatingLyricHideInLandscape = ref<boolean>(
+  nativeCapabilities.supportsFloatingLyric ? getFloatingLyricHideInLandscape() : false
+);
+const autoResumeOnBluetoothConnect = ref<boolean>(
+  isRealAndroid ? getAutoResumeOnBluetoothConnect() : false
+);
+
+const handleToggleFloatingLyricHideInLandscape = (val: boolean) => {
+  if (!nativeCapabilities.supportsFloatingLyric) return;
+  floatingLyricHideInLandscape.value = setFloatingLyricHideInLandscape(val);
+};
+
+const handleToggleAutoResumeOnBluetoothConnect = (val: boolean) => {
+  if (!isRealAndroid) return;
+  autoResumeOnBluetoothConnect.value = setAutoResumeOnBluetoothConnect(val);
+};
+
+const handleFloatingLyricLandscapeSettingChanged = (_: any, payload: any) => {
+  floatingLyricHideInLandscape.value = Boolean(payload?.enabled);
+};
 
 const handleToggleFloatingLyric = (val: boolean) => {
   if (!nativeCapabilities.supportsFloatingLyric) return;
@@ -416,9 +470,19 @@ const handleFloatingLyricClosed = () => {
 };
 
 onMounted(() => {
+  if (isRealAndroid) {
+    autoResumeOnBluetoothConnect.value = getAutoResumeOnBluetoothConnect();
+  }
   if (nativeCapabilities.supportsFloatingLyric) {
+    floatingLyricEnabled.value = Boolean((window as any).AlgerAndroid?.isFloatingLyricEnabled?.());
+    floatingLyricLocked.value = Boolean((window as any).AlgerAndroid?.isFloatingLyricLocked?.());
+    floatingLyricHideInLandscape.value = getFloatingLyricHideInLandscape();
     onAndroidEvent('floating-lyric-state-changed', handleFloatingLyricStateChanged);
     onAndroidEvent('floating-lyric-closed', handleFloatingLyricClosed);
+    onAndroidEvent(
+      'floating-lyric-landscape-setting-changed',
+      handleFloatingLyricLandscapeSettingChanged
+    );
   }
 });
 
@@ -426,6 +490,10 @@ onUnmounted(() => {
   if (nativeCapabilities.supportsFloatingLyric) {
     offAndroidEvent('floating-lyric-state-changed', handleFloatingLyricStateChanged);
     offAndroidEvent('floating-lyric-closed', handleFloatingLyricClosed);
+    offAndroidEvent(
+      'floating-lyric-landscape-setting-changed',
+      handleFloatingLyricLandscapeSettingChanged
+    );
   }
 });
 

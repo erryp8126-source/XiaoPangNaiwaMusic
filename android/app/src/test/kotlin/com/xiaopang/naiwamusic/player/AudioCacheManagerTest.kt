@@ -1,10 +1,15 @@
 package com.xiaopang.naiwamusic.player
 
+import androidx.media3.datasource.cache.Cache
 import com.xiaopang.naiwamusic.config.AppPrefs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
+import java.io.IOException
+import java.nio.file.Files
 
 class AudioCacheManagerTest {
     @Test
@@ -119,5 +124,67 @@ class AudioCacheManagerTest {
                 isRemoteHttpUrl = false
             )
         )
+    }
+
+    @Test
+    fun wipesCorruptedCacheDirectoryAndRetriesOnceOnRecoverableInitFailure() {
+        val tempDir = Files.createTempDirectory("naiwa-cache-heal-ok").toFile()
+        try {
+            val corruptedIndex = File(tempDir, "cached_content_index.exi").apply {
+                writeText("corrupted_binary_header")
+            }
+            assertTrue(corruptedIndex.exists())
+
+            var attempts = 0
+            var resetInvoked = false
+            val result = AudioCacheManager.initCacheWithSelfHeal(
+                cacheDir = tempDir,
+                initializer = { dir ->
+                    attempts++
+                    if (attempts == 1) {
+                        throw Cache.CacheException("Corrupted SimpleCache index")
+                    }
+                    assertTrue(dir.exists())
+                    assertFalse(File(dir, "cached_content_index.exi").exists())
+                    "recovered-cache"
+                },
+                onReset = { _, err ->
+                    resetInvoked = err is Cache.CacheException
+                }
+            )
+
+            assertEquals("recovered-cache", result)
+            assertEquals(2, attempts)
+            assertTrue(resetInvoked)
+            assertTrue(tempDir.exists())
+
+            // IOException / IllegalStateException 同样触发自愈并在二次失败时安全返回 null
+            var ioAttempts = 0
+            val ioFallback = AudioCacheManager.initCacheWithSelfHeal<String>(
+                cacheDir = tempDir,
+                initializer = {
+                    ioAttempts++
+                    throw IOException("disk index corrupt")
+                }
+            )
+            assertNull(ioFallback)
+            assertEquals(2, ioAttempts)
+
+            // 非缓存损坏类异常不得清空缓存目录
+            val keepFile = File(tempDir, "keep_marker.dat").apply { writeText("ok") }
+            var nonRecAttempts = 0
+            val nonRecResult = AudioCacheManager.initCacheWithSelfHeal<String>(
+                cacheDir = tempDir,
+                initializer = {
+                    nonRecAttempts++
+                    throw IllegalArgumentException("bad config")
+                }
+            )
+            assertNull(nonRecResult)
+            assertEquals(1, nonRecAttempts)
+            assertTrue(keepFile.exists())
+        } finally {
+            tempDir.deleteRecursively()
+        }
     }
 }

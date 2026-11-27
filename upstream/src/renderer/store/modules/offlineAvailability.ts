@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 
 import {
   fetchNativeOfflinePlayableIds,
@@ -9,12 +9,14 @@ import {
 } from '@/utils/androidBridge';
 
 export type OfflineBadgeType = 'downloaded' | 'cached' | 'local' | null;
+export type TrackOriginType = 'local' | 'downloaded' | 'cached' | 'online';
 
 export const useOfflineAvailabilityStore = defineStore('offlineAvailability', () => {
   const downloadedIds = ref<Set<string>>(new Set());
   const cachedIds = ref<Set<string>>(new Set());
   const localIds = ref<Set<string>>(new Set());
   const isOnline = ref<boolean>(typeof navigator !== 'undefined' ? navigator.onLine !== false : true);
+  const isOffline = computed(() => !isOnline.value);
   const initialized = ref(false);
 
   let listenersBound = false;
@@ -186,11 +188,24 @@ export const useOfflineAvailabilityStore = defineStore('offlineAvailability', ()
     return getOfflineBadge(song) !== null;
   };
 
+  const getTrackOrigin = (
+    song: { id?: string | number; playMusicUrl?: string; isDownloadedTrack?: boolean } | null | undefined
+  ): TrackOriginType => {
+    return getOfflineBadge(song) ?? 'online';
+  };
+
+  const isTrackUnavailableOffline = (
+    song: { id?: string | number; playMusicUrl?: string; isDownloadedTrack?: boolean } | null | undefined
+  ): boolean => {
+    return isOffline.value && !isOfflinePlayable(song);
+  };
+
   return {
     downloadedIds,
     cachedIds,
     localIds,
     isOnline,
+    isOffline,
     initialized,
     refresh,
     ensureInitialized,
@@ -199,6 +214,8 @@ export const useOfflineAvailabilityStore = defineStore('offlineAvailability', ()
     markCached,
     markDownloaded,
     getOfflineBadge,
-    isOfflinePlayable
+    getTrackOrigin,
+    isOfflinePlayable,
+    isTrackUnavailableOffline
   };
 });

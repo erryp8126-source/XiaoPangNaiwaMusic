@@ -8,6 +8,7 @@
     :can-remove="canRemove"
     :is-next="isNext"
     :index="index"
+    :show-origin="showOrigin"
     @play="(...args) => $emit('play', ...args)"
     @select="(...args) => $emit('select', ...args)"
     @remove-song="(...args) => $emit('remove-song', ...args)"
@@ -38,6 +39,7 @@ const props = withDefaults(
     canRemove?: boolean;
     isNext?: boolean;
     index?: number;
+    showOrigin?: boolean;
   }>(),
   {
     mini: false,
@@ -49,7 +51,8 @@ const props = withDefaults(
     selected: false,
     canRemove: false,
     isNext: false,
-    index: undefined
+    index: undefined,
+    showOrigin: false
   }
 );
 

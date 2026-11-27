@@ -22,6 +22,21 @@ const require = createRequire(import.meta.url);
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const ncmApi: Record<string, any> = require("netease-cloud-music-api-alger");
 
+export const FALLBACK_SERVICE_VERSION = "1.0.1";
+
+function resolveServiceVersion(): string {
+  try {
+    const pkg = require("../../package.json") as { version?: string };
+    const ver = typeof pkg?.version === "string" ? pkg.version.trim() : "";
+    if (ver) return ver;
+  } catch {
+    // Bundled Lambda runtime without relative package.json falls back to synced version constant
+  }
+  return FALLBACK_SERVICE_VERSION;
+}
+
+export const SERVICE_VERSION = resolveServiceVersion();
+
 const DEFAULT_CN_IP = "116.25.146.177";
 const MAX_BODY_BYTES = 64 * 1024; // 限制单次请求体最大 64 KB，防资源滥用
 const MAX_OUTBOUND_REDIRECTS = 3;
@@ -361,27 +376,88 @@ function extractClientIp(req: Request, context?: Context): string {
   return "unknown";
 }
 
+export const UNBLOCK_ROUTES = new Set(["/music", "/music/unblock"]);
+
+export const AUTH_COOKIE_ROUTES = new Set([
+  "/login/qr/check",
+  "/login/cellphone",
+  "/login/status",
+  "/logout",
+]);
+
+export const WRITE_RATE_LIMIT_ROUTES = new Set([
+  ...AUTH_COOKIE_ROUTES,
+  "/login/qr/key",
+  "/login/qr/create",
+  "/like",
+  "/scrobble",
+  "/fm_trash",
+  "/recommend/songs/dislike",
+  "/playlist/create",
+  "/playlist/tracks",
+  "/playlist/subscribe",
+  "/playlist/import/name/task/create",
+  "/album/sub",
+  "/dj/sub",
+]);
+
+export type RateLimitTier = "standard" | "unblock" | "write";
+
+export interface RateLimitPolicy {
+  tier: RateLimitTier;
+  maxReq: number;
+  windowSec: number;
+}
+
+export function resolveRateLimitPolicy(apiPath: string): RateLimitPolicy {
+  const cleanPath = apiPath.replace(/\/+$/, "") || "/";
+  const baseWindowSec = Math.max(1, Number(process.env.RATE_LIMIT_WINDOW_SEC || 60) || 60);
+  const strictWindowSec = Math.max(
+    1,
+    Number(process.env.RATE_LIMIT_STRICT_WINDOW_SEC || baseWindowSec) || baseWindowSec
+  );
+
+  if (UNBLOCK_ROUTES.has(cleanPath)) {
+    const maxReq = Math.max(
+      1,
+      Number(process.env.RATE_LIMIT_UNBLOCK_MAX || process.env.RATE_LIMIT_STRICT_MAX || 30) || 30
+    );
+    return { tier: "unblock", maxReq, windowSec: strictWindowSec };
+  }
+
+  if (AUTH_COOKIE_ROUTES.has(cleanPath) || WRITE_RATE_LIMIT_ROUTES.has(cleanPath)) {
+    const maxReq = Math.max(
+      1,
+      Number(process.env.RATE_LIMIT_WRITE_MAX || process.env.RATE_LIMIT_STRICT_MAX || 30) || 30
+    );
+    return { tier: "write", maxReq, windowSec: strictWindowSec };
+  }
+
+  const maxReq = Math.max(1, Number(process.env.RATE_LIMIT_MAX || 120) || 120);
+  return { tier: "standard", maxReq, windowSec: baseWindowSec };
+}
+
 interface RateLimitDecision {
   allowed: boolean;
+  tier: RateLimitTier;
   limit: number;
   remaining: number;
   retryAfterSec: number;
 }
 
 /**
- * 按客户端 IP（x-nf-client-connection-ip）执行窗口限流：
+ * 按客户端 IP（x-nf-client-connection-ip）及路由级别（standard / unblock / write）执行分桶窗口限流：
  * 1. 优先使用可配置的外部 Redis REST 存储（RATE_LIMIT_REDIS_REST_URL + RATE_LIMIT_REDIS_REST_TOKEN）
  * 2. 其次使用 Netlify Blobs 部署隔离存储（避免 Serverless 冷启动清零计数）
  * 3. 本地测试或无 Blobs 运行时优雅回退至进程内存窗口计数
  */
-async function checkIpRateLimit(clientIp: string): Promise<RateLimitDecision> {
-  const maxReq = Math.max(1, Number(process.env.RATE_LIMIT_MAX || 120) || 120);
-  const windowSec = Math.max(1, Number(process.env.RATE_LIMIT_WINDOW_SEC || 60) || 60);
+async function checkIpRateLimit(clientIp: string, apiPath: string = "/"): Promise<RateLimitDecision> {
+  const { tier, maxReq, windowSec } = resolveRateLimitPolicy(apiPath);
   const nowSec = Math.floor(Date.now() / 1000);
   const windowBucket = Math.floor(nowSec / windowSec);
   const retryAfterSec = Math.max(1, (windowBucket + 1) * windowSec - nowSec);
   const ipHash = crypto.createHash("sha256").update(clientIp).digest("hex").slice(0, 24);
-  const key = `rl_${windowBucket}_${ipHash}`;
+  const key = `rl_${tier}_${windowBucket}_${ipHash}`;
 
   // 1. 可选外部 Redis REST 存储
   const redisUrl = (process.env.RATE_LIMIT_REDIS_REST_URL || "").trim().replace(/\/+$/, "");
@@ -406,6 +482,7 @@ async function checkIpRateLimit(clientIp: string): Promise<RateLimitDecision> {
         if (Number.isFinite(count) && count > 0) {
           return {
             allowed: count <= maxReq,
+            tier,
             limit: maxReq,
             remaining: Math.max(0, maxReq - count),
             retryAfterSec,
@@ -425,6 +502,7 @@ async function checkIpRateLimit(clientIp: string): Promise<RateLimitDecision> {
     await store.setJSON(key, { count: nextCount, windowBucket, updatedAt: Date.now() });
     return {
       allowed: nextCount <= maxReq,
+      tier,
       limit: maxReq,
       remaining: Math.max(0, maxReq - nextCount),
       retryAfterSec,
@@ -444,6 +522,7 @@ async function checkIpRateLimit(clientIp: string): Promise<RateLimitDecision> {
   memoryRateLimitMap.set(key, { count: nextCount, expiresAt: nowMs + windowSec * 1000 });
   return {
     allowed: nextCount <= maxReq,
+    tier,
     limit: maxReq,
     remaining: Math.max(0, maxReq - nextCount),
     retryAfterSec,
@@ -542,12 +621,7 @@ const ALLOWED_ROUTES = new Set([
   "/record/recent/dj",
 ]);
 
-const AUTH_COOKIE_ROUTES = new Set([
-  "/login/qr/check",
-  "/login/cellphone",
-  "/login/status",
-  "/logout",
-]);
+// AUTH_COOKIE_ROUTES defined & exported above near resolveRateLimitPolicy
 
 let cachedAnonCookie = "";
 let anonInitPromise: Promise<string> | null = null;
@@ -1119,9 +1193,10 @@ export default async (req: Request, context: Context): Promise<Response> => {
   }
 
   const clientIp = extractClientIp(req, context);
-  const rl = await checkIpRateLimit(clientIp);
+  const rl = await checkIpRateLimit(clientIp, apiPath);
   const rateHeaders: Record<string, string> = {
     ...corsHeaders,
+    "X-RateLimit-Tier": rl.tier,
     "X-RateLimit-Limit": String(rl.limit),
     "X-RateLimit-Remaining": String(rl.remaining),
   };
@@ -1139,8 +1214,14 @@ export default async (req: Request, context: Context): Promise<Response> => {
   }
 
   if (apiPath === "/" || apiPath === "/health") {
+    const commit = (process.env.COMMIT_REF || "").trim().slice(0, 7) || "local";
     return Response.json(
-      { ok: true, service: "xiaopang-naiwa-music-api", version: "5.1.4" },
+      {
+        ok: true,
+        service: "xiaopang-naiwa-music-api",
+        version: SERVICE_VERSION,
+        commit,
+      },
       { status: 200, headers: rateHeaders }
     );
   }
@@ -1150,7 +1231,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
   if (Number.isFinite(declaredLen) && declaredLen > MAX_BODY_BYTES) {
     return Response.json(
       { code: 413, msg: "Payload Too Large" },
-      { status: 413, headers: corsHeaders }
+      { status: 413, headers: rateHeaders }
     );
   }
 
@@ -1168,7 +1249,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       if (new TextEncoder().encode(rawText).byteLength > MAX_BODY_BYTES) {
         return Response.json(
           { code: 413, msg: "Payload Too Large" },
-          { status: 413, headers: corsHeaders }
+          { status: 413, headers: rateHeaders }
         );
       }
       if (rawText.trim()) {
@@ -1187,7 +1268,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
     } catch {
       return Response.json(
         { code: 400, msg: "Malformed request body" },
-        { status: 400, headers: corsHeaders }
+        { status: 400, headers: rateHeaders }
       );
     }
   }
@@ -1199,14 +1280,14 @@ export default async (req: Request, context: Context): Promise<Response> => {
     }
   }
 
-  if (apiPath === "/music") {
-    return handleMusicUnblock(params, corsHeaders);
+  if (UNBLOCK_ROUTES.has(apiPath)) {
+    return handleMusicUnblock(params, rateHeaders);
   }
 
   if (!ALLOWED_ROUTES.has(apiPath)) {
     return Response.json(
       { code: 404, msg: `Route not allowed: ${apiPath}` },
-      { status: 404, headers: corsHeaders }
+      { status: 404, headers: rateHeaders }
     );
   }
 
@@ -1215,7 +1296,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
   if (typeof apiFn !== "function") {
     return Response.json(
       { code: 404, msg: `Unknown API route: ${apiPath}` },
-      { status: 404, headers: corsHeaders }
+      { status: 404, headers: rateHeaders }
     );
   }
 
@@ -1243,7 +1324,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
       body = upgradeNeteaseUrlsToHttps(body);
     }
 
-    const resHeaders = new Headers(corsHeaders);
+    const resHeaders = new Headers(rateHeaders);
     resHeaders.set("Content-Type", "application/json; charset=utf-8");
 
     if (
@@ -1284,7 +1365,7 @@ export default async (req: Request, context: Context): Promise<Response> => {
     return new Response(typeof errBody === "string" ? errBody : JSON.stringify(errBody), {
       status: errStatus >= 200 && errStatus < 600 ? errStatus : 500,
       headers: {
-        ...corsHeaders,
+        ...rateHeaders,
         "Content-Type": "application/json; charset=utf-8",
       },
     });

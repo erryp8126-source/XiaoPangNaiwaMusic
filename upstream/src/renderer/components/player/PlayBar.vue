@@ -34,6 +34,7 @@
     </div>
     <div class="play-bar-img-wrapper" @click="setMusicFull">
       <n-image
+        :key="`${playMusic?.id ?? ''}|${playMusic?.picUrl ?? ''}`"
         :src="getImgUrl(playMusic?.picUrl, '100y100')"
         class="play-bar-img"
         lazy

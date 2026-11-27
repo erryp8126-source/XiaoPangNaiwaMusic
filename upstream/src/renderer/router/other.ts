@@ -25,11 +25,12 @@ const otherRouter = [
     path: '/library',
     name: 'library',
     meta: {
-      title: '我的音乐库',
+      title: '我的音乐',
       keepAlive: true,
       showInMenu: true,
-      back: true,
-      icon: 'ri-disc-line'
+      isMobile: true,
+      back: false,
+      icon: 'ri-music-2-fill'
     },
     component: () => import('@/views/library/MyMusicLibrary.vue')
   },

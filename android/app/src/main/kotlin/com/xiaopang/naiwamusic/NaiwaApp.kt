@@ -3,6 +3,7 @@ package com.xiaopang.naiwamusic
 import android.app.Application
 import android.util.Log
 import com.xiaopang.naiwamusic.config.AppPrefs
+import com.xiaopang.naiwamusic.config.CrashLogManager
 import com.xiaopang.naiwamusic.server.EmbeddedHttpServer
 import com.xiaopang.naiwamusic.server.MusicUnblockEngine
 import com.xiaopang.naiwamusic.server.NeteaseApiClient
@@ -48,6 +49,7 @@ class NaiwaApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        CrashLogManager.install(this)
         prefs = AppPrefs(this)
         ncmClient = NeteaseApiClient(prefs)
         unblockEngine = MusicUnblockEngine()

@@ -10,6 +10,9 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
@@ -18,6 +21,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import androidx.annotation.OptIn
@@ -282,6 +286,10 @@ class MusicPlaybackService : MediaSessionService() {
     private var pendingTrackSyncJson: String? = null
     private var seekConfirmRunnable: Runnable? = null
 
+    private val bluetoothResumeGuard = BluetoothAutoResumeGuard()
+    private var audioDeviceCallback: AudioDeviceCallback? = null
+    private var pendingBluetoothResumeRunnable: Runnable? = null
+
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(12, TimeUnit.SECONDS)
@@ -370,6 +378,7 @@ class MusicPlaybackService : MediaSessionService() {
         initWakeLock()
         createNotificationChannel()
         initPlayerAndSession()
+        registerBluetoothAudioDeviceCallback()
         instance = this
 
         latestSyncedQueue?.let { syncQueue(it) }
@@ -477,6 +486,9 @@ class MusicPlaybackService : MediaSessionService() {
         )
         cancelNativeAutoAdvance()
         cancelVolumeFade()
+        pendingBluetoothResumeRunnable?.let { uiHandler.removeCallbacks(it) }
+        pendingBluetoothResumeRunnable = null
+        unregisterBluetoothAudioDeviceCallback()
         seekConfirmRunnable?.let { uiHandler.removeCallbacks(it) }
         uiHandler.removeCallbacks(progressTicker)
         releaseTransitionWakeLock()
@@ -663,6 +675,24 @@ class MusicPlaybackService : MediaSessionService() {
                 if (audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
                     initHardwareEqualizer(audioSessionId)
                 }
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                val nowMs = SystemClock.elapsedRealtime()
+                if (playWhenReady) {
+                    bluetoothResumeGuard.onPlaybackStarted(nowMs)
+                } else {
+                    bluetoothResumeGuard.onPlaybackPaused(
+                        nowMs = nowMs,
+                        byAudioFocusLoss = (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS),
+                        byBecomingNoisy = (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY)
+                    )
+                }
+            }
+
+            override fun onPlaybackSuppressionReasonChanged(playbackSuppressionReason: Int) {
+                bluetoothResumeGuard.isAudioFocusSuppressed =
+                    playbackSuppressionReason != Player.PLAYBACK_SUPPRESSION_REASON_NONE
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -2034,6 +2064,8 @@ class MusicPlaybackService : MediaSessionService() {
 
     fun pause() {
         uiHandler.post {
+            pendingBluetoothResumeRunnable?.let { uiHandler.removeCallbacks(it) }
+            pendingBluetoothResumeRunnable = null
             userPaused = true
             isTransitioningTrack = false
             pendingFadeInOnReady = false
@@ -2063,6 +2095,9 @@ class MusicPlaybackService : MediaSessionService() {
 
     fun stopPlayback() {
         uiHandler.post {
+            pendingBluetoothResumeRunnable?.let { uiHandler.removeCallbacks(it) }
+            pendingBluetoothResumeRunnable = null
+            bluetoothResumeGuard.onPlaybackStopped()
             userPaused = true
             isTransitioningTrack = false
             pendingFadeInOnReady = false
@@ -2569,5 +2604,99 @@ class MusicPlaybackService : MediaSessionService() {
     private fun emitMediaControl(command: String) {
         val json = gson.toJson(mapOf("type" to command))
         eventEmitter?.invoke("audio-event", json)
+    }
+
+    private fun isInCallOrCommunicationMode(): Boolean {
+        return runCatching {
+            val am = getSystemService(AudioManager::class.java) ?: return false
+            val mode = am.mode
+            mode == AudioManager.MODE_IN_CALL ||
+                mode == AudioManager.MODE_IN_COMMUNICATION ||
+                mode == AudioManager.MODE_RINGTONE ||
+                (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && mode == AudioManager.MODE_CALL_SCREENING)
+        }.getOrDefault(false)
+    }
+
+    private fun toDeviceSnapshots(devices: Array<out AudioDeviceInfo>?): List<BluetoothDeviceSnapshot> {
+        if (devices == null) return emptyList()
+        return devices.map { device ->
+            BluetoothDeviceSnapshot(
+                id = device.id,
+                type = device.type,
+                isSink = device.isSink
+            )
+        }
+    }
+
+    private fun registerBluetoothAudioDeviceCallback() {
+        val audioManager = runCatching { getSystemService(AudioManager::class.java) }.getOrNull() ?: return
+        val existing = runCatching { audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS) }.getOrNull()
+        bluetoothResumeGuard.onRegistered(SystemClock.elapsedRealtime(), toDeviceSnapshots(existing))
+
+        val cb = object : AudioDeviceCallback() {
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+                val removedBt = bluetoothResumeGuard.onAudioDevicesRemoved(
+                    devices = toDeviceSnapshots(removedDevices),
+                    nowMs = SystemClock.elapsedRealtime(),
+                    hasActiveTrack = hasActiveTrack()
+                )
+                if (removedBt) {
+                    pendingBluetoothResumeRunnable?.let { uiHandler.removeCallbacks(it) }
+                    pendingBluetoothResumeRunnable = null
+                }
+            }
+
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+                val isPausedReady = ::exoPlayer.isInitialized &&
+                    exoPlayer.mediaItemCount > 0 &&
+                    (exoPlayer.playbackState == Player.STATE_READY ||
+                        exoPlayer.playbackState == Player.STATE_BUFFERING) &&
+                    !isEffectivelyPlaying()
+                val shouldResume = bluetoothResumeGuard.onAudioDevicesAdded(
+                    devices = toDeviceSnapshots(addedDevices),
+                    nowMs = SystemClock.elapsedRealtime(),
+                    featureEnabled = NaiwaApp.instance.prefs.autoResumeOnBluetoothConnect,
+                    hasActiveTrack = hasActiveTrack(),
+                    isPlaying = isEffectivelyPlaying(),
+                    isPausedReadyState = isPausedReady,
+                    isInCallOrCommunication = isInCallOrCommunicationMode()
+                )
+                if (!shouldResume) return
+
+                pendingBluetoothResumeRunnable?.let { uiHandler.removeCallbacks(it) }
+                val resumeTask = Runnable {
+                    pendingBluetoothResumeRunnable = null
+                    val stillEligible = NaiwaApp.instance.prefs.autoResumeOnBluetoothConnect &&
+                        hasActiveTrack() &&
+                        !isEffectivelyPlaying() &&
+                        !bluetoothResumeGuard.pausedByAudioFocusLoss &&
+                        !bluetoothResumeGuard.isAudioFocusSuppressed &&
+                        !isInCallOrCommunicationMode() &&
+                        ::exoPlayer.isInitialized &&
+                        exoPlayer.playbackState == Player.STATE_READY
+                    if (stillEligible) {
+                        Log.i(TAG, "Bluetooth audio reconnected within window, auto-resuming playback")
+                        play()
+                    }
+                }
+                pendingBluetoothResumeRunnable = resumeTask
+                uiHandler.postDelayed(resumeTask, 350L)
+            }
+        }
+
+        runCatching {
+            audioManager.registerAudioDeviceCallback(cb, uiHandler)
+            audioDeviceCallback = cb
+        }.onFailure {
+            Log.w(TAG, "registerAudioDeviceCallback failed: ${it.message}")
+        }
+    }
+
+    private fun unregisterBluetoothAudioDeviceCallback() {
+        val cb = audioDeviceCallback ?: return
+        audioDeviceCallback = null
+        runCatching {
+            getSystemService(AudioManager::class.java)?.unregisterAudioDeviceCallback(cb)
+        }
     }
 }

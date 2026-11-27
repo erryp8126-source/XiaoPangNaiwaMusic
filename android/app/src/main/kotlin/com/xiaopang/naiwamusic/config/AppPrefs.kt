@@ -20,6 +20,12 @@ class AppPrefs(context: Context) {
         val AUDIO_CACHE_MAX_MB_OPTIONS: List<Int> = listOf(200, 500, 1024, 2048)
         private const val KEY_AUDIO_CACHE_MAX_MB = "audio_cache_max_mb"
 
+        const val DEFAULT_FLOATING_LYRIC_HIDE_IN_LANDSCAPE: Boolean = false
+        private const val KEY_FLOATING_LYRIC_HIDE_IN_LANDSCAPE = "floating_lyric_hide_in_landscape"
+
+        const val DEFAULT_AUTO_RESUME_ON_BLUETOOTH_CONNECT: Boolean = false
+        private const val KEY_AUTO_RESUME_ON_BLUETOOTH_CONNECT = "auto_resume_on_bluetooth_connect"
+
         fun normalizeAudioCacheMaxMb(value: Int): Int {
             return if (value in AUDIO_CACHE_MAX_MB_OPTIONS) value else DEFAULT_AUDIO_CACHE_MAX_MB
         }
@@ -72,6 +78,20 @@ class AppPrefs(context: Context) {
     var floatingLyricShowTranslation: Boolean
         get() = prefs.getBoolean("floating_lyric_show_translation", true)
         set(value) = prefs.edit().putBoolean("floating_lyric_show_translation", value).apply()
+
+    var floatingLyricHideInLandscape: Boolean
+        get() = prefs.getBoolean(
+            KEY_FLOATING_LYRIC_HIDE_IN_LANDSCAPE,
+            DEFAULT_FLOATING_LYRIC_HIDE_IN_LANDSCAPE
+        )
+        set(value) = prefs.edit().putBoolean(KEY_FLOATING_LYRIC_HIDE_IN_LANDSCAPE, value).apply()
+
+    var autoResumeOnBluetoothConnect: Boolean
+        get() = prefs.getBoolean(
+            KEY_AUTO_RESUME_ON_BLUETOOTH_CONNECT,
+            DEFAULT_AUTO_RESUME_ON_BLUETOOTH_CONNECT
+        )
+        set(value) = prefs.edit().putBoolean(KEY_AUTO_RESUME_ON_BLUETOOTH_CONNECT, value).apply()
 
     var anonymousToken: String
         get() = prefs.getString("anonymous_token", "") ?: ""

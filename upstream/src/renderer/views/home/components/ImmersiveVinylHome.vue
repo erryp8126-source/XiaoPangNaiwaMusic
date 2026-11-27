@@ -54,6 +54,9 @@
       </button>
     </header>
 
+    <!-- 离线安静模式轻提示 -->
+    <offline-banner immersive />
+
     <!-- 2. 中央黑胶唱片 / 歌词沉浸舞台 -->
     <main
       class="immersive-stage"
@@ -118,15 +121,25 @@
               <div class="vinyl-grooves"></div>
               <div class="vinyl-glint"></div>
               <div class="vinyl-cover-wrap">
-                <img
-                  v-if="coverUrl"
-                  :src="getImgUrl(coverUrl, '500y500')"
-                  alt=""
-                  class="vinyl-cover-img"
-                />
-                <div v-else class="vinyl-cover-placeholder">
+                <div
+                  class="vinyl-cover-placeholder"
+                  :class="{ 'is-hidden': Boolean(resolvedCoverSrc && isCoverLoaded && !isCoverError) }"
+                  aria-hidden="true"
+                >
                   <i class="ri-disc-fill"></i>
                 </div>
+                <img
+                  v-if="resolvedCoverSrc && !isCoverError"
+                  :key="coverRenderKey"
+                  ref="coverImgRef"
+                  :src="resolvedCoverSrc"
+                  alt=""
+                  decoding="async"
+                  class="vinyl-cover-img"
+                  :class="{ 'is-loaded': isCoverLoaded }"
+                  @load="handleCoverLoad"
+                  @error="handleCoverError"
+                />
               </div>
               <div class="vinyl-spindle"></div>
             </div>
@@ -356,6 +369,7 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMoun
 import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 
+import OfflineBanner from '@/components/common/OfflineBanner.vue';
 import MobilePlayerSettings from '@/components/player/MobilePlayerSettings.vue';
 import {
   allTime,
@@ -380,6 +394,7 @@ import {
   extractCoverPalette
 } from '@/utils/coverColorExtractor';
 import { formatPlaybackBadgeText, inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
+import { isCoverImagePreloaded } from '@/utils/playerUtils';
 import { showBottomToast } from '@/utils/shortcutToast';
 
 const emit = defineEmits<{
@@ -398,6 +413,38 @@ const hasSong = computed(() => Boolean(playMusic.value && playMusic.value.id));
 const isPlaying = computed(() => Boolean(playerStore.isPlay));
 const isSeeding = computed(() => Boolean(playerStore.isSeedingLaunchTrack));
 const coverUrl = computed(() => playMusic.value?.picUrl || playMusic.value?.al?.picUrl || '');
+const resolvedCoverSrc = computed(() => (coverUrl.value ? getImgUrl(coverUrl.value, '500y500') : ''));
+const coverRenderKey = computed(() => `${playMusic.value?.id ?? ''}|${resolvedCoverSrc.value}`);
+const coverImgRef = ref<HTMLImageElement | null>(null);
+const isCoverLoaded = ref(false);
+const isCoverError = ref(false);
+
+watch(
+  coverRenderKey,
+  () => {
+    isCoverError.value = false;
+    isCoverLoaded.value = Boolean(
+      resolvedCoverSrc.value && isCoverImagePreloaded(resolvedCoverSrc.value)
+    );
+    nextTick(() => {
+      const el = coverImgRef.value;
+      if (el && el.complete && el.naturalWidth > 0) {
+        isCoverLoaded.value = true;
+      }
+    });
+  },
+  { immediate: true }
+);
+
+const handleCoverLoad = () => {
+  isCoverLoaded.value = true;
+  isCoverError.value = false;
+};
+
+const handleCoverError = () => {
+  isCoverLoaded.value = false;
+  isCoverError.value = true;
+};
 
 // 封面动态弥散深色背景
 const dynamicBackgroundEnabled = computed(
@@ -741,10 +788,7 @@ const handleOpenQueue = () => {
 };
 
 const retrySeedTrack = async () => {
-  const ok = await playerStore.seedInitialLaunchTrack(true);
-  if (!ok && navigator.onLine === false) {
-    showBottomToast('当前离线，请前往离线音乐库播放');
-  }
+  await playerStore.seedInitialLaunchTrack(true);
 };
 
 // 进度条拖拽
@@ -1161,13 +1205,24 @@ onBeforeUnmount(() => {
 }
 
 .vinyl-cover-img {
+  position: relative;
+  z-index: 1;
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
+  opacity: 0;
+  transition: opacity 0.24s ease-out;
+
+  &.is-loaded {
+    opacity: 1;
+  }
 }
 
 .vinyl-cover-placeholder {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
   width: 100%;
   height: 100%;
   display: flex;
@@ -1175,6 +1230,13 @@ onBeforeUnmount(() => {
   justify-content: center;
   font-size: 56px;
   color: rgba(255, 209, 71, 0.72);
+  background: linear-gradient(135deg, #1f2937 0%, #0f172a 100%);
+  transition: opacity 0.24s ease;
+
+  &.is-hidden {
+    opacity: 0;
+    pointer-events: none;
+  }
 }
 
 .vinyl-spindle {

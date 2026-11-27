@@ -1,9 +1,7 @@
 import { cloneDeep } from 'lodash';
-import { createDiscreteApi } from 'naive-ui';
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 
-import i18n from '@/../i18n/renderer';
 import { getParsingMusicUrl } from '@/api/music';
 import { useLyrics, useSongDetail } from '@/hooks/usePlayerHooks';
 import { audioService } from '@/services/audioService';
@@ -27,17 +25,27 @@ import {
 import { getImageLinearBackground } from '@/utils/linearColor';
 import {
   classifyPlaybackFailure,
-  formatAutoFallbackMessage,
   MAX_SINGLE_TRACK_RETRIES,
   shouldRetrySingleTrack
 } from '@/utils/playbackDiagnostics';
+import {
+  notifyPlaybackAutoFallback,
+  notifyPlaybackBufferingRetry,
+  notifyPlaybackUnavailable
+} from '@/utils/playbackFeedback';
 import { buildPlaybackMeta, inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
 import { resolveSeededFirstSong } from '@/utils/playlistIndexSync';
-import { showBottomToast } from '@/utils/shortcutToast';
 
+import { useOfflineAvailabilityStore } from './offlineAvailability';
 import { usePlayHistoryStore } from './playHistory';
 
-const { message } = createDiscreteApi(['message']);
+const isOfflineNow = (): boolean => {
+  try {
+    return useOfflineAvailabilityStore().isOffline;
+  } catch {
+    return typeof navigator !== 'undefined' && navigator.onLine === false;
+  }
+};
 
 /**
  * 核心播放控制 Store
@@ -233,10 +241,11 @@ export const usePlayerCoreStore = defineStore(
         }
 
         const isLocal = Boolean(playMusic.value?.playMusicUrl?.startsWith('local://'));
+        const offlineNow = isOfflineNow();
         const diagnosis = classifyPlaybackFailure({
           error: err,
           hasUrl: Boolean(playMusic.value?.playMusicUrl),
-          isOffline: typeof navigator !== 'undefined' && navigator.onLine === false,
+          isOffline: offlineNow,
           isLocal
         });
         lastPlaybackError.value = diagnosis.userMessage;
@@ -252,11 +261,10 @@ export const usePlayerCoreStore = defineStore(
             `播放失败且不再重试 (reason=${diagnosis.code}, retries=${checkPlaybackRetryCount}/${MAX_CHECKPLAYBACK_RETRIES})`
           );
           checkPlaybackRetryCount = 0;
-          showBottomToast(
-            diagnosis.code === 'source-unavailable'
-              ? '该歌曲暂无可播放的可用音源'
-              : diagnosis.userMessage
-          );
+          notifyPlaybackUnavailable(song?.name || playMusic.value?.name, {
+            isOffline: offlineNow,
+            isLocal
+          });
           if (userPlayIntent.value && diagnosis.code !== 'offline') {
             const { usePlaylistStore } = await import('./playlist');
             const playlistStore = usePlaylistStore();
@@ -271,7 +279,9 @@ export const usePlayerCoreStore = defineStore(
 
         if (userPlayIntent.value && play.value) {
           checkPlaybackRetryCount++;
-          showBottomToast(`${diagnosis.userMessage}（重试 ${checkPlaybackRetryCount}/${MAX_CHECKPLAYBACK_RETRIES}）`);
+          notifyPlaybackBufferingRetry(song?.name || playMusic.value?.name, {
+            isOffline: offlineNow
+          });
           if (!isLocal) {
             playMusic.value.playMusicUrl = undefined;
           }
@@ -344,10 +354,11 @@ export const usePlayerCoreStore = defineStore(
           audioService.off('playerror', onPlayErrorHandler);
 
           const isLocal = Boolean(playMusic.value?.playMusicUrl?.startsWith('local://'));
+          const offlineNow = isOfflineNow();
           const diagnosis = classifyPlaybackFailure({
             error: 'network timeout',
             hasUrl: Boolean(playMusic.value?.playMusicUrl),
-            isOffline: typeof navigator !== 'undefined' && navigator.onLine === false,
+            isOffline: offlineNow,
             isLocal
           });
           lastPlaybackError.value = diagnosis.userMessage;
@@ -360,7 +371,10 @@ export const usePlayerCoreStore = defineStore(
           if (!shouldRetrySingleTrack(checkPlaybackRetryCount, diagnosis.code)) {
             console.warn(`超时重试已达上限 (${MAX_CHECKPLAYBACK_RETRIES} 次)，停止当前曲目重试`);
             checkPlaybackRetryCount = 0;
-            showBottomToast(diagnosis.userMessage);
+            notifyPlaybackUnavailable(song?.name || playMusic.value?.name, {
+              isOffline: offlineNow,
+              isLocal
+            });
             if (userPlayIntent.value && diagnosis.code !== 'offline') {
               void (async () => {
                 const { usePlaylistStore } = await import('./playlist');
@@ -378,7 +392,9 @@ export const usePlayerCoreStore = defineStore(
           }
 
           checkPlaybackRetryCount++;
-          showBottomToast(`${diagnosis.userMessage}（重试 ${checkPlaybackRetryCount}/${MAX_CHECKPLAYBACK_RETRIES}）`);
+          notifyPlaybackBufferingRetry(song?.name || playMusic.value?.name, {
+            isOffline: offlineNow
+          });
 
           if (!isLocal) {
             playMusic.value.playMusicUrl = undefined;
@@ -547,10 +563,12 @@ export const usePlayerCoreStore = defineStore(
 
         // 若所有音源均未能返回有效播放地址，立即结束 loading 并给出清晰原因，杜绝无限转圈
         if (!updatedPlayMusic.playMusicUrl || !String(updatedPlayMusic.playMusicUrl).trim()) {
+          const isLocal = Boolean(originalMusic.playMusicUrl?.startsWith('local://'));
+          const offlineNow = isOfflineNow();
           const diagnosis = classifyPlaybackFailure({
             hasUrl: false,
-            isOffline: typeof navigator !== 'undefined' && navigator.onLine === false,
-            isLocal: Boolean(originalMusic.playMusicUrl?.startsWith('local://'))
+            isOffline: offlineNow,
+            isLocal
           });
           lastPlaybackError.value = diagnosis.userMessage;
           lastFailureCode.value = diagnosis.code;
@@ -558,7 +576,10 @@ export const usePlayerCoreStore = defineStore(
           updatedPlayMusic.playLoading = false;
           playMusic.value = updatedPlayMusic;
           setIsPlay(false);
-          showBottomToast(diagnosis.userMessage);
+          notifyPlaybackUnavailable(updatedPlayMusic.name || originalMusic.name, {
+            isOffline: offlineNow,
+            isLocal
+          });
           playbackRequestManager.failRequest(requestId);
           return false;
         }
@@ -580,13 +601,13 @@ export const usePlayerCoreStore = defineStore(
           existing: updatedPlayMusic.playbackMeta
         });
 
-        // 当主音源解析失败自动切换到备用解灰 / LX 源时，给出不打断听歌的清晰可读提示（如「当前音源不可用，已自动切换备用源」）
+        // 当主音源解析失败已自动切换备用解灰 / LX 源时，统一收口为单条轻提示
         if (
           shouldPlay &&
           updatedPlayMusic.playbackMeta?.fallbackFrom === 'official' &&
           !updatedPlayMusic.playbackMeta?.fromDiskCache
         ) {
-          showBottomToast(formatAutoFallbackMessage(updatedPlayMusic.playbackMeta.sourceCategory));
+          notifyPlaybackAutoFallback(updatedPlayMusic.name, { isOffline: isOfflineNow() });
           updatedPlayMusic.playbackMeta = {
             ...updatedPlayMusic.playbackMeta,
             fallbackFrom: undefined
@@ -658,19 +679,20 @@ export const usePlayerCoreStore = defineStore(
           return false;
         }
         console.error('处理播放音乐失败:', error);
+        const isLocal = Boolean(originalMusic.playMusicUrl?.startsWith('local://'));
+        const offlineNow = isOfflineNow();
         const diagnosis = classifyPlaybackFailure({
           error,
           hasUrl: Boolean(playMusicUrl.value),
-          isOffline: typeof navigator !== 'undefined' && navigator.onLine === false,
-          isLocal: Boolean(originalMusic.playMusicUrl?.startsWith('local://'))
+          isOffline: offlineNow,
+          isLocal
         });
         lastPlaybackError.value = diagnosis.userMessage;
         lastFailureCode.value = diagnosis.code;
-        if (diagnosis.code === 'timeout' || diagnosis.code === 'offline') {
-          message.warning(diagnosis.userMessage);
-        } else {
-          message.error(diagnosis.userMessage || i18n.global.t('player.playFailed'));
-        }
+        notifyPlaybackUnavailable(originalMusic?.name || playMusic.value?.name, {
+          isOffline: offlineNow,
+          isLocal
+        });
         if (playMusic.value) {
           playMusic.value.playLoading = false;
         }
@@ -957,7 +979,7 @@ export const usePlayerCoreStore = defineStore(
      */
     const seedInitialLaunchTrack = async (shouldAutoPlay: boolean): Promise<boolean> => {
       if (playMusic.value && playMusic.value.id) return true;
-      if (typeof navigator !== 'undefined' && navigator.onLine === false) return false;
+      if (isOfflineNow()) return false;
       if (seedLaunchPromise) return seedLaunchPromise;
 
       seedLaunchPromise = (async () => {

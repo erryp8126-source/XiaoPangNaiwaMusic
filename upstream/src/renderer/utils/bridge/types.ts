@@ -54,8 +54,15 @@ export interface AndroidBridgeInterface {
   isFloatingLyricEnabled(): boolean;
   isFloatingLyricLocked?(): boolean;
   setFloatingLyricLocked?(locked: boolean): boolean;
+  isFloatingLyricHideInLandscape?(): boolean;
+  setFloatingLyricHideInLandscape?(enabled: boolean): boolean;
   updateFloatingLyric(text: string, translation: string, songTitle: string, isPlaying: boolean): void;
   syncFloatingLyricLines?(songId: string, songTitle: string, linesJson: string): void;
+  // Bluetooth Auto-Resume & Diagnostics (Android only)
+  isAutoResumeOnBluetoothConnect?(): boolean;
+  setAutoResumeOnBluetoothConnect?(enabled: boolean): boolean;
+  getLastCrashLog?(): string;
+  clearLastCrashLog?(): boolean;
   // System UI & Power
   setStatusBarStyle(isDark: boolean): void;
   requestIgnoreBatteryOptimizations(): void | boolean;

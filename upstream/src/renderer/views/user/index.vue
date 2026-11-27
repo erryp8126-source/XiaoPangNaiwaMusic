@@ -203,11 +203,13 @@ import { getUserAlbumSublist, getUserDetail, getUserPlaylist, getUserRecord } fr
 import { navigateToMusicList } from '@/components/common/MusicListNavigator';
 import PlayBottom from '@/components/common/PlayBottom.vue';
 import SongItem from '@/components/common/SongItem.vue';
+import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';
 import { usePlayerStore } from '@/store/modules/player';
 import { useUserStore } from '@/store/modules/user';
 import { getImgUrl, isElectron, isMobile, setAnimationClass, setAnimationDelay } from '@/utils';
 import { triggerHaptic } from '@/utils/androidBridge';
 import { checkLoginStatus as checkAuthStatus, confirmAccountLogout, getLoginTypeLabel } from '@/utils/auth';
+import { isOfflineQuietError } from '@/utils/playbackFeedback';
 import LoginComponent from '@/views/login/index.vue';
 
 defineOptions({
@@ -217,6 +219,7 @@ defineOptions({
 const { t } = useI18n();
 const userStore = useUserStore();
 const playerStore = usePlayerStore();
+const offlineStore = useOfflineAvailabilityStore();
 const router = useRouter();
 const { userDetail, recordList } = storeToRefs(userStore);
 const infoLoading = ref(false);
@@ -356,7 +359,7 @@ const loadData = async () => {
     if (error.response?.status === 401) {
       userStore.handleLogout();
       router.push('/login');
-    } else {
+    } else if (!isOfflineQuietError(error, offlineStore.isOffline)) {
       // 添加更多错误处理和重试逻辑
       message.error(t('user.message.loadFailed'));
     }
@@ -382,7 +385,9 @@ const loadAlbumList = async () => {
     userStore.albumList = res.data.data || [];
   } catch (error: any) {
     console.error('加载专辑列表失败:', error);
-    message.error('加载专辑列表失败');
+    if (!isOfflineQuietError(error, offlineStore.isOffline)) {
+      message.error('加载专辑列表失败');
+    }
   } finally {
     if (mounted.value) {
       albumLoading.value = false;

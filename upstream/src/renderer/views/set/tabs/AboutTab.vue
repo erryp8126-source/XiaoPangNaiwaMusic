@@ -77,18 +77,62 @@
         <i class="ri-github-line mr-1"></i>原项目仓库
       </s-btn>
     </setting-item>
+
+    <setting-item
+      v-if="isRealAndroid"
+      title="最近崩溃日志"
+      :description="
+        hasCrashLog
+          ? '已记录最近 1 次异常闪退日志（已自动脱敏，不含 Cookie 与同步密钥）'
+          : '暂无崩溃记录（偶发闪退重启后可在此一键复制定位问题）'
+      "
+    >
+      <div class="flex items-center gap-2 flex-wrap">
+        <s-btn @click="handleOpenCrashLog">
+          <i class="ri-bug-line mr-1"></i>{{ hasCrashLog ? '查看日志' : '查看/复制最近崩溃日志' }}
+        </s-btn>
+        <s-btn v-if="hasCrashLog" variant="primary" @click="handleCopyCrashLog">
+          <i class="ri-file-copy-line mr-1"></i>一键复制
+        </s-btn>
+      </div>
+    </setting-item>
   </setting-section>
+
+  <n-modal
+    v-if="isRealAndroid"
+    v-model:show="showCrashLogModal"
+    preset="card"
+    :z-index="12000"
+    style="width: 94vw; max-width: 680px"
+    title="最近崩溃日志"
+  >
+    <div class="space-y-3">
+      <div class="text-xs text-slate-500 dark:text-slate-400">
+        日志已自动屏蔽 Cookie、Token 与同步口令等敏感信息（上限 16 KB）。
+      </div>
+      <pre
+        class="max-h-[55vh] overflow-auto p-3 rounded-xl bg-slate-900 text-slate-100 text-[11px] leading-relaxed font-mono whitespace-pre-wrap break-all select-text"
+      >{{ lastCrashLog }}</pre>
+      <div class="flex items-center justify-end gap-2 pt-1">
+        <s-btn @click="handleClearCrashLog">清空日志</s-btn>
+        <s-btn variant="primary" @click="handleCopyCrashLog">
+          <i class="ri-file-copy-line mr-1"></i>一键复制日志
+        </s-btn>
+      </div>
+    </div>
+  </n-modal>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, inject, ref } from 'vue';
+import { computed, inject, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import mascotIcon from '@/assets/icon.png';
 
 import { useSettingsStore } from '@/store/modules/settings';
-import { isElectron } from '@/utils';
+import { isElectron, isRealAndroid } from '@/utils';
+import { clearNativeLastCrashLog, getNativeLastCrashLog } from '@/utils/androidBridge';
 import { checkUpdate, UpdateResult } from '@/utils/update';
 
 import config from '../../../../../package.json';
@@ -211,6 +255,82 @@ const openAuthor = () => {
 const openOriginalAuthor = () => {
   openExternal(ORIGINAL_AUTHOR_GITHUB_URL);
 };
+
+const lastCrashLog = ref('');
+const showCrashLogModal = ref(false);
+const hasCrashLog = computed(() => lastCrashLog.value.trim().length > 0);
+
+const refreshCrashLog = () => {
+  if (!isRealAndroid) return;
+  lastCrashLog.value = getNativeLastCrashLog();
+};
+
+const copyTextToClipboard = async (text: string): Promise<boolean> => {
+  if (!text) return false;
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // fallback below for WebView contexts without Clipboard API permission
+  }
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.top = '-9999px';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return ok;
+  } catch {
+    return false;
+  }
+};
+
+const handleOpenCrashLog = () => {
+  refreshCrashLog();
+  if (!hasCrashLog.value) {
+    message.info('暂无崩溃记录');
+    return;
+  }
+  showCrashLogModal.value = true;
+};
+
+const handleCopyCrashLog = async () => {
+  refreshCrashLog();
+  if (!hasCrashLog.value) {
+    message.info('暂无崩溃记录');
+    return;
+  }
+  const copied = await copyTextToClipboard(lastCrashLog.value);
+  if (copied) {
+    message.success('已复制最近崩溃日志到剪贴板');
+  } else {
+    showCrashLogModal.value = true;
+    message.warning('自动复制受限，请在弹窗内长按全选复制');
+  }
+};
+
+const handleClearCrashLog = () => {
+  if (!isRealAndroid) return;
+  const ok = clearNativeLastCrashLog();
+  refreshCrashLog();
+  if (ok) {
+    showCrashLogModal.value = false;
+    message.success('已清空崩溃日志');
+  } else {
+    message.error('清空崩溃日志失败');
+  }
+};
+
+onMounted(() => {
+  refreshCrashLog();
+});
 
 defineExpose({ checkForUpdates });
 </script>

@@ -157,8 +157,10 @@ import {
 import StickyTabPage from '@/components/common/StickyTabPage.vue';
 import RadioCard from '@/components/podcast/RadioCard.vue';
 import { usePlayerStore, usePlaylistStore, useUserStore } from '@/store';
+import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';
 import type { DjCategory, DjProgram, DjRadio } from '@/types/podcast';
 import { calculateAnimationDelay, formatNumber, getImgUrl, secondToMinute } from '@/utils';
+import { isOfflineQuietError } from '@/utils/playbackFeedback';
 import { mapDjProgramToSongResult } from '@/utils/podcastUtils';
 
 defineOptions({ name: 'Podcast' });
@@ -170,6 +172,7 @@ const route = useRoute();
 const playlistStore = usePlaylistStore();
 const playerStore = usePlayerStore();
 const userStore = useUserStore();
+const offlineStore = useOfflineAvailabilityStore();
 const pageRef = ref();
 
 const currentCategoryId = ref(-1);
@@ -231,7 +234,9 @@ const loadCategoryRadios = async (id: number, loadMore = false) => {
     categoryPage.value++;
   } catch (error) {
     console.error('获取分类电台失败:', error);
-    message.error(t('common.loadFailed'));
+    if (!isOfflineQuietError(error, offlineStore.isOffline)) {
+      message.error(t('common.loadFailed'));
+    }
   } finally {
     categoryLoading.value = false;
     categoryLoadingMore.value = false;

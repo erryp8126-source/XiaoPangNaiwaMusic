@@ -366,6 +366,7 @@ import { SongResult } from '@/types/music';
 import { calculateAnimationDelay, getImgUrl, isElectron, isMobile } from '@/utils';
 import { triggerHaptic } from '@/utils/androidBridge';
 import { getLoginErrorMessage, hasPermission } from '@/utils/auth';
+import { isOfflineQuietError } from '@/utils/playbackFeedback';
 
 defineOptions({
   name: 'MusicList'
@@ -397,7 +398,7 @@ const fetchData = async () => {
   const id = route.params.id;
   const type = route.query.type;
 
-  if (!id || type === 'dailyRecommend') return;
+  if (!id || type === 'dailyRecommend' || type === 'custom') return;
 
   // 检查是否需要加载数据
   if (
@@ -421,7 +422,7 @@ const fetchData = async () => {
           { ...data.album, picUrl: data.album.picUrl },
           false
         );
-      } else {
+      } else if (!offlineStore.isOffline) {
         message.error(t('common.loadFailed'));
       }
     } else if (type === 'playlist') {
@@ -435,13 +436,15 @@ const fetchData = async () => {
           playlist,
           playlist.creator?.userId === userStore.user?.userId
         );
-      } else {
+      } else if (!offlineStore.isOffline) {
         message.error(t('common.loadFailed'));
       }
     }
   } catch (error) {
     console.error('加载列表数据失败:', error);
-    message.error(t('common.loadFailed'));
+    if (!isOfflineQuietError(error, offlineStore.isOffline)) {
+      message.error(t('common.loadFailed'));
+    }
   } finally {
     loading.value = false;
   }

@@ -47,11 +47,11 @@
                   v-if="settingsStore.setData.isMenuExpanded"
                   class="app-menu-item-text ml-3 whitespace-nowrap"
                   :class="isChecked(index) ? 'text-primary font-semibold' : ''"
-                  >{{ t(item.meta.title) }}</span
+                  >{{ formatMenuTitle(item.meta?.title) }}</span
                 >
               </router-link>
             </template>
-            <div v-if="!settingsStore.setData.isMenuExpanded">{{ t(item.meta.title) }}</div>
+            <div v-if="!settingsStore.setData.isMenuExpanded">{{ formatMenuTitle(item.meta?.title) }}</div>
           </n-tooltip>
         </div>
       </div>
@@ -107,7 +107,12 @@ watch(
   }
 );
 
-const { t } = useI18n();
+const { t, te } = useI18n();
+
+const formatMenuTitle = (title?: string) => {
+  if (!title) return '';
+  return te(title) ? t(title) : title;
+};
 
 const isChecked = (index: number) => {
   return path.value === props.menus[index]?.path;
@@ -125,6 +130,7 @@ const MOBILE_ICON_MAP: Record<string, { normal: string; active: string; shortLab
   '/': { normal: 'ri-compass-3-line', active: 'ri-compass-3-fill', shortLabel: '发现' },
   '/list': { normal: 'ri-play-list-2-line', active: 'ri-play-list-2-fill', shortLabel: '歌单' },
   '/toplist': { normal: 'ri-trophy-line', active: 'ri-trophy-fill', shortLabel: '排行' },
+  '/library': { normal: 'ri-music-2-line', active: 'ri-music-2-fill', shortLabel: '我的音乐' },
   '/history': { normal: 'ri-heart-3-line', active: 'ri-heart-3-fill', shortLabel: '收藏' },
   '/user': { normal: 'ri-user-smile-line', active: 'ri-user-smile-fill', shortLabel: '我的' },
   '/album': { normal: 'ri-album-line', active: 'ri-album-fill', shortLabel: '新碟' }

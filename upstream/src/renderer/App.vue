@@ -28,13 +28,20 @@ import DisclaimerModal from '@/components/common/DisclaimerModal.vue';
 import OnboardingGuideModal from '@/components/common/OnboardingGuideModal.vue';
 import { useCloudSyncStore } from '@/store/modules/cloudSync';
 import { useListeningStatsStore } from '@/store/modules/listeningStats';
+import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';
 import { usePlayerStore } from '@/store/modules/player';
 import { usePlayerCoreStore } from '@/store/modules/playerCore';
+import { useSearchStore } from '@/store/modules/search';
 import { useSettingsStore } from '@/store/modules/settings';
 import { useUserStore } from '@/store/modules/user';
 import { isAndroid, isElectron, isLyricWindow, isNative } from '@/utils';
 import { dispatchAndroidBackHandlers, onAndroidEvent } from '@/utils/androidBridge';
 import { checkLoginStatus } from '@/utils/auth';
+import {
+  registerPlaybackSearchNavigator,
+  registerPlaybackToastSink
+} from '@/utils/playbackFeedback';
+import { showFloatingToast } from '@/utils/shortcutToast';
 
 import { initAudioListeners, initMusicHook } from './hooks/MusicHook';
 import { audioService } from './services/audioService';
@@ -358,9 +365,26 @@ onMounted(async () => {
   }
   listeningStatsStore.initWebFallbackTracking();
   cloudSyncStore.runAutoSyncOnLaunch();
+  const offlineStore = useOfflineAvailabilityStore();
+  offlineStore.ensureInitialized();
+
+  registerPlaybackToastSink(showFloatingToast);
+  registerPlaybackSearchNavigator((keyword: string) => {
+    const cleanKeyword = keyword.trim();
+    if (!cleanKeyword) return;
+    playerStore.setPlayListDrawerVisible(false);
+    playerStore.setMusicFull(false);
+    if (settingsStore.isMobile) {
+      void router.push({ path: '/mobile-search-result', query: { keyword: cleanKeyword, type: '1' } });
+    } else {
+      const searchStore = useSearchStore();
+      searchStore.searchType = 1;
+      void router.push({ path: '/search-result', query: { keyword: cleanKeyword } });
+    }
+  });
 
   // 检查网络状态，离线时自动跳转到统一音乐库离线视图
-  if (!navigator.onLine) {
+  if (offlineStore.isOffline) {
     console.log('检测到无网络连接，跳转到我的音乐库');
     router.push('/library?tab=downloaded');
   }

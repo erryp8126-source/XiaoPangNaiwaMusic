@@ -36,10 +36,11 @@
     <!-- 内容插槽 -->
     <template #content>
       <div class="song-item-content">
-        <div class="song-item-content-title">
+        <div class="song-item-content-title flex items-center gap-1.5 min-w-0">
           <n-ellipsis class="text-ellipsis" line-clamp="1" :class="{ 'text-primary font-bold': isPlaying }">
             {{ item.name }}
           </n-ellipsis>
+          <track-origin-tag :song="item" :show-online="showOrigin || isOffline" />
         </div>
         <div class="song-item-content-name">
           <n-ellipsis class="text-ellipsis" line-clamp="1">
@@ -83,6 +84,7 @@
 import { NCheckbox, NEllipsis, NImage } from 'naive-ui';
 import { computed, ref } from 'vue';
 
+import TrackOriginTag from '@/components/common/TrackOriginTag.vue';
 import { usePlayerStore } from '@/store';
 import type { SongResult } from '@/types/music';
 import { getImgUrl } from '@/utils';
@@ -100,6 +102,7 @@ const props = withDefaults(
     canRemove?: boolean;
     isNext?: boolean;
     index?: number;
+    showOrigin?: boolean;
   }>(),
   {
     favorite: true,
@@ -107,7 +110,8 @@ const props = withDefaults(
     selected: false,
     canRemove: false,
     isNext: false,
-    index: undefined
+    index: undefined,
+    showOrigin: false
   }
 );
 
@@ -119,6 +123,7 @@ const play = computed(() => playerStore.isPlay);
 const isPlaying = computed(() => baseItem.value?.isPlaying || false);
 const playLoading = computed(() => baseItem.value?.playLoading || false);
 const isFavorite = computed(() => baseItem.value?.isFavorite || false);
+const isOffline = computed(() => baseItem.value?.isOffline || false);
 const artists = computed(() => baseItem.value?.artists || []);
 
 // 包装方法，避免直接访问可能为undefined的ref
@@ -155,6 +160,7 @@ const onPlayMusic = () => {
 
   .song-item-content {
     flex: 1;
+    min-width: 0;
 
     &-title {
       font-size: 0.875rem; /* text-sm */

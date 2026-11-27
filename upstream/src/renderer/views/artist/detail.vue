@@ -439,8 +439,10 @@ import SongItem from '@/components/common/SongItem.vue';
 import { useScrollTitle } from '@/hooks/useScrollTitle';
 import router from '@/router';
 import { usePlayerStore } from '@/store';
+import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';
 import { IArtist } from '@/types/artist';
 import { calculateAnimationDelay, getImgUrl, isMobile } from '@/utils';
+import { isOfflineQuietError } from '@/utils/playbackFeedback';
 
 defineOptions({
   name: 'ArtistDetail'
@@ -449,6 +451,7 @@ defineOptions({
 const { t } = useI18n();
 const route = useRoute();
 const playerStore = usePlayerStore();
+const offlineStore = useOfflineAvailabilityStore();
 const message = useMessage();
 
 const artistId = computed(() => Number(route.params.id));
@@ -527,7 +530,9 @@ const handleAlbumClick = async (album: any) => {
     });
   } catch (error) {
     console.error('Failed to navigate to album:', error);
-    message.error(t('common.loadFailed'));
+    if (!isOfflineQuietError(error, offlineStore.isOffline)) {
+      message.error(t('common.loadFailed'));
+    }
   }
 };
 

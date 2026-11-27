@@ -88,7 +88,8 @@ const layoutRouter = [
       title: 'comp.history',
       icon: 'icon-a-TicketStar',
       keepAlive: true,
-      isMobile: true
+      isMobile: false,
+      back: true
     }
   },
   {
@@ -113,7 +114,8 @@ const layoutRouter = [
       icon: 'icon-Profile',
       keepAlive: true,
       noScroll: true,
-      isMobile: true
+      isMobile: false,
+      back: true
     },
     component: () => import('@/views/user/index.vue')
   },

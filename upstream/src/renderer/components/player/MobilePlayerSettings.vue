@@ -88,6 +88,21 @@
                   <span class="text-xs font-semibold">我的音乐库</span>
                 </button>
               </div>
+              <div
+                v-if="nativeCapabilities.supportsFloatingLyric"
+                class="mt-2.5 flex items-center justify-between px-4 py-3 rounded-2xl bg-slate-800/90 border border-slate-700/80"
+              >
+                <div class="pr-3">
+                  <div class="text-sm font-semibold text-white">横屏时自动隐藏桌面歌词</div>
+                  <div class="text-xs text-slate-400 mt-0.5">
+                    横屏暂隐悬浮窗，切回竖屏后自动恢复显示
+                  </div>
+                </div>
+                <n-switch
+                  :value="floatingLyricHideInLandscape"
+                  @update:value="handleToggleFloatingLyricHideInLandscape"
+                />
+              </div>
               <div class="h-px bg-slate-800 my-5"></div>
             </div>
 
@@ -353,11 +368,13 @@ import { useSettingsStore } from '@/store/modules/settings';
 import { isAndroid } from '@/utils';
 import {
   formatAudioCacheLimitMb,
+  getFloatingLyricHideInLandscape,
   getNativeAudioCacheMaxMb,
   getNativeCapabilities,
   offAndroidEvent,
   onAndroidEvent,
   registerAndroidBackHandler,
+  setFloatingLyricHideInLandscape,
   triggerHaptic
 } from '@/utils/androidBridge';
 import { formatPlaybackBadgeText, inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
@@ -446,6 +463,19 @@ const floatingLyricOn = ref<boolean>(
     ? Boolean((window as any).AlgerAndroid?.isFloatingLyricEnabled?.())
     : false
 );
+const floatingLyricHideInLandscape = ref<boolean>(
+  nativeCapabilities.supportsFloatingLyric ? getFloatingLyricHideInLandscape() : false
+);
+
+const handleToggleFloatingLyricHideInLandscape = (val: boolean) => {
+  if (!nativeCapabilities.supportsFloatingLyric) return;
+  triggerHaptic('selection');
+  floatingLyricHideInLandscape.value = setFloatingLyricHideInLandscape(val);
+};
+
+const handleFloatingLyricLandscapeSettingChanged = (_: any, payload: any) => {
+  floatingLyricHideInLandscape.value = Boolean(payload?.enabled);
+};
 
 const toggleAndroidFloatingLyric = () => {
   if (!nativeCapabilities.supportsFloatingLyric) return;
@@ -486,6 +516,7 @@ watch(
       refreshAudioCacheSize();
       if (nativeCapabilities.supportsFloatingLyric) {
         floatingLyricOn.value = Boolean((window as any).AlgerAndroid?.isFloatingLyricEnabled?.());
+        floatingLyricHideInLandscape.value = getFloatingLyricHideInLandscape();
       }
     } else {
       showEqModal.value = false;
@@ -630,6 +661,10 @@ onMounted(() => {
   if (nativeCapabilities.supportsFloatingLyric) {
     onAndroidEvent('floating-lyric-state-changed', handleFloatingLyricStateChanged);
     onAndroidEvent('floating-lyric-closed', handleFloatingLyricClosed);
+    onAndroidEvent(
+      'floating-lyric-landscape-setting-changed',
+      handleFloatingLyricLandscapeSettingChanged
+    );
   }
   unregisterBack = registerAndroidBackHandler(() => {
     if (showEqModal.value) {
@@ -649,6 +684,10 @@ onUnmounted(() => {
   if (nativeCapabilities.supportsFloatingLyric) {
     offAndroidEvent('floating-lyric-state-changed', handleFloatingLyricStateChanged);
     offAndroidEvent('floating-lyric-closed', handleFloatingLyricClosed);
+    offAndroidEvent(
+      'floating-lyric-landscape-setting-changed',
+      handleFloatingLyricLandscapeSettingChanged
+    );
   }
   unregisterBack?.();
   unregisterBack = null;

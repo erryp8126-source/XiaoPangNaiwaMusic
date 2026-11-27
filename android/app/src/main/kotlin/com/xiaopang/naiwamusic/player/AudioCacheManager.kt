@@ -1,6 +1,7 @@
 package com.xiaopang.naiwamusic.player
 
 import android.content.Context
+import android.database.sqlite.SQLiteException
 import android.net.Uri
 import android.util.Log
 import androidx.annotation.OptIn
@@ -11,12 +12,14 @@ import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.FileDataSource
 import androidx.media3.datasource.TransferListener
+import androidx.media3.datasource.cache.Cache
 import androidx.media3.datasource.cache.CacheDataSink
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import com.xiaopang.naiwamusic.config.AppPrefs
 import java.io.File
+import java.io.IOException
 
 /**
  * 原生 ExoPlayer 边听边缓存管理器（支持配置 200 / 500 / 1024 / 2048 MB LRU 磁盘缓存，默认 500 MB）
@@ -92,22 +95,108 @@ object AudioCacheManager {
         simpleCache?.let { return it }
         synchronized(lock) {
             simpleCache?.let { return it }
-            return runCatching {
-                val appCtx = context.applicationContext
-                val dir = File(appCtx.cacheDir, CACHE_DIR_NAME)
-                if (!dir.exists()) dir.mkdirs()
-                val maxMb = getMaxCacheMb(appCtx)
-                val maxBytes = maxBytesForMb(maxMb)
-                val evictor = LeastRecentlyUsedCacheEvictor(maxBytes)
-                val dbProvider = StandaloneDatabaseProvider(appCtx)
-                SimpleCache(dir, evictor, dbProvider).also {
-                    simpleCache = it
-                    activeCacheMaxMb = maxMb
+            val appCtx = context.applicationContext
+            val dir = File(appCtx.cacheDir, CACHE_DIR_NAME)
+            val maxMb = getMaxCacheMb(appCtx)
+            val maxBytes = maxBytesForMb(maxMb)
+            return initCacheWithSelfHeal(
+                cacheDir = dir,
+                initializer = { targetDir ->
+                    val evictor = LeastRecentlyUsedCacheEvictor(maxBytes)
+                    val dbProvider = StandaloneDatabaseProvider(appCtx)
+                    SimpleCache(targetDir, evictor, dbProvider)
+                },
+                onReset = { _, err ->
+                    if (containsSqliteError(err)) {
+                        runCatching { appCtx.deleteDatabase("exoplayer_internal.db") }
+                    }
+                    runCatching {
+                        Log.w(
+                            TAG,
+                            "SimpleCache corrupted (${err.javaClass.simpleName}), wiped cache dir and reinitialized: ${err.message}"
+                        )
+                    }
+                }
+            )?.also { initialized ->
+                simpleCache = initialized
+                activeCacheMaxMb = maxMb
+                runCatching {
                     Log.i(TAG, "SimpleCache initialized at ${dir.absolutePath}, max=${maxMb}MB")
                 }
-            }.onFailure {
-                Log.w(TAG, "SimpleCache init failed, fallback to direct streaming: ${it.message}")
-            }.getOrNull()
+            }
+        }
+    }
+
+    internal fun containsSqliteError(throwable: Throwable): Boolean {
+        var cur: Throwable? = throwable
+        var depth = 0
+        while (cur != null && depth < 10) {
+            if (cur is SQLiteException) return true
+            cur = cur.cause
+            depth++
+        }
+        return false
+    }
+
+    internal fun isRecoverableCacheInitError(throwable: Throwable): Boolean {
+        var cur: Throwable? = throwable
+        var depth = 0
+        while (cur != null && depth < 10) {
+            if (cur is Cache.CacheException ||
+                cur is IllegalStateException ||
+                cur is IOException ||
+                cur is SQLiteException
+            ) {
+                return true
+            }
+            cur = cur.cause
+            depth++
+        }
+        return false
+    }
+
+    /**
+     * 缓存初始化自愈逻辑（无 Android 上下文依赖，可在 JVM 单测直接覆盖）：
+     * 首次初始化若因索引/文件/数据库损坏抛错，立即递归清理目录后重试初始化一次；
+     * 再次失败则返回 null，交由上层透明回退网络直连流，绝不因缓存损坏导致冷启动循环闪退。
+     */
+    internal fun <T> initCacheWithSelfHeal(
+        cacheDir: File,
+        initializer: (File) -> T,
+        onReset: (File, Throwable) -> Unit = { _, _ -> }
+    ): T? {
+        runCatching { if (!cacheDir.exists()) cacheDir.mkdirs() }
+        val firstError = try {
+            return initializer(cacheDir)
+        } catch (t: Throwable) {
+            t
+        }
+
+        if (!isRecoverableCacheInitError(firstError)) {
+            runCatching {
+                Log.w(TAG, "SimpleCache init failed (non-recoverable): ${firstError.message}")
+            }
+            return null
+        }
+
+        runCatching {
+            if (cacheDir.exists()) {
+                cacheDir.deleteRecursively()
+            }
+            cacheDir.mkdirs()
+        }
+        runCatching { onReset(cacheDir, firstError) }
+
+        return try {
+            initializer(cacheDir)
+        } catch (retryError: Throwable) {
+            runCatching {
+                Log.w(
+                    TAG,
+                    "SimpleCache init failed after self-heal, fallback to direct streaming: ${retryError.message}"
+                )
+            }
+            null
         }
     }
 

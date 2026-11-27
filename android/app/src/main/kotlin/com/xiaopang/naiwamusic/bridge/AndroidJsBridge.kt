@@ -16,6 +16,7 @@ import android.webkit.JavascriptInterface
 import android.widget.Toast
 import com.xiaopang.naiwamusic.NaiwaApp
 import com.xiaopang.naiwamusic.MainActivity
+import com.xiaopang.naiwamusic.config.CrashLogManager
 import com.xiaopang.naiwamusic.config.SecureCredentialStore
 import com.xiaopang.naiwamusic.download.NativeDownloadManager
 import com.xiaopang.naiwamusic.local.LocalMusicScanner
@@ -423,6 +424,18 @@ class AndroidJsBridge(
     }
 
     @JavascriptInterface
+    fun isFloatingLyricHideInLandscape(): Boolean {
+        return app.prefs.floatingLyricHideInLandscape
+    }
+
+    @JavascriptInterface
+    fun setFloatingLyricHideInLandscape(enabled: Boolean): Boolean {
+        app.prefs.floatingLyricHideInLandscape = enabled
+        floatingLyricManager.onHideInLandscapeSettingChanged(enabled)
+        return enabled
+    }
+
+    @JavascriptInterface
     fun setMediaFavoriteState(songId: String, isFavorite: Boolean) {
         MusicPlaybackService.latestFavoriteSongId = songId
         MusicPlaybackService.latestFavoriteState = isFavorite
@@ -448,6 +461,17 @@ class AndroidJsBridge(
     @JavascriptInterface
     fun syncFloatingLyricLines(songId: String, songTitle: String, linesJson: String) {
         floatingLyricManager.syncLyricLinesFromJs(songId, songTitle, linesJson)
+    }
+
+    @JavascriptInterface
+    fun isAutoResumeOnBluetoothConnect(): Boolean {
+        return app.prefs.autoResumeOnBluetoothConnect
+    }
+
+    @JavascriptInterface
+    fun setAutoResumeOnBluetoothConnect(enabled: Boolean): Boolean {
+        app.prefs.autoResumeOnBluetoothConnect = enabled
+        return enabled
     }
 
     // ==================== 系统 UI、保活与工具 ====================
@@ -645,10 +669,20 @@ class AndroidJsBridge(
     }
 
     @JavascriptInterface
+    fun getLastCrashLog(): String {
+        return CrashLogManager.getLastCrashLog(activity.applicationContext)
+    }
+
+    @JavascriptInterface
+    fun clearLastCrashLog(): Boolean {
+        return CrashLogManager.clearLastCrashLog(activity.applicationContext)
+    }
+
+    @JavascriptInterface
     fun exitApp() {
         mainHandler.post {
             runCatching {
-                floatingLyricManager.hide()
+                floatingLyricManager.release()
                 MusicPlaybackService.instance?.stopPlayback()
                 activity.finishAndRemoveTask()
             }.onFailure {

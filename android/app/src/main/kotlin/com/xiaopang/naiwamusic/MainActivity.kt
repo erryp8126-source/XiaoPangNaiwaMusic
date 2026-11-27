@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Color
 import android.net.ConnectivityManager
 import android.net.Network
@@ -216,6 +217,13 @@ class MainActivity : AppCompatActivity() {
         syncNetworkStatusToWebView()
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (::floatingLyricManager.isInitialized) {
+            floatingLyricManager.onOrientationChanged(newConfig.orientation)
+        }
+    }
+
     override fun onPause() {
         MusicPlaybackService.onAppForegroundChanged(false)
         super.onPause()
@@ -227,7 +235,7 @@ class MainActivity : AppCompatActivity() {
         }
         networkCallback = null
         if (MusicPlaybackService.instance == null) {
-            floatingLyricManager.hide()
+            floatingLyricManager.release()
         }
         if (isFinishing) {
             MusicPlaybackService.eventEmitter = null

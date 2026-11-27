@@ -67,7 +67,7 @@
       <div v-if="nextSongPreview" class="next-up-bar">
         <span class="next-up-label">下一首</span>
         <span class="next-up-name truncate">{{ nextSongPreview.name }}</span>
-        <span class="next-up-source">{{ nextSongPreview.sourceLabel }}</span>
+        <track-origin-tag :song="nextSongPreview.song" show-online />
       </div>
     </div>
     <div class="playlist-panel-content">
@@ -117,7 +117,13 @@
                 >
                   <i class="ri-draggable"></i>
                 </div>
-                <song-item :key="item.song.id" class="flex-1 min-w-0" :item="item.song" mini></song-item>
+                <song-item
+                  :key="item.song.id"
+                  class="flex-1 min-w-0"
+                  :item="item.song"
+                  mini
+                  show-origin
+                ></song-item>
                 <div class="delete-btn" @click.stop="handleDeleteSong(item.song)">
                   <i
                     class="iconfont ri-delete-bin-line text-gray-400 hover:text-red-500 transition-colors"
@@ -138,12 +144,12 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import SongItem from '@/components/common/SongItem.vue';
+import TrackOriginTag from '@/components/common/TrackOriginTag.vue';
 import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';
 import { usePlayerStore } from '@/store/modules/player';
 import type { SongResult } from '@/types/music';
 import { isMobile } from '@/utils';
 import { triggerHaptic } from '@/utils/androidBridge';
-import { inferPlaybackMetaFromUrl } from '@/utils/playbackMeta';
 
 const { t } = useI18n();
 const message = useMessage();
@@ -204,29 +210,9 @@ const nextSongPreview = computed(() => {
   const next = list[nextIdx];
   if (!next) return null;
 
-  const badge = offlineStore.getOfflineBadge(next);
-  let sourceLabel =
-    badge === 'downloaded'
-      ? '已下载'
-      : badge === 'local'
-        ? '本地文件'
-        : badge === 'cached'
-          ? '已缓存'
-          : '';
-  if (!sourceLabel) {
-    if (next.playMusicUrl || next.playbackMeta) {
-      const meta = inferPlaybackMetaFromUrl(next.playMusicUrl, {
-        isDownloaded: Boolean(next.isDownloadedTrack),
-        existing: next.playbackMeta
-      });
-      sourceLabel = meta.sourceLabel;
-    } else {
-      sourceLabel = '在线待解析';
-    }
-  }
   return {
     name: next.name,
-    sourceLabel
+    song: next
   };
 });
 

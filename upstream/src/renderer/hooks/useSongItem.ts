@@ -24,6 +24,9 @@ export function useSongItem(props: { item: SongResult; canRemove?: boolean }) {
   offlineStore.ensureInitialized();
 
   const offlineBadge = computed(() => offlineStore.getOfflineBadge(props.item));
+  const trackOrigin = computed(() => offlineStore.getTrackOrigin(props.item));
+  const isOffline = computed(() => offlineStore.isOffline);
+  const isOfflineUnavailable = computed(() => offlineStore.isTrackUnavailableOffline(props.item));
 
   // 状态变量
   const showDropdown = ref(false);
@@ -266,6 +269,9 @@ export function useSongItem(props: { item: SongResult; canRemove?: boolean }) {
     isFavorite,
     isDislike,
     offlineBadge,
+    trackOrigin,
+    isOffline,
+    isOfflineUnavailable,
     artists,
     showDropdown,
     dropdownX,
