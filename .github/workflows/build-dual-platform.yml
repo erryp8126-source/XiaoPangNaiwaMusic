@@ -105,7 +105,7 @@ jobs:
           ls -lh "artifacts/XiaoPangNaiwaMusic-v${VERSION}.apk"
 
       - name: Upload Android APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: XiaoPangNaiwaMusic-Android-APK
           path: artifacts/XiaoPangNaiwaMusic-*.apk
@@ -167,7 +167,7 @@ jobs:
           ls -lh "../../artifacts/XiaoPangNaiwaMusic-v${VERSION}-unsigned.ipa"
 
       - name: Upload iOS IPA artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: XiaoPangNaiwaMusic-iOS-IPA
           path: artifacts/XiaoPangNaiwaMusic-*-unsigned.ipa
@@ -209,7 +209,7 @@ jobs:
           path: dist-pwa
 
       - name: Upload PWA bundle artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: XiaoPangNaiwaMusic-Safari-PWA
           path: artifacts/XiaoPangNaiwaMusic-*-pwa.zip
