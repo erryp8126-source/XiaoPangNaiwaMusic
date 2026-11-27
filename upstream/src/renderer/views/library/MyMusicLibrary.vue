@@ -250,7 +250,7 @@
               <i v-if="selectedKeys.has(item.key)" class="ri-check-line text-xs"></i>
             </div>
             <div class="w-11 h-11 rounded-xl bg-amber-500/10 text-amber-600 dark:text-[#FFC533] flex items-center justify-center flex-shrink-0 overflow-hidden">
-              <img v-if="item.picUrl" :src="item.picUrl" class="w-full h-full object-cover" />
+              <img v-if="item.picUrl" :src="getImgUrl(item.picUrl, '100y100')" class="w-full h-full object-cover" />
               <i v-else class="ri-disc-line text-lg"></i>
             </div>
             <div class="flex-1 min-w-0">

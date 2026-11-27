@@ -1,6 +1,8 @@
 import { useDebounceFn } from '@vueuse/core';
 import tinycolor from 'tinycolor2';
 
+import { upgradeExternalHttpToHttps } from './imageUrl';
+
 interface IColor {
   backgroundColor: string;
   primaryColor: string;
@@ -126,7 +128,7 @@ const getImagePrimaryColor = (imageSrc: string): Promise<string> => {
       reject(new Error('图片加载失败'));
     };
 
-    img.src = imageSrc;
+    img.src = upgradeExternalHttpToHttps(imageSrc);
   });
 };
 

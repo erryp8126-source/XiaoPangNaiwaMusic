@@ -342,6 +342,20 @@ export function clearCoverPaletteCache(): void {
   inflightRequests.clear();
 }
 
+function upgradeExternalHttp(rawUrl: string): string {
+  const trimmed = rawUrl.trim();
+  if (/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:[/?#]|$)/i.test(trimmed)) {
+    return trimmed;
+  }
+  if (trimmed.startsWith('//') && !/^\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:[/?#]|$)/i.test(trimmed)) {
+    return `https:${trimmed}`;
+  }
+  if (/^http:\/\//i.test(trimmed)) {
+    return `https://${trimmed.slice(7)}`;
+  }
+  return trimmed;
+}
+
 /**
  * 异步提取封面主色与次色（24x24 离屏 Canvas 采样 + URL 缓存 + 异常静默降级）
  */
@@ -351,6 +365,7 @@ export function extractCoverPalette(
   if (!imageUrl || typeof document === 'undefined' || typeof Image === 'undefined') {
     return Promise.resolve(DEFAULT_DYNAMIC_PALETTE);
   }
+  const safeImageUrl = upgradeExternalHttp(imageUrl);
 
   const cached = getCachedCoverPalette(imageUrl);
   if (cached) {
@@ -406,7 +421,7 @@ export function extractCoverPalette(
       finish(DEFAULT_DYNAMIC_PALETTE, false);
     };
 
-    img.src = imageUrl;
+    img.src = safeImageUrl;
   });
 
   inflightRequests.set(imageUrl, task);

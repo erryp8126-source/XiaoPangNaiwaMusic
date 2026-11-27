@@ -8,7 +8,7 @@
     <div class="relative aspect-square overflow-hidden mb-3">
       <img
         v-if="image"
-        :src="image"
+        :src="getImgUrl(image)"
         class="h-full w-full object-cover transition-transform duration-500 group-hover:scale-110"
         loading="lazy"
       />
@@ -63,6 +63,8 @@
 </template>
 
 <script setup lang="ts">
+import { getImgUrl } from '@/utils';
+
 defineProps<{
   image?: string;
   title?: string;

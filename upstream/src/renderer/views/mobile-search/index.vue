@@ -85,7 +85,7 @@
             <span class="hot-rank" :class="{ top: index < 3 }">{{ index + 1 }}</span>
             <span class="hot-word">{{ item.searchWord }}</span>
             <span v-if="item.iconUrl" class="hot-icon">
-              <img :src="item.iconUrl" alt="" />
+              <img :src="getImgUrl(item.iconUrl)" alt="" />
             </span>
           </div>
         </div>
@@ -104,6 +104,7 @@ import { getHotSearch, getSearchKeyword } from '@/api/home';
 import { getSearchSuggestions } from '@/api/search';
 import { SEARCH_TYPES } from '@/const/bar-const';
 import { useSearchStore } from '@/store/modules/search';
+import { getImgUrl } from '@/utils';
 
 const { t, locale } = useI18n();
 const router = useRouter();

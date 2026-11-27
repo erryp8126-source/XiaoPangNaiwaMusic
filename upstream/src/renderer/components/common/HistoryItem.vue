@@ -4,7 +4,7 @@
     @click="$emit('click')"
   >
     <n-image
-      :src="imageUrl"
+      :src="getImgUrl(imageUrl)"
       class="w-[60px] h-[60px] flex-shrink-0 rounded-xl bg-light-300 dark:bg-dark-300"
       lazy
       preview-disabled
@@ -32,6 +32,8 @@
 </template>
 
 <script setup lang="ts">
+import { getImgUrl } from '@/utils';
+
 defineProps<{
   imageUrl: string;
   name: string;

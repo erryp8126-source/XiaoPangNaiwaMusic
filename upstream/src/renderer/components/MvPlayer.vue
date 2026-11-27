@@ -18,7 +18,7 @@
       <!-- Video Player -->
       <video
         ref="videoRef"
-        :src="mvUrl"
+        :src="upgradeExternalHttpToHttps(mvUrl)"
         class="h-full w-full object-contain"
         crossorigin="anonymous"
         playsinline
@@ -320,6 +320,7 @@ import { useI18n } from 'vue-i18n';
 
 import { getMvUrl } from '@/api/mv';
 import { IMvItem } from '@/types/mv';
+import { upgradeExternalHttpToHttps } from '@/utils';
 
 const { t } = useI18n();
 const breakpoints = useBreakpoints(breakpointsTailwind);

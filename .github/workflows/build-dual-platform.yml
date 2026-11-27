@@ -230,10 +230,63 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
+  deploy-verify-netlify:
+    name: Deploy & Verify Netlify Health Gate (Optional)
+    needs: [security-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Deploy to Netlify Production (when configured)
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+          NETLIFY_HEALTH_URL: ${{ vars.NETLIFY_HEALTH_URL || secrets.NETLIFY_HEALTH_URL }}
+          COMMIT_REF: ${{ github.sha }}
+        run: |
+          if [ -n "$NETLIFY_AUTH_TOKEN" ] && [ -n "$NETLIFY_SITE_ID" ]; then
+            echo "Building and deploying Netlify production site + functions..."
+            npm ci --no-audit --no-fund
+            (cd upstream && ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci --ignore-scripts --legacy-peer-deps && npx vite build --outDir ../dist-pwa --emptyOutDir)
+            npx --yes netlify-cli deploy --prod --dir=dist-pwa --functions=netlify/functions --site="$NETLIFY_SITE_ID" --auth="$NETLIFY_AUTH_TOKEN" --message="ci: ${GITHUB_SHA::7}" --json > /tmp/netlify-deploy.json
+            if [ -n "$NETLIFY_HEALTH_URL" ]; then
+              echo "RESOLVED_NETLIFY_HEALTH_URL=$NETLIFY_HEALTH_URL" >> "$GITHUB_ENV"
+            else
+              DEPLOYED_SITE_URL=$(node -e "const d = JSON.parse(require('fs').readFileSync('/tmp/netlify-deploy.json','utf8')); console.log(d.url || d.deploy_url || 'https://xiaopang-naiwa-music.netlify.app');")
+              echo "RESOLVED_NETLIFY_HEALTH_URL=${DEPLOYED_SITE_URL%/}/api/health" >> "$GITHUB_ENV"
+            fi
+          elif [ -n "$NETLIFY_HEALTH_URL" ]; then
+            echo "NETLIFY_AUTH_TOKEN/NETLIFY_SITE_ID not set; verifying configured NETLIFY_HEALTH_URL..."
+            echo "RESOLVED_NETLIFY_HEALTH_URL=$NETLIFY_HEALTH_URL" >> "$GITHUB_ENV"
+          else
+            echo "Skipping Netlify deploy & health gate: neither NETLIFY_AUTH_TOKEN/NETLIFY_SITE_ID nor NETLIFY_HEALTH_URL is configured."
+          fi
+
+      - name: Verify /api/health version & commit gate
+        if: env.RESOLVED_NETLIFY_HEALTH_URL != ''
+        env:
+          NETLIFY_HEALTH_URL: ${{ env.RESOLVED_NETLIFY_HEALTH_URL }}
+          APP_API_SECRET: ${{ secrets.APP_API_SECRET }}
+        run: |
+          EXPECTED_VERSION=$(node -p "require('./package.json').version")
+          UPSTREAM_VERSION=$(node -p "require('./upstream/package.json').version")
+          if [ "$EXPECTED_VERSION" != "$UPSTREAM_VERSION" ]; then
+            echo "Version mismatch between package.json ($EXPECTED_VERSION) and upstream/package.json ($UPSTREAM_VERSION)" >&2
+            exit 1
+          fi
+          EXPECTED_COMMIT="${GITHUB_SHA::7}"
+          EXPECTED_VERSION="$EXPECTED_VERSION" EXPECTED_COMMIT="$EXPECTED_COMMIT" node scripts/verify-netlify-health.mjs
+
   release:
     name: Publish Dual-Platform Release
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
-    needs: [security-tests, build-android, build-ios, build-pwa]
+    needs: [security-tests, build-android, build-ios, build-pwa, deploy-verify-netlify]
     runs-on: ubuntu-latest
     permissions:
       contents: write

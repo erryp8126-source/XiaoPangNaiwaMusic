@@ -7,7 +7,7 @@
     @mouseenter="handleMouseEnter"
   >
     <div ref="coverImage" class="cover-wrapper" :style="coverTransformStyle">
-      <n-image :src="src" class="cover-image" lazy preview-disabled :object-fit="objectFit" />
+      <n-image :src="getImgUrl(src)" class="cover-image" lazy preview-disabled :object-fit="objectFit" />
       <div class="cover-shine" :style="shineStyle"></div>
     </div>
     <div v-if="loading" class="loading-overlay">
@@ -19,6 +19,8 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue';
+
+import { getImgUrl } from '@/utils';
 
 interface Props {
   src: string;

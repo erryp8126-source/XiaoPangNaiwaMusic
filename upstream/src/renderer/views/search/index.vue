@@ -44,7 +44,7 @@
                   </p>
                 </div>
                 <div v-if="item.iconUrl" class="flex-shrink-0">
-                  <img :src="item.iconUrl" class="h-4 object-contain opacity-80" />
+                  <img :src="getImgUrl(item.iconUrl)" class="h-4 object-contain opacity-80" />
                 </div>
               </div>
             </div>
@@ -92,7 +92,7 @@ import { useRouter } from 'vue-router';
 import { getHotSearch } from '@/api/home';
 import { useSearchStore } from '@/store/modules/search';
 import type { IHotSearch } from '@/types/search';
-import { calculateAnimationDelay } from '@/utils';
+import { calculateAnimationDelay, getImgUrl } from '@/utils';
 
 defineOptions({
   name: 'Search'

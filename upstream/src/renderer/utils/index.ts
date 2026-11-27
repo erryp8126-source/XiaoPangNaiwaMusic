@@ -2,9 +2,13 @@ import { computed } from 'vue';
 
 import { useSettingsStore } from '@/store/modules/settings';
 
+import { normalizeImgUrl, upgradeExternalHttpToHttps } from './imageUrl';
+
+export { normalizeImgUrl, upgradeExternalHttpToHttps };
+
 // 设置歌手背景图片
 export const setBackgroundImg = (url: String) => {
-  return `background-image:url(${url})`;
+  return `background-image:url(${upgradeExternalHttpToHttps(String(url || ''))})`;
 };
 // 设置动画类型
 export const setAnimationClass = (type: String) => {
@@ -74,27 +78,7 @@ export const formatNumber = (num: string | number) => {
 };
 
 export const getImgUrl = (url: string | undefined, size: string = '') => {
-  if (!url) return '';
-
-  // base64 Data URL、本地文件路径、以及 Android 本地服务封面不需要添加尺寸参数
-  if (
-    url.startsWith('data:') ||
-    url.startsWith('local://') ||
-    url.startsWith('http://127.0.0.1') ||
-    url.startsWith('https://appassets.') ||
-    url.startsWith('/images/')
-  ) {
-    return url;
-  }
-
-  if (url.includes('thumbnail')) {
-    // 只替换最后一个 thumbnail 参数的尺寸
-    return url.replace(/thumbnail=\d+y\d+(?!.*thumbnail)/, `thumbnail=${size}`);
-  }
-
-  if (!size) return url;
-  const imgUrl = `${url}?param=${size}`;
-  return imgUrl;
+  return normalizeImgUrl(url, size);
 };
 
 export const isMobile = computed(() => {

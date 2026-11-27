@@ -1927,7 +1927,7 @@ test("security hardening: zero v-html XSS vectors, Android WebView locked down, 
     "Safe Song"
   );
 
-  // 2. Android WebView 权限收紧：关闭 file/content 访问，禁止 MIXED_CONTENT_ALWAYS_ALLOW
+  // 2. Android WebView 权限收紧：关闭 file/content 访问，禁止任何混合内容 (MIXED_CONTENT_NEVER_ALLOW)
   const mainActivity = fs.readFileSync(
     path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/MainActivity.kt"),
     "utf-8"
@@ -1935,7 +1935,8 @@ test("security hardening: zero v-html XSS vectors, Android WebView locked down, 
   assert.match(mainActivity, /allowFileAccess\s*=\s*false/);
   assert.match(mainActivity, /allowContentAccess\s*=\s*false/);
   assert.doesNotMatch(mainActivity, /MIXED_CONTENT_ALWAYS_ALLOW/);
-  assert.match(mainActivity, /MIXED_CONTENT_COMPATIBILITY_MODE/);
+  assert.doesNotMatch(mainActivity, /MIXED_CONTENT_COMPATIBILITY_MODE/);
+  assert.match(mainActivity, /MIXED_CONTENT_NEVER_ALLOW/);
 
   // 3. 原生 Keystore (Android) / Keychain (iOS) 敏感凭据存储桥接与前端隔离迁移
   const secureStoreKt = path.join(
@@ -3834,4 +3835,173 @@ test("iteration 2 invariants: common/advanced settings split, sync preview UI, 3
     "utf-8"
   );
   assert.match(serviceKt, /FloatingLyricManager\.activeInstance\?\.release\(\)/);
+});
+
+test("mixed-content P3 & Netlify release health gate P1: HTTPS image/media upgrade, MIXED_CONTENT_NEVER_ALLOW, and health gate verification", async () => {
+  // 1. Runtime tests on upstream/src/renderer/utils/imageUrl.ts
+  const imgMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/imageUrl.ts")).href
+  );
+
+  // External HTTP -> HTTPS upgrade
+  assert.equal(
+    imgMod.upgradeExternalHttpToHttps("http://p1.music.126.net/abc/123.jpg"),
+    "https://p1.music.126.net/abc/123.jpg"
+  );
+  assert.equal(
+    imgMod.upgradeExternalHttpToHttps("HTTP://p3.music.126.net/def/456.jpg"),
+    "https://p3.music.126.net/def/456.jpg"
+  );
+  assert.equal(
+    imgMod.upgradeExternalHttpToHttps("//p2.music.126.net/rel/789.jpg"),
+    "https://p2.music.126.net/rel/789.jpg"
+  );
+  assert.equal(
+    imgMod.normalizeImgUrl("http://p1.music.126.net/abc/123.jpg", "500y500"),
+    "https://p1.music.126.net/abc/123.jpg?param=500y500"
+  );
+  assert.equal(
+    imgMod.normalizeImgUrl("http://p1.music.126.net/abc/123.jpg?thumbnail=90y90", "300y300"),
+    "https://p1.music.126.net/abc/123.jpg?thumbnail=300y300"
+  );
+
+  // Loopback & local URLs preserved untouched
+  assert.equal(
+    imgMod.upgradeExternalHttpToHttps("http://127.0.0.1:30488/local/cover?id=1"),
+    "http://127.0.0.1:30488/local/cover?id=1"
+  );
+  assert.equal(
+    imgMod.normalizeImgUrl("http://127.0.0.1:30488/local/cover?id=1", "300y300"),
+    "http://127.0.0.1:30488/local/cover?id=1"
+  );
+  assert.equal(
+    imgMod.normalizeImgUrl("http://localhost:30488/cover.jpg", "300y300"),
+    "http://localhost:30488/cover.jpg"
+  );
+  assert.equal(
+    imgMod.normalizeImgUrl("data:image/png;base64,AAAA", "300y300"),
+    "data:image/png;base64,AAAA"
+  );
+  assert.equal(imgMod.normalizeImgUrl("local://12345", "300y300"), "local://12345");
+  assert.equal(imgMod.normalizeImgUrl("/images/icon.png", "300y300"), "/images/icon.png");
+
+  // Direct image/media bindings must route through HTTPS upgrade helpers
+  const myMusicLibrary = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/library/MyMusicLibrary.vue"),
+    "utf-8"
+  );
+  assert.doesNotMatch(myMusicLibrary, /:src="item\.picUrl"/);
+  assert.match(myMusicLibrary, /:src="getImgUrl\(item\.picUrl,\s*'100y100'\)"/);
+
+  const mobileSearch = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/mobile-search/index.vue"),
+    "utf-8"
+  );
+  assert.doesNotMatch(mobileSearch, /:src="item\.iconUrl"/);
+  assert.match(mobileSearch, /:src="getImgUrl\(item\.iconUrl\)"/);
+
+  const desktopSearch = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/search/index.vue"),
+    "utf-8"
+  );
+  assert.doesNotMatch(desktopSearch, /:src="item\.iconUrl"/);
+  assert.match(desktopSearch, /:src="getImgUrl\(item\.iconUrl\)"/);
+
+  const historyItem = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/common/HistoryItem.vue"),
+    "utf-8"
+  );
+  assert.match(historyItem, /:src="getImgUrl\(imageUrl\)"/);
+
+  const cover3D = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/cover/Cover3D.vue"),
+    "utf-8"
+  );
+  assert.match(cover3D, /:src="getImgUrl\(src\)"/);
+
+  const homeCard = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/home/components/HomeCard.vue"),
+    "utf-8"
+  );
+  assert.match(homeCard, /:src="getImgUrl\(image\)"/);
+
+  const mvPlayer = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/MvPlayer.vue"),
+    "utf-8"
+  );
+  assert.match(mvPlayer, /:src="upgradeExternalHttpToHttps\(mvUrl\)"/);
+
+  // 2. Android MainActivity WebView strictly forbids mixed content
+  const mainActivity = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/MainActivity.kt"),
+    "utf-8"
+  );
+  assert.match(mainActivity, /mixedContentMode\s*=\s*WebSettings\.MIXED_CONTENT_NEVER_ALLOW/);
+
+  // 3. Runtime & workflow assertions on Netlify /api/health release gate
+  const healthGateMod = await import(
+    pathToFileURL(path.join(repoRoot, "scripts/verify-netlify-health.mjs")).href
+  );
+
+  assert.deepEqual(healthGateMod.resolveHealthEndpoint("https://xiaopang-naiwa-music.netlify.app"), {
+    healthUrl: "https://xiaopang-naiwa-music.netlify.app/api/health",
+    origin: "https://xiaopang-naiwa-music.netlify.app",
+  });
+  assert.deepEqual(healthGateMod.resolveHealthEndpoint("https://xiaopang-naiwa-music.netlify.app/api/"), {
+    healthUrl: "https://xiaopang-naiwa-music.netlify.app/api/health",
+    origin: "https://xiaopang-naiwa-music.netlify.app",
+  });
+  assert.deepEqual(
+    healthGateMod.resolveHealthEndpoint("https://xiaopang-naiwa-music.netlify.app/api/health"),
+    {
+      healthUrl: "https://xiaopang-naiwa-music.netlify.app/api/health",
+      origin: "https://xiaopang-naiwa-music.netlify.app",
+    }
+  );
+
+  assert.equal(
+    healthGateMod.validateHealthPayload(
+      { ok: true, service: "xiaopang-naiwa-music-api", version: "1.0.1", commit: "7d374d4" },
+      { version: "1.0.1", commit: "7d374d4" }
+    ).ok,
+    true
+  );
+  assert.equal(
+    healthGateMod.validateHealthPayload(
+      { ok: true, version: "1.0.0", commit: "7d374d4" },
+      { version: "1.0.1", commit: "7d374d4" }
+    ).ok,
+    false
+  );
+  assert.equal(
+    healthGateMod.validateHealthPayload(
+      { ok: true, version: "1.0.1", commit: "local" },
+      { version: "1.0.1", commit: "7d374d4" }
+    ).ok,
+    false
+  );
+  assert.equal(
+    healthGateMod.validateHealthPayload(
+      { ok: true, version: "1.0.1", commit: "0000000" },
+      { version: "1.0.1", commit: "7d374d4" }
+    ).ok,
+    false
+  );
+
+  const workflowYml = fs.readFileSync(
+    path.join(repoRoot, ".github/workflows/build-dual-platform.yml"),
+    "utf-8"
+  );
+  for (const token of [
+    "deploy-verify-netlify",
+    "NETLIFY_AUTH_TOKEN",
+    "NETLIFY_SITE_ID",
+    "NETLIFY_HEALTH_URL",
+    "/api/health",
+    "${GITHUB_SHA::7}",
+    "scripts/verify-netlify-health.mjs",
+  ]) {
+    assert.ok(workflowYml.includes(token), `build-dual-platform.yml must include "${token}"`);
+  }
+  assert.match(workflowYml, /needs:\s*\[[^\]]*deploy-verify-netlify[^\]]*\]/);
 });
