@@ -714,6 +714,7 @@ class AudioService {
             newSound.off('load');
 
             newSound.on('loaderror', (_, error) => {
+              this.emit('buffering', false);
               console.error('Audio load error:', error);
               this.emit('loaderror', { track, error });
               if (retryCount < maxRetries && !existingSound) {
@@ -732,6 +733,7 @@ class AudioService {
             newSound.on('playerror', (_, error) => {
               // 网页版 / Safari PWA 自动播放被浏览器策略拦截（NotAllowedError）：静默停在待播态，绝不重试也不报错
               if (isAutoplayBlockedError(error)) {
+                this.emit('buffering', false);
                 console.info('[audioService] Autoplay blocked by browser policy, staying paused ready-to-play');
                 try {
                   newSound.pause();
@@ -819,6 +821,7 @@ class AudioService {
                     console.log('audioService: 音频加载成功，设置 EQ');
                     this.updateMediaSessionMetadata(track);
                     this.updateMediaSessionPositionState();
+                    this.emit('buffering', false);
                     this.emit('load');
 
                     if (!isHotSwap) {
@@ -963,9 +966,14 @@ class AudioService {
             this.currentSound.off('seek');
             this.currentSound.off('loaderror');
             this.currentSound.off('playerror');
+            this.currentSound.off('buffering');
           } catch {
             // ignore
           }
+        }
+
+        if (isPlay) {
+          this.emit('buffering', true);
         }
 
         this.currentTrack = track;
@@ -1014,10 +1022,12 @@ class AudioService {
             finishResolve();
             return;
           }
+          this.emit('buffering', false);
           this.emit('load');
           finishResolve();
         });
       } catch (e: any) {
+        this.emit('buffering', false);
         reject(e instanceof Error ? e : new Error(String(e)));
       }
     });
@@ -1028,13 +1038,21 @@ class AudioService {
     track: SongResult,
     onErrorReject?: (err: Error) => void
   ): void {
+    nativeSound.on('buffering', (_id: any, buffering: boolean) => {
+      if ((this.currentSound as any) === nativeSound) {
+        this.emit('buffering', Boolean(buffering));
+      }
+    });
+
     nativeSound.on('loaderror', (_id: any, error: any) => {
+      this.emit('buffering', false);
       this.emit('loaderror', { track, error });
       this.emit('url_expired', track);
       onErrorReject?.(new Error(typeof error === 'string' ? error : '音频加载失败'));
     });
 
     nativeSound.on('playerror', (_id: any, error: any) => {
+      this.emit('buffering', false);
       this.emit('playerror', { track, error });
       this.emit('url_expired', track);
       onErrorReject?.(new Error(typeof error === 'string' ? error : '音频播放失败'));
@@ -1042,18 +1060,21 @@ class AudioService {
 
     nativeSound.on('play', () => {
       if ((this.currentSound as any) === nativeSound) {
+        this.emit('buffering', false);
         this.emit('play');
       }
     });
 
     nativeSound.on('pause', () => {
       if ((this.currentSound as any) === nativeSound) {
+        this.emit('buffering', false);
         this.emit('pause');
       }
     });
 
     nativeSound.on('end', () => {
       if ((this.currentSound as any) === nativeSound) {
+        this.emit('buffering', false);
         this.emit('end');
       }
     });
@@ -1086,6 +1107,7 @@ class AudioService {
         this.currentSound.off('seek');
         this.currentSound.off('loaderror');
         this.currentSound.off('playerror');
+        this.currentSound.off('buffering');
       } catch {
         // ignore
       }

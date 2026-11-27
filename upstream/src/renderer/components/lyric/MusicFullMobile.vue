@@ -556,7 +556,12 @@ const playbackSourceIcon = computed(() => {
 
 // 播放控制相关
 const play = computed(() => playerStore.isPlay);
-const playIcon = computed(() => (play.value ? 'ri-pause-fill' : 'ri-play-fill'));
+const isPlayLoading = computed(() =>
+  Boolean(playMusic.value?.playLoading || playerStore.isBuffering)
+);
+const playIcon = computed(() =>
+  isPlayLoading.value ? 'ri-loader-4-line animate-spin' : play.value ? 'ri-pause-fill' : 'ri-play-fill'
+);
 
 // 播放设置弹窗
 const showPlayerSettings = ref(false);

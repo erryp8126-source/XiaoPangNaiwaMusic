@@ -38,6 +38,28 @@ class MusicUnblockEngineTest {
             ex.close()
         }
 
+        server.createContext("/kuwo-450kb.mp3") { ex ->
+            probeRequests.add(ex.requestMethod to ex.requestHeaders.getFirst("Range"))
+            ex.responseHeaders.add("Content-Type", "audio/mpeg")
+            ex.responseHeaders.add("Content-Length", "460800")
+            ex.sendResponseHeaders(200, -1)
+            ex.close()
+        }
+
+        server.createContext("/fallback-405-450kb.mp3") { ex ->
+            probeRequests.add(ex.requestMethod to ex.requestHeaders.getFirst("Range"))
+            if (ex.requestMethod.equals("HEAD", ignoreCase = true)) {
+                ex.sendResponseHeaders(405, -1)
+            } else {
+                val payload = byteArrayOf(0x49, 0x44)
+                ex.responseHeaders.add("Content-Type", "audio/mpeg")
+                ex.responseHeaders.add("Content-Range", "bytes 0-1/460800")
+                ex.sendResponseHeaders(206, payload.size.toLong())
+                ex.responseBody.write(payload)
+            }
+            ex.close()
+        }
+
         server.createContext("/normal-3mb.mp3") { ex ->
             probeRequests.add(ex.requestMethod to ex.requestHeaders.getFirst("Range"))
             ex.responseHeaders.add("Content-Type", "audio/mpeg")
@@ -137,8 +159,13 @@ class MusicUnblockEngineTest {
     }
 
     @Test
-    fun `rejects 80KB kuwo prompt mp3 and accepts 3MB normal track`() {
+    fun `rejects 80KB and 450KB kuwo prompt mp3s and accepts 3MB normal track`() {
+        assertEquals(800L * 1024L, MusicUnblockEngine.MIN_VALID_AUDIO_BYTES)
         assertFalse(engine.checkAudioUrlReachable("$baseUrl/kuwo-80kb.mp3"))
+        assertFalse(engine.checkAudioUrlReachable("$baseUrl/kuwo-450kb.mp3"))
+        probeRequests.clear()
+        assertFalse(engine.checkAudioUrlReachable("$baseUrl/fallback-405-450kb.mp3"))
+        assertEquals(listOf("HEAD" to null, "GET" to "bytes=0-1"), probeRequests.toList())
         assertTrue(engine.checkAudioUrlReachable("$baseUrl/normal-3mb.mp3"))
     }
 
@@ -189,5 +216,129 @@ class MusicUnblockEngineTest {
             listOf("pyncmd", "gdmusic", "migu", "kugou", "kuwo"),
             MusicUnblockEngine.DEFAULT_ENABLED_SOURCES
         )
+    }
+
+    @Test
+    fun `ranks studio original above live and filters out wrong song wrong artist and duration mismatch`() {
+        val wrongSong = MusicUnblockEngine.TrackCandidate("世界这么大还是遇见你", "程响", 256_000L)
+        val wrongArtist = MusicUnblockEngine.TrackCandidate("推开世界的门", "某翻唱歌手", 256_000L)
+        val shortLiveClip = MusicUnblockEngine.TrackCandidate("推开世界的门 (Live)", "杨乃文", 120_000L)
+        val accompaniment = MusicUnblockEngine.TrackCandidate("推开世界的门 (伴奏)", "杨乃文", 256_000L)
+        val sameArtistFullLive = MusicUnblockEngine.TrackCandidate("推开世界的门 (Live)", "杨乃文", 256_000L)
+        val studioOriginal = MusicUnblockEngine.TrackCandidate("推开世界的门", "杨乃文", 256_000L)
+
+        assertEquals(
+            MusicUnblockEngine.REJECT_CANDIDATE_SCORE,
+            MusicUnblockEngine.scoreCandidateMatch(
+                "推开世界的门",
+                "杨乃文",
+                256_000L,
+                wrongSong.title,
+                wrongSong.artists,
+                wrongSong.durationMs
+            )
+        )
+
+        assertTrue(
+            MusicUnblockEngine.scoreCandidateMatch(
+                "推开世界的门",
+                "杨乃文",
+                256_000L,
+                wrongArtist.title,
+                wrongArtist.artists,
+                wrongArtist.durationMs
+            ) < MusicUnblockEngine.MIN_CANDIDATE_PASS_SCORE
+        )
+
+        assertTrue(
+            MusicUnblockEngine.scoreCandidateMatch(
+                "推开世界的门",
+                "杨乃文",
+                256_000L,
+                shortLiveClip.title,
+                shortLiveClip.artists,
+                shortLiveClip.durationMs
+            ) < MusicUnblockEngine.MIN_CANDIDATE_PASS_SCORE
+        )
+
+        assertTrue(
+            MusicUnblockEngine.scoreCandidateMatch(
+                "推开世界的门",
+                "杨乃文",
+                256_000L,
+                accompaniment.title,
+                accompaniment.artists,
+                accompaniment.durationMs
+            ) < MusicUnblockEngine.MIN_CANDIDATE_PASS_SCORE
+        )
+
+        val ranked = MusicUnblockEngine.rankCandidates(
+            items = listOf(wrongSong, wrongArtist, shortLiveClip, accompaniment, sameArtistFullLive, studioOriginal),
+            targetTitle = "推开世界的门",
+            targetArtists = "杨乃文",
+            expectedDurationMs = 256_000L
+        ) { it }
+
+        assertEquals(listOf(studioOriginal, sameArtistFullLive), ranked.map { it.item })
+        assertTrue(ranked[0].score > ranked[1].score)
+    }
+
+    @Test
+    fun `preserves english words like Alive and Discover and allows explicit Live queries`() {
+        val aliveScore = MusicUnblockEngine.scoreCandidateMatch(
+            "Alive",
+            "Daft Punk",
+            210_000L,
+            "Alive",
+            "Daft Punk",
+            210_000L
+        )
+        assertEquals(135, aliveScore)
+
+        val discoverScore = MusicUnblockEngine.scoreCandidateMatch(
+            "Discover",
+            "Artist",
+            200_000L,
+            "Discover",
+            "Artist",
+            200_000L
+        )
+        assertEquals(135, discoverScore)
+
+        val explicitLiveScore = MusicUnblockEngine.scoreCandidateMatch(
+            "推开世界的门 (Live)",
+            "杨乃文",
+            256_000L,
+            "推开世界的门 (Live)",
+            "杨乃文",
+            256_000L
+        )
+        assertTrue(explicitLiveScore >= 130)
+    }
+
+    @Test
+    fun `parses candidate durations from seconds milliseconds and clock strings`() {
+        assertEquals(256_000L, MusicUnblockEngine.parseDurationToMs("256"))
+        assertEquals(256_000L, MusicUnblockEngine.parseDurationToMs("256000"))
+        assertEquals(256_000L, MusicUnblockEngine.parseDurationToMs("04:16"))
+        assertEquals(3_723_000L, MusicUnblockEngine.parseDurationToMs("01:02:03"))
+    }
+
+    @Test
+    fun `strips paren square and curly bracket suffixes safely and instantiates engine without regex crash`() {
+        val defaultEngine = MusicUnblockEngine()
+        assertEquals(
+            "推开世界的门",
+            MusicUnblockEngine.stripBracketSuffixes(
+                MusicUnblockEngine.normalizeTrackText("推开世界的门 (Live) [DJ] {Remix}")
+            )
+        )
+        assertEquals(
+            "推开世界的门",
+            MusicUnblockEngine.stripBracketSuffixes(
+                MusicUnblockEngine.normalizeTrackText("推开世界的门（《影视原声》）【VIP】")
+            )
+        )
+        assertFalse(defaultEngine.checkAudioUrlReachable("https://other.sycdn.kuwo.cn/resource/audition/123.mp3"))
     }
 }

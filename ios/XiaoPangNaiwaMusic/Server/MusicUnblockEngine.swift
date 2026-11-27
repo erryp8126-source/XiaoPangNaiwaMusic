@@ -13,9 +13,13 @@ final class MusicUnblockEngine {
         "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
 
     static let defaultEnabledSources = ["pyncmd", "gdmusic", "migu", "kugou", "kuwo"]
-    static let minValidAudioBytes: Int64 = 400 * 1024
+    static let minValidAudioBytes: Int64 = 800 * 1024
     static let minShortTrackAudioBytes: Int64 = 80 * 1024
     static let shortTrackDurationThresholdMs: Int64 = 30_000
+    static let minCandidatePassScore = 35
+    static let rejectCandidateScore = Int.min
+    private static let maxSearchCandidates = 8
+    private static let maxProbingCandidates = 3
     private static let headFallbackCodes: Set<Int> = [400, 403, 405, 501]
     private static let disallowedAudioContentTypes: Set<String> = [
         "text/html",
@@ -24,6 +28,256 @@ final class MusicUnblockEngine {
         "text/plain",
         "text/xml"
     ]
+    private static let liveVersionPattern = #"(?<![a-z])live(?![a-z])|现场"#
+    private static let severeVersionPatterns = [
+        #"(?<![a-z])dj(?![a-z])"#,
+        #"(?<![a-z])remix(?![a-z])"#,
+        #"(?<![a-z])cover(?![a-z])"#,
+        #"(?<![a-z])instrumental(?![a-z])"#,
+        #"(?<![a-z])karaoke(?![a-z])"#,
+        #"(?<![a-z])ktv(?![a-z])"#,
+        #"(?<![a-z])slowed(?![a-z])"#,
+        #"(?<![a-z])sped\s+up(?![a-z])"#,
+        #"(?<![a-z])speed\s+up(?![a-z])"#,
+        "伴奏",
+        "翻唱",
+        "片段",
+        "铃声",
+        "纯音乐",
+        "试听",
+        "串烧",
+        "高潮版"
+    ]
+
+    struct TrackCandidateInfo {
+        let title: String
+        let artists: String
+        let durationMs: Int64
+    }
+
+    private static func normalizeTrackText(_ raw: String?) -> String {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return ""
+        }
+        let decoded = raw
+            .replacingOccurrences(of: "&amp;", with: "&", options: .caseInsensitive)
+            .replacingOccurrences(of: "&apos;", with: "'", options: .caseInsensitive)
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "&quot;", with: "\"", options: .caseInsensitive)
+            .replacingOccurrences(of: "&nbsp;", with: " ", options: .caseInsensitive)
+        var out = String.UnicodeScalarView()
+        out.reserveCapacity(decoded.unicodeScalars.count)
+        for s in decoded.unicodeScalars {
+            if s.value >= 0xFF01 && s.value <= 0xFF5E, let mapped = Unicode.Scalar(s.value - 0xFEE0) {
+                out.append(mapped)
+            } else if s.value == 0x3000 {
+                out.append(Unicode.Scalar(0x20))
+            } else if s.value == 0x3010 || s.value == 0x300C { // 【 「
+                out.append(Unicode.Scalar(0x5B))
+            } else if s.value == 0x3011 || s.value == 0x300D { // 】 」
+                out.append(Unicode.Scalar(0x5D))
+            } else if s.value == 0x300A || s.value == 0x300B { // 《 》
+                out.append(Unicode.Scalar(0x20))
+            } else {
+                out.append(s)
+            }
+        }
+        return String(out)
+            .lowercased()
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func stripBracketSuffixes(_ normalized: String) -> String {
+        guard !normalized.isEmpty else { return "" }
+        let noBrackets = normalized.replacingOccurrences(
+            of: #"\([^)]*\)|\[[^\]]*\]|\{[^\}]*\}"#,
+            with: " ",
+            options: .regularExpression
+        )
+        let noDash = noBrackets.replacingOccurrences(
+            of: #"\s+-\s+(?:live|现场|dj|remix|伴奏|翻唱|cover|片段|铃声|纯音乐|instrumental|karaoke|ktv|试听|串烧|高潮版|slowed|sped\s+up|speed\s+up|ver\.?|version|edit|mix|acoustic).*$"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        let cleaned = noDash
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? normalized : cleaned
+    }
+
+    private static func compactTrackText(_ text: String) -> String {
+        return String(text.filter { $0.isLetter || $0.isNumber }).lowercased()
+    }
+
+    private static func extractWordTokens(_ text: String) -> [String] {
+        var tokens = [String]()
+        var current = ""
+        for ch in text {
+            if ch.isLetter || ch.isNumber {
+                current.append(ch.lowercased())
+            } else {
+                if current.count >= 2 { tokens.append(current) }
+                current = ""
+            }
+        }
+        if current.count >= 2 { tokens.append(current) }
+        return tokens
+    }
+
+    private static func splitArtistTokens(_ artists: String?) -> [String] {
+        let norm = normalizeTrackText(artists)
+        guard !norm.isEmpty else { return [] }
+        let separated = norm.replacingOccurrences(of: #"[\s/,&、+·;；|]+"#, with: "\n", options: .regularExpression)
+        var seen = Set<String>()
+        var result = [String]()
+        for part in separated.split(separator: "\n") {
+            let token = compactTrackText(stripBracketSuffixes(String(part)))
+            if !token.isEmpty && !seen.contains(token) {
+                seen.insert(token)
+                result.append(token)
+            }
+        }
+        return result
+    }
+
+    static func parseDurationToMs(_ raw: Any?) -> Int64 {
+        guard let raw = raw else { return 0 }
+        if let num = raw as? NSNumber {
+            let v = num.doubleValue
+            if !v.isFinite || v <= 0 { return 0 }
+            return v < 10_000 ? Int64(v * 1000.0) : Int64(v)
+        }
+        let trimmed = "\(raw)".trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return 0 }
+        if let regex = try? NSRegularExpression(pattern: #"^(\d+):(\d{1,2})(?::(\d{1,2}))?$"#),
+           let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+           let r1 = Range(match.range(at: 1), in: trimmed),
+           let r2 = Range(match.range(at: 2), in: trimmed),
+           let p1 = Int64(trimmed[r1]),
+           let p2 = Int64(trimmed[r2]) {
+            if match.numberOfRanges > 3, let r3 = Range(match.range(at: 3), in: trimmed), let p3 = Int64(trimmed[r3]) {
+                return (p1 * 3600 + p2 * 60 + p3) * 1000
+            }
+            return (p1 * 60 + p2) * 1000
+        }
+        if let v = Double(trimmed), v.isFinite, v > 0 {
+            return v < 10_000 ? Int64(v * 1000.0) : Int64(v)
+        }
+        return 0
+    }
+
+    static func scoreCandidateMatch(
+        targetTitle: String,
+        targetArtists: String,
+        expectedDurationMs: Int64,
+        candidateTitle: String,
+        candidateArtists: String,
+        candidateDurationMs: Int64 = 0
+    ) -> Int {
+        let targetRawNorm = normalizeTrackText(targetTitle)
+        let candRawNorm = normalizeTrackText(candidateTitle)
+        let targetCoreStr = stripBracketSuffixes(targetRawNorm)
+        let candCoreStr = stripBracketSuffixes(candRawNorm)
+
+        let targetRawCompact = compactTrackText(targetRawNorm)
+        let candRawCompact = compactTrackText(candRawNorm)
+        let targetCore = compactTrackText(targetCoreStr).isEmpty ? targetRawCompact : compactTrackText(targetCoreStr)
+        let candCore = compactTrackText(candCoreStr).isEmpty ? candRawCompact : compactTrackText(candCoreStr)
+
+        var score = 0
+
+        if !targetCore.isEmpty {
+            if candCore.isEmpty { return rejectCandidateScore }
+            if candCore == targetCore || (!candRawCompact.isEmpty && candRawCompact == targetRawCompact) {
+                score += 60
+                if candRawCompact == targetRawCompact { score += 10 }
+            } else if targetCore.count >= 2 && candCore.contains(targetCore) {
+                score += 42
+            } else if candCore.count >= 2 && targetCore.contains(candCore) &&
+                        Double(candCore.count) / Double(targetCore.count) >= 0.5 {
+                score += 32
+            } else {
+                let targetTokens = extractWordTokens(targetCoreStr)
+                if targetTokens.count >= 2 && targetTokens.allSatisfy({ candCore.contains($0) }) {
+                    score += 30
+                } else {
+                    return rejectCandidateScore
+                }
+            }
+        }
+
+        let targetArtistTokens = splitArtistTokens(targetArtists)
+        let candArtistTokens = splitArtistTokens(candidateArtists)
+        if !targetArtistTokens.isEmpty && !candArtistTokens.isEmpty {
+            let matchedCount = targetArtistTokens.filter { t in
+                candArtistTokens.contains { c in
+                    c == t || (min(c.count, t.count) >= 2 && (c.contains(t) || t.contains(c)))
+                }
+            }.count
+            if matchedCount == targetArtistTokens.count {
+                score += 40
+            } else if matchedCount > 0 {
+                score += 30
+            } else {
+                score -= 65
+            }
+        }
+
+        let candLive = candRawNorm.range(of: liveVersionPattern, options: [.regularExpression, .caseInsensitive]) != nil
+        let targetLive = targetRawNorm.range(of: liveVersionPattern, options: [.regularExpression, .caseInsensitive]) != nil
+        if candLive && !targetLive {
+            score -= 45
+        }
+        let hasUndesiredVersion = severeVersionPatterns.contains { pat in
+            candRawNorm.range(of: pat, options: [.regularExpression, .caseInsensitive]) != nil &&
+                targetRawNorm.range(of: pat, options: [.regularExpression, .caseInsensitive]) == nil
+        }
+        if hasUndesiredVersion {
+            score -= 105
+        }
+
+        if expectedDurationMs > shortTrackDurationThresholdMs && candidateDurationMs > 0 {
+            let diffMs = abs(candidateDurationMs - expectedDurationMs)
+            let ratio = Double(diffMs) / Double(expectedDurationMs)
+            if diffMs <= 15_000 {
+                score += 25
+            } else if ratio <= 0.20 {
+                score += 10
+            } else if ratio <= 0.35 {
+                score -= 15
+            } else {
+                score -= 85
+            }
+        }
+
+        return score
+    }
+
+    private static func rankCandidates(
+        _ items: [[String: Any]],
+        targetTitle: String,
+        targetArtists: String,
+        expectedDurationMs: Int64,
+        extractor: ([String: Any]) -> TrackCandidateInfo
+    ) -> [[String: Any]] {
+        let scored: [(item: [String: Any], score: Int, index: Int)] = items.prefix(maxSearchCandidates).enumerated().compactMap { idx, item in
+            let info = extractor(item)
+            let s = scoreCandidateMatch(
+                targetTitle: targetTitle,
+                targetArtists: targetArtists,
+                expectedDurationMs: expectedDurationMs,
+                candidateTitle: info.title,
+                candidateArtists: info.artists,
+                candidateDurationMs: info.durationMs
+            )
+            return s >= minCandidatePassScore ? (item, s, idx) : nil
+        }
+        return scored.sorted { a, b in
+            if a.score != b.score { return a.score > b.score }
+            return a.index < b.index
+        }.map { $0.item }
+    }
 
     private let redirectDelegate: SafeRedirectSessionDelegate
     private let session: URLSession
@@ -68,13 +322,13 @@ final class MusicUnblockEngine {
             case "pyncmd":
                 res = songId.isEmpty ? nil : searchPyncmd(songId: songId, expectedDurationMs: expectedDurationMs)
             case "kuwo":
-                res = keyword.isEmpty ? nil : searchKuwo(keyword: keyword, expectedDurationMs: expectedDurationMs)
+                res = keyword.isEmpty ? nil : searchKuwo(keyword: keyword, songName: songName, artists: artists, expectedDurationMs: expectedDurationMs)
             case "kugou":
-                res = keyword.isEmpty ? nil : searchKugou(keyword: keyword, expectedDurationMs: expectedDurationMs)
+                res = keyword.isEmpty ? nil : searchKugou(keyword: keyword, songName: songName, artists: artists, expectedDurationMs: expectedDurationMs)
             case "migu":
-                res = keyword.isEmpty ? nil : searchMigu(keyword: keyword, expectedDurationMs: expectedDurationMs)
+                res = keyword.isEmpty ? nil : searchMigu(keyword: keyword, songName: songName, artists: artists, expectedDurationMs: expectedDurationMs)
             case "gdmusic", "qq", "joox":
-                res = keyword.isEmpty ? nil : searchGdMusic(keyword: keyword, expectedDurationMs: expectedDurationMs)
+                res = keyword.isEmpty ? nil : searchGdMusic(keyword: keyword, songName: songName, artists: artists, expectedDurationMs: expectedDurationMs)
             default:
                 res = nil
             }
@@ -90,7 +344,7 @@ final class MusicUnblockEngine {
             }
         }
         if !ordered.contains(where: { $0.lowercased() == "gdmusic" }), !keyword.isEmpty {
-            if let fallback = searchGdMusic(keyword: keyword, expectedDurationMs: expectedDurationMs),
+            if let fallback = searchGdMusic(keyword: keyword, songName: songName, artists: artists, expectedDurationMs: expectedDurationMs),
                fallback.url.hasPrefix("http") {
                 return fallback
             }
@@ -124,16 +378,28 @@ final class MusicUnblockEngine {
         return nil
     }
 
-    private func searchKuwo(keyword: String, expectedDurationMs: Int64 = 0) -> UnblockResult? {
+    private func searchKuwo(
+        keyword: String,
+        songName: String,
+        artists: String,
+        expectedDurationMs: Int64 = 0
+    ) -> UnblockResult? {
         let q = enc(keyword)
-        let searchUrl = "http://search.kuwo.cn/r.s?all=\(q)&ft=music&rformat=json&encoding=utf8&pcjson=1&vipver=1&pn=0&rn=5"
+        let searchUrl = "http://search.kuwo.cn/r.s?all=\(q)&ft=music&rformat=json&encoding=utf8&pcjson=1&vipver=1&pn=0&rn=\(Self.maxSearchCandidates)"
         guard let body = httpGetText(searchUrl, headers: ["User-Agent": Self.defaultUA]),
               let root = parseJsonObject(body.replacingOccurrences(of: "'", with: "\"")),
               let list = root["abslist"] as? [[String: Any]], !list.isEmpty else {
             return nil
         }
 
-        for obj in list.prefix(3) {
+        let ranked = Self.rankCandidates(list, targetTitle: songName, targetArtists: artists, expectedDurationMs: expectedDurationMs) { obj in
+            let title = (obj["SONGNAME"] as? String) ?? (obj["NAME"] as? String) ?? ""
+            let artistStr = (obj["ARTIST"] as? String) ?? ""
+            let durMs = Self.parseDurationToMs(obj["DURATION"] ?? obj["duration"])
+            return TrackCandidateInfo(title: title, artists: artistStr, durationMs: durMs)
+        }
+
+        for obj in ranked.prefix(Self.maxProbingCandidates) {
             guard let rawRid = obj["MUSICRID"] as? String else { continue }
             let rid = rawRid.hasPrefix("MUSIC_") ? String(rawRid.dropFirst(6)) : rawRid
             let urlApi = "https://antiserver.kuwo.cn/anti.s?type=convert_url3&rid=\(rid)&format=mp3"
@@ -158,9 +424,14 @@ final class MusicUnblockEngine {
         return nil
     }
 
-    private func searchKugou(keyword: String, expectedDurationMs: Int64 = 0) -> UnblockResult? {
+    private func searchKugou(
+        keyword: String,
+        songName: String,
+        artists: String,
+        expectedDurationMs: Int64 = 0
+    ) -> UnblockResult? {
         let q = enc(keyword)
-        let searchUrl = "http://mobilecdn.kugou.com/api/v3/search/song?format=json&keyword=\(q)&page=1&pagesize=5&showtype=1"
+        let searchUrl = "http://mobilecdn.kugou.com/api/v3/search/song?format=json&keyword=\(q)&page=1&pagesize=\(Self.maxSearchCandidates)&showtype=1"
         guard let body = httpGetText(searchUrl, headers: ["User-Agent": Self.defaultUA]),
               let root = parseJsonObject(body),
               let data = root["data"] as? [String: Any],
@@ -168,7 +439,17 @@ final class MusicUnblockEngine {
             return nil
         }
 
-        for obj in info {
+        let ranked = Self.rankCandidates(info, targetTitle: songName, targetArtists: artists, expectedDurationMs: expectedDurationMs) { obj in
+            let origTitle = (obj["songname_original"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let sTitle = (obj["songname"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let fTitle = (obj["filename"] as? String) ?? ""
+            let title = !origTitle.isEmpty ? origTitle : (!sTitle.isEmpty ? sTitle : fTitle)
+            let artistStr = (obj["singername"] as? String) ?? ""
+            let durMs = Self.parseDurationToMs(obj["duration"] ?? obj["timelength"])
+            return TrackCandidateInfo(title: title, artists: artistStr, durationMs: durMs)
+        }
+
+        for obj in ranked.prefix(Self.maxProbingCandidates) {
             let h320 = (obj["320hash"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let hStd = (obj["hash"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let hash = !h320.isEmpty ? h320 : hStd
@@ -192,9 +473,14 @@ final class MusicUnblockEngine {
         return nil
     }
 
-    private func searchMigu(keyword: String, expectedDurationMs: Int64 = 0) -> UnblockResult? {
+    private func searchMigu(
+        keyword: String,
+        songName: String,
+        artists: String,
+        expectedDurationMs: Int64 = 0
+    ) -> UnblockResult? {
         let q = enc(keyword)
-        let searchUrl = "https://pd.musicapp.migu.cn/MIGUM3.0/v1.0/content/search_all.do?text=\(q)&pageNo=1&pageSize=5&searchSwitch=%7B%22song%22%3A1%7D"
+        let searchUrl = "https://pd.musicapp.migu.cn/MIGUM3.0/v1.0/content/search_all.do?text=\(q)&pageNo=1&pageSize=\(Self.maxSearchCandidates)&searchSwitch=%7B%22song%22%3A1%7D"
         guard let body = httpGetText(searchUrl, headers: [
             "User-Agent": Self.defaultUA,
             "Referer": "https://m.music.migu.cn/",
@@ -206,7 +492,16 @@ final class MusicUnblockEngine {
             return nil
         }
 
-        for obj in resultList {
+        let ranked = Self.rankCandidates(resultList, targetTitle: songName, targetArtists: artists, expectedDurationMs: expectedDurationMs) { obj in
+            let title = (obj["name"] as? String) ?? (obj["songName"] as? String) ?? ""
+            let singersArr = obj["singers"] as? [[String: Any]]
+            let singerJoined = singersArr?.compactMap { $0["name"] as? String }.joined(separator: " ") ?? ""
+            let artistStr = !singerJoined.isEmpty ? singerJoined : ((obj["singer"] as? String) ?? "")
+            let durMs = Self.parseDurationToMs(obj["duration"] ?? obj["length"] ?? obj["songTime"])
+            return TrackCandidateInfo(title: title, artists: artistStr, durationMs: durMs)
+        }
+
+        for obj in ranked.prefix(Self.maxProbingCandidates) {
             guard let contentId = obj["contentId"] as? String,
                   let copyrightId = obj["copyrightId"] as? String else { continue }
             let urlApi = "https://c.musicapp.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do?copyrightId=\(copyrightId)&resourceType=2"
@@ -235,15 +530,33 @@ final class MusicUnblockEngine {
         return nil
     }
 
-    private func searchGdMusic(keyword: String, expectedDurationMs: Int64 = 0) -> UnblockResult? {
+    private func searchGdMusic(
+        keyword: String,
+        songName: String,
+        artists: String,
+        expectedDurationMs: Int64 = 0
+    ) -> UnblockResult? {
         let sources = ["joox", "netease", "kugou", "tidal", "kuwo"]
         let baseUrl = "https://music-api.gdstudio.xyz/api.php"
         for source in sources {
-            let searchUrl = "\(baseUrl)?types=search&source=\(source)&name=\(enc(keyword))&count=3&pages=1"
+            let searchUrl = "\(baseUrl)?types=search&source=\(source)&name=\(enc(keyword))&count=\(Self.maxSearchCandidates)&pages=1"
             guard let body = httpGetText(searchUrl, headers: ["User-Agent": Self.defaultUA]),
                   let data = body.data(using: .utf8),
                   let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { continue }
-            for item in arr.prefix(2) {
+            let ranked = Self.rankCandidates(arr, targetTitle: songName, targetArtists: artists, expectedDurationMs: expectedDurationMs) { item in
+                let title = (item["name"] as? String) ?? ""
+                let artistStr: String
+                if let strArr = item["artist"] as? [String] {
+                    artistStr = strArr.joined(separator: " ")
+                } else if let objArr = item["artist"] as? [[String: Any]] {
+                    artistStr = objArr.compactMap { $0["name"] as? String }.joined(separator: " ")
+                } else {
+                    artistStr = (item["artist"] as? String) ?? ""
+                }
+                let durMs = Self.parseDurationToMs(item["duration"] ?? item["dt"] ?? item["time"])
+                return TrackCandidateInfo(title: title, artists: artistStr, durationMs: durMs)
+            }
+            for item in ranked.prefix(Self.maxProbingCandidates) {
                 let trackId = "\(item["id"] ?? "")"
                 if trackId.isEmpty { continue }
                 let trackSource = (item["source"] as? String) ?? source

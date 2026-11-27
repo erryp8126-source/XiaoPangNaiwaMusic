@@ -2674,6 +2674,12 @@ test("audio probe & kuwo demotion: intercepts short kuwo notices, supports HEAD-
         headers: { "content-type": "audio/mpeg", "content-length": "81920" },
       });
     }
+    if (url.includes("/kuwo-450kb.mp3")) {
+      return new Response(null, {
+        status: 200,
+        headers: { "content-type": "audio/mpeg", "content-length": "460800" },
+      });
+    }
     if (url.includes("/normal-3mb.mp3")) {
       return new Response(null, {
         status: 200,
@@ -2727,8 +2733,16 @@ test("audio probe & kuwo demotion: intercepts short kuwo notices, supports HEAD-
     });
   };
 
+  assert.equal(musicApiMod.MIN_VALID_AUDIO_BYTES, 800 * 1024);
   assert.equal(
     await musicApiMod.checkAudioUrlReachable("https://thirdparty-cdn.example.net/kuwo-80kb.mp3", {
+      fetchImpl: mockFetch,
+      dnsLookup: publicDns,
+    }),
+    false
+  );
+  assert.equal(
+    await musicApiMod.checkAudioUrlReachable("https://thirdparty-cdn.example.net/kuwo-450kb.mp3", {
       fetchImpl: mockFetch,
       dnsLookup: publicDns,
     }),
@@ -2903,4 +2917,179 @@ test("custom LX SSRF relaxation: permits public domains only for scope=lx while 
     "utf-8"
   );
   assert.match(iosBridgeSrc, /let isCustomLx = \(requestScope == "lx"\)/);
+});
+
+test("11s kuwo 450KB notice defense: raises threshold to 800KB across platforms and evicts dirty ExoPlayer cache on short duration", () => {
+  const androidUnblock = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/MusicUnblockEngine.kt"),
+    "utf-8"
+  );
+  assert.match(androidUnblock, /MIN_VALID_AUDIO_BYTES\s*=\s*800L\s*\*\s*1024L/);
+
+  const iosUnblock = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Server/MusicUnblockEngine.swift"),
+    "utf-8"
+  );
+  assert.match(iosUnblock, /minValidAudioBytes:\s*Int64\s*=\s*800\s*\*\s*1024/);
+
+  const cacheMgrSrc = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/player/AudioCacheManager.kt"),
+    "utf-8"
+  );
+  assert.match(cacheMgrSrc, /MIN_VALID_CACHED_BYTES:\s*Long\s*=\s*800L\s*\*\s*1024L/);
+  assert.match(cacheMgrSrc, /fun evictCacheKey\(/);
+  assert.match(cacheMgrSrc, /cache\.removeResource\(cacheKey\)/);
+  const isCachedStart = cacheMgrSrc.indexOf("fun isCached(");
+  const evictStart = cacheMgrSrc.indexOf("fun evictCacheKey(", isCachedStart);
+  assert.ok(isCachedStart > 0 && evictStart > isCachedStart);
+  assert.match(cacheMgrSrc.slice(isCachedStart, evictStart), /hasSufficientCachedBytes\(/);
+
+  const serviceSrc = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/player/MusicPlaybackService.kt"),
+    "utf-8"
+  );
+  assert.match(serviceSrc, /SUSPICIOUS_SHORT_DURATION_MAX_MS\s*=\s*25_000L/);
+  assert.match(serviceSrc, /MAX_SHORT_AUDIO_RETRIES_PER_TRACK\s*=\s*1/);
+  assert.match(serviceSrc, /fun maybeRecoverShortPlaceholderAudio\(/);
+  assert.match(serviceSrc, /AudioCacheManager\.evictCacheKey\(/);
+});
+
+test("candidate track scoring & buffering feedback: prevents wrong songs/live/duration mismatch and wires spinner UI", () => {
+  assert.equal(musicApiMod.parseDurationToMs("04:16"), 256_000);
+  assert.equal(musicApiMod.parseDurationToMs(256), 256_000);
+
+  const wrongSongScore = musicApiMod.scoreCandidateMatch({
+    targetTitle: "推开世界的门",
+    targetArtists: "杨乃文",
+    expectedDurationMs: 256_000,
+    candidateTitle: "世界这么大还是遇见你",
+    candidateArtists: "程响",
+    candidateDurationMs: 256_000,
+  });
+  assert.equal(wrongSongScore, musicApiMod.REJECT_CANDIDATE_SCORE);
+
+  const shortLiveScore = musicApiMod.scoreCandidateMatch({
+    targetTitle: "推开世界的门",
+    targetArtists: "杨乃文",
+    expectedDurationMs: 256_000,
+    candidateTitle: "推开世界的门 (Live)",
+    candidateArtists: "杨乃文",
+    candidateDurationMs: 120_000,
+  });
+  assert.ok(shortLiveScore < musicApiMod.MIN_CANDIDATE_PASS_SCORE);
+
+  const wrongArtistScore = musicApiMod.scoreCandidateMatch({
+    targetTitle: "推开世界的门",
+    targetArtists: "杨乃文",
+    expectedDurationMs: 256_000,
+    candidateTitle: "推开世界的门",
+    candidateArtists: "某翻唱歌手",
+    candidateDurationMs: 256_000,
+  });
+  assert.ok(wrongArtistScore < musicApiMod.MIN_CANDIDATE_PASS_SCORE);
+
+  const aliveScore = musicApiMod.scoreCandidateMatch({
+    targetTitle: "Alive",
+    targetArtists: "Daft Punk",
+    expectedDurationMs: 210_000,
+    candidateTitle: "Alive",
+    candidateArtists: "Daft Punk",
+    candidateDurationMs: 210_000,
+  });
+  assert.equal(aliveScore, 135);
+
+  const candidates = [
+    { name: "世界这么大还是遇见你", artist: ["程响"], duration: 256 },
+    { name: "推开世界的门", artist: ["某翻唱歌手"], duration: 256 },
+    { name: "推开世界的门 (Live)", artist: ["杨乃文"], duration: 120 },
+    { name: "推开世界的门 (伴奏)", artist: ["杨乃文"], duration: 256 },
+    { name: "推开世界的门 (Live)", artist: ["杨乃文"], duration: 256 },
+    { name: "推开世界的门", artist: ["杨乃文"], duration: 256 },
+  ];
+  const ranked = musicApiMod.rankCandidates(
+    candidates,
+    (c) => ({ title: c.name, artists: c.artist.join(" "), durationMs: musicApiMod.parseDurationToMs(c.duration) }),
+    { targetTitle: "推开世界的门", targetArtists: "杨乃文", expectedDurationMs: 256_000 }
+  );
+  assert.equal(ranked.length, 2);
+  assert.equal(ranked[0].item.name, "推开世界的门");
+  assert.equal(ranked[1].item.name, "推开世界的门 (Live)");
+
+  const androidUnblock = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/MusicUnblockEngine.kt"),
+    "utf-8"
+  );
+  assert.match(androidUnblock, /fun scoreCandidateMatch\(/);
+  assert.match(androidUnblock, /fun(?:\s+<[^>]+>)?\s+rankCandidates\(/);
+
+  const iosUnblock = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Server/MusicUnblockEngine.swift"),
+    "utf-8"
+  );
+  assert.match(iosUnblock, /static func scoreCandidateMatch\(/);
+  assert.match(iosUnblock, /private static func rankCandidates\(/);
+
+  const serviceSrc = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/player/MusicPlaybackService.kt"),
+    "utf-8"
+  );
+  assert.match(serviceSrc, /Player\.STATE_BUFFERING[\s\S]*emitAudioEvent\("buffering"\)/);
+
+  const nativeHowlSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/utils/bridge/nativeHowl.ts"),
+    "utf-8"
+  );
+  assert.match(nativeHowlSrc, /case 'buffering':/);
+  assert.match(nativeHowlSrc, /this\._emit\('buffering'/);
+
+  const playerCoreSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/playerCore.ts"),
+    "utf-8"
+  );
+  assert.match(playerCoreSrc, /const isBuffering = ref\(false\)/);
+  assert.doesNotMatch(
+    playerCoreSrc.slice(playerCoreSrc.indexOf("persist:")),
+    /isBuffering/,
+    "isBuffering must not be persisted to localStorage"
+  );
+
+  for (const vueRel of [
+    "upstream/src/renderer/components/lyric/MusicFullMobile.vue",
+    "upstream/src/renderer/components/player/MobilePlayBar.vue",
+    "upstream/src/renderer/views/home/components/ImmersiveVinylHome.vue",
+    "upstream/src/renderer/components/player/PlayBar.vue",
+  ]) {
+    const vueSrc = fs.readFileSync(path.join(repoRoot, vueRel), "utf-8");
+    assert.match(vueSrc, /ri-loader-4-line animate-spin/);
+    assert.match(vueSrc, /isBuffering/);
+  }
+
+  // Android ART / iOS ICU 正则兼容门禁：禁止在 Regex 中出现 \{...} 等未转义右花括号，防止类加载时抛 U_REGEX_RULE_SYNTAX 闪退
+  const walkSourceFiles = (dir, ext) => {
+    const out = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        out.push(...walkSourceFiles(full, ext));
+      } else if (entry.name.endsWith(ext)) {
+        out.push(full);
+      }
+    }
+    return out;
+  };
+  const nativeRegexFiles = [
+    ...walkSourceFiles(path.join(repoRoot, "android/app/src/main/kotlin"), ".kt"),
+    ...walkSourceFiles(path.join(repoRoot, "ios/XiaoPangNaiwaMusic"), ".swift"),
+  ];
+  for (const filePath of nativeRegexFiles) {
+    const src = fs.readFileSync(filePath, "utf-8");
+    assert.doesNotMatch(
+      src,
+      /\\\{[^\r\n]*?(?<!\\)\}/,
+      `Unescaped brace after \\{ breaks Android/iOS ICU regex in ${path.relative(repoRoot, filePath)}`
+    );
+  }
+  assert.doesNotMatch(androidUnblock, /BRACKET_SUFFIX_REGEX/);
+  assert.match(androidUnblock, /fun stripBracketGroups\(/);
+  assert.match(iosUnblock, /\\\{[^\r\n]*?\\\}/);
 });

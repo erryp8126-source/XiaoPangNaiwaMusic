@@ -322,7 +322,7 @@
           aria-label="播放或暂停"
           @click="handleTogglePlay"
         >
-          <i v-if="playMusic?.playLoading" class="ri-loader-4-line animate-spin"></i>
+          <i v-if="playMusic?.playLoading || playerStore.isBuffering" class="ri-loader-4-line animate-spin"></i>
           <i v-else :class="isPlaying ? 'ri-pause-fill' : 'ri-play-fill ml-0.5'"></i>
         </button>
 

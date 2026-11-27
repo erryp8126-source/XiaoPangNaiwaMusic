@@ -87,7 +87,8 @@
         <i class="iconfont icon-prev"></i>
       </div>
       <div class="music-buttons-play" @click="playMusicEvent">
-        <i class="iconfont icon" :class="play ? 'icon-stop' : 'icon-play'"></i>
+        <i v-if="playMusic?.playLoading || playerStore.isBuffering" class="ri-loader-4-line animate-spin"></i>
+        <i v-else class="iconfont icon" :class="play ? 'icon-stop' : 'icon-play'"></i>
       </div>
       <div class="music-buttons-next" @click="handleNext">
         <i class="iconfont icon-next"></i>

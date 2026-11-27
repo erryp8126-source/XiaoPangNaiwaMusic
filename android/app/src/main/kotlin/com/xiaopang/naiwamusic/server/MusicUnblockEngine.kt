@@ -14,7 +14,9 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.net.URI
 import java.net.URLEncoder
+import java.util.Locale
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
 
 /**
  * 手机内置多音源解锁与 CORS-Free HTTP 引擎
@@ -30,11 +32,42 @@ class MusicUnblockEngine internal constructor(
         private const val DEFAULT_UA =
             "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
         internal val DEFAULT_ENABLED_SOURCES = listOf("pyncmd", "gdmusic", "migu", "kugou", "kuwo")
-        internal const val MIN_VALID_AUDIO_BYTES = 400L * 1024L // 400 KB：拦截酷我短提示音等占位小文件
+        internal const val MIN_VALID_AUDIO_BYTES = 800L * 1024L // 800 KB：拦截 11s 320k 酷我提示音（~450 KB）等占位小文件
         internal const val MIN_SHORT_TRACK_AUDIO_BYTES = 80L * 1024L // 80 KB：原曲 < 30 秒时适度放宽
         internal const val SHORT_TRACK_DURATION_THRESHOLD_MS = 30_000L
+        internal const val MIN_CANDIDATE_PASS_SCORE = 35
+        internal const val REJECT_CANDIDATE_SCORE = Int.MIN_VALUE
+        private const val MAX_SEARCH_CANDIDATES = 8
+        private const val MAX_PROBING_CANDIDATES = 3
         private val HEAD_FALLBACK_CODES = setOf(400, 403, 405, 501)
         private val CONTENT_RANGE_TOTAL_REGEX = Regex("""bytes\s+\d+-\d+/(\d+)""", RegexOption.IGNORE_CASE)
+        private val DURATION_CLOCK_REGEX = Regex("""^(\d+):(\d{1,2})(?::(\d{1,2}))?$""")
+        private val ARTIST_SPLIT_REGEX = Regex("""[\s/,&、+·;；|]+""")
+        private val TRAILING_VERSION_DASH_REGEX = Regex(
+            """\s+-\s+(?:live|现场|dj|remix|伴奏|翻唱|cover|片段|铃声|纯音乐|instrumental|karaoke|ktv|试听|串烧|高潮版|slowed|sped\s+up|speed\s+up|ver\.?|version|edit|mix|acoustic).*$""",
+            RegexOption.IGNORE_CASE
+        )
+        private val SEVERE_ASCII_VERSION_MARKERS = listOf(
+            "dj",
+            "remix",
+            "cover",
+            "instrumental",
+            "karaoke",
+            "ktv",
+            "slowed",
+            "sped up",
+            "speed up"
+        )
+        private val SEVERE_CN_VERSION_MARKERS = listOf(
+            "伴奏",
+            "翻唱",
+            "片段",
+            "铃声",
+            "纯音乐",
+            "试听",
+            "串烧",
+            "高潮版"
+        )
         private val KUWO_SUSPICIOUS_URL_REGEX = Regex(
             """(^|[/?&_=-])(audition|shiting|tishi|viptip|vip[_-]?tip|free[_-]?tip|notice|prompt|trylisten|try[_-]?listen|preview)([/?&_=.-]|$)""",
             RegexOption.IGNORE_CASE
@@ -46,7 +79,294 @@ class MusicUnblockEngine internal constructor(
             "text/plain",
             "text/xml"
         )
+
+        private fun isAsciiLetter(ch: Char): Boolean = ch in 'a'..'z' || ch in 'A'..'Z'
+
+        internal fun containsAsciiWord(normalizedLower: String, wordLower: String): Boolean {
+            if (normalizedLower.isEmpty() || wordLower.isEmpty()) return false
+            var fromIndex = 0
+            while (fromIndex <= normalizedLower.length - wordLower.length) {
+                val idx = normalizedLower.indexOf(wordLower, startIndex = fromIndex)
+                if (idx < 0) return false
+                val beforeOk = idx == 0 || !isAsciiLetter(normalizedLower[idx - 1])
+                val afterIdx = idx + wordLower.length
+                val afterOk = afterIdx >= normalizedLower.length || !isAsciiLetter(normalizedLower[afterIdx])
+                if (beforeOk && afterOk) return true
+                fromIndex = idx + 1
+            }
+            return false
+        }
+
+        internal fun hasLiveMarker(normalizedLower: String): Boolean {
+            return containsAsciiWord(normalizedLower, "live") || normalizedLower.contains("现场")
+        }
+
+        private fun hasSevereVersionMismatch(candNorm: String, targetNorm: String): Boolean {
+            for (marker in SEVERE_ASCII_VERSION_MARKERS) {
+                if (containsAsciiWord(candNorm, marker) && !containsAsciiWord(targetNorm, marker)) {
+                    return true
+                }
+            }
+            for (marker in SEVERE_CN_VERSION_MARKERS) {
+                if (candNorm.contains(marker) && !targetNorm.contains(marker)) {
+                    return true
+                }
+            }
+            return false
+        }
+
+        private fun stripBracketGroups(text: String): String {
+            if (text.isBlank()) return ""
+            val sb = StringBuilder(text.length)
+            var parenDepth = 0
+            var squareDepth = 0
+            var curlyDepth = 0
+            for (ch in text) {
+                when (ch) {
+                    '(' -> parenDepth++
+                    ')' -> if (parenDepth > 0) {
+                        parenDepth--
+                        if (parenDepth == 0 && squareDepth == 0 && curlyDepth == 0) sb.append(' ')
+                    }
+                    '[' -> squareDepth++
+                    ']' -> if (squareDepth > 0) {
+                        squareDepth--
+                        if (parenDepth == 0 && squareDepth == 0 && curlyDepth == 0) sb.append(' ')
+                    }
+                    '{' -> curlyDepth++
+                    '}' -> if (curlyDepth > 0) {
+                        curlyDepth--
+                        if (parenDepth == 0 && squareDepth == 0 && curlyDepth == 0) sb.append(' ')
+                    }
+                    else -> if (parenDepth == 0 && squareDepth == 0 && curlyDepth == 0) {
+                        sb.append(ch)
+                    }
+                }
+            }
+            return sb.toString()
+        }
+
+        private fun extractWordTokens(text: String): List<String> {
+            val tokens = ArrayList<String>()
+            val current = StringBuilder()
+            for (ch in text) {
+                if (ch.isLetterOrDigit()) {
+                    current.append(ch.lowercaseChar())
+                } else {
+                    if (current.length >= 2) {
+                        tokens.add(current.toString())
+                    }
+                    current.setLength(0)
+                }
+            }
+            if (current.length >= 2) {
+                tokens.add(current.toString())
+            }
+            return tokens
+        }
+
+        internal fun normalizeTrackText(raw: String?): String {
+            if (raw.isNullOrBlank()) return ""
+            val decoded = raw
+                .replace("&amp;", "&", ignoreCase = true)
+                .replace("&apos;", "'", ignoreCase = true)
+                .replace("&#39;", "'")
+                .replace("&quot;", "\"", ignoreCase = true)
+                .replace("&nbsp;", " ", ignoreCase = true)
+            val sb = StringBuilder(decoded.length)
+            for (ch in decoded) {
+                val mapped = when {
+                    ch in '\uFF01'..'\uFF5E' -> (ch.code - 0xFEE0).toChar()
+                    ch == '\u3000' -> ' '
+                    ch == '【' || ch == '「' -> '['
+                    ch == '】' || ch == '」' -> ']'
+                    ch == '《' || ch == '》' -> ' '
+                    else -> ch
+                }
+                sb.append(mapped)
+            }
+            return sb.toString()
+                .lowercase(Locale.ROOT)
+                .replace(Regex("""\s+"""), " ")
+                .trim()
+        }
+
+        internal fun stripBracketSuffixes(normalized: String): String {
+            if (normalized.isBlank()) return ""
+            val stripped = stripBracketGroups(normalized)
+                .replace(TRAILING_VERSION_DASH_REGEX, "")
+                .replace(Regex("""\s+"""), " ")
+                .trim()
+            return stripped.ifBlank { normalized }
+        }
+
+        internal fun compactTrackText(text: String): String {
+            if (text.isBlank()) return ""
+            val sb = StringBuilder(text.length)
+            for (ch in text) {
+                if (ch.isLetterOrDigit()) {
+                    sb.append(ch.lowercaseChar())
+                }
+            }
+            return sb.toString()
+        }
+
+        private fun splitArtistTokens(artists: String?): List<String> {
+            val norm = normalizeTrackText(artists)
+            if (norm.isBlank()) return emptyList()
+            return norm.split(ARTIST_SPLIT_REGEX)
+                .map { compactTrackText(stripBracketSuffixes(it)) }
+                .filter { it.isNotEmpty() }
+                .distinct()
+        }
+
+        internal fun parseDurationToMs(raw: String?): Long {
+            val trimmed = raw?.trim().orEmpty()
+            if (trimmed.isEmpty()) return 0L
+            DURATION_CLOCK_REGEX.find(trimmed)?.let { m ->
+                val p1 = m.groupValues[1].toLongOrNull() ?: 0L
+                val p2 = m.groupValues[2].toLongOrNull() ?: 0L
+                val p3Str = m.groupValues.getOrNull(3).orEmpty()
+                return if (p3Str.isNotEmpty()) {
+                    val p3 = p3Str.toLongOrNull() ?: 0L
+                    (p1 * 3600L + p2 * 60L + p3) * 1000L
+                } else {
+                    (p1 * 60L + p2) * 1000L
+                }
+            }
+            val num = trimmed.toDoubleOrNull() ?: return 0L
+            return parseDurationNumberToMs(num)
+        }
+
+        internal fun parseDurationNumberToMs(value: Double): Long {
+            if (!value.isFinite() || value <= 0.0) return 0L
+            return if (value < 10_000.0) {
+                (value * 1000.0).toLong()
+            } else {
+                value.toLong()
+            }
+        }
+
+        internal fun scoreCandidateMatch(
+            targetTitle: String,
+            targetArtists: String,
+            expectedDurationMs: Long,
+            candidateTitle: String,
+            candidateArtists: String,
+            candidateDurationMs: Long = 0L
+        ): Int {
+            val targetRawNorm = normalizeTrackText(targetTitle)
+            val candRawNorm = normalizeTrackText(candidateTitle)
+            val targetCoreStr = stripBracketSuffixes(targetRawNorm)
+            val candCoreStr = stripBracketSuffixes(candRawNorm)
+
+            val targetRawCompact = compactTrackText(targetRawNorm)
+            val candRawCompact = compactTrackText(candRawNorm)
+            val targetCore = compactTrackText(targetCoreStr).ifEmpty { targetRawCompact }
+            val candCore = compactTrackText(candCoreStr).ifEmpty { candRawCompact }
+
+            var score = 0
+
+            // 1. 歌名匹配（硬性防串歌闸门）
+            if (targetCore.isNotEmpty()) {
+                if (candCore.isEmpty()) return REJECT_CANDIDATE_SCORE
+                when {
+                    candCore == targetCore || (candRawCompact.isNotEmpty() && candRawCompact == targetRawCompact) -> {
+                        score += 60
+                        if (candRawCompact == targetRawCompact) {
+                            score += 10
+                        }
+                    }
+                    targetCore.length >= 2 && candCore.contains(targetCore) -> {
+                        score += 42
+                    }
+                    candCore.length >= 2 && targetCore.contains(candCore) &&
+                        candCore.length.toDouble() / targetCore.length.toDouble() >= 0.5 -> {
+                        score += 32
+                    }
+                    else -> {
+                        val targetTokens = extractWordTokens(targetCoreStr)
+                        if (targetTokens.size >= 2 && targetTokens.all { candCore.contains(it) }) {
+                            score += 30
+                        } else {
+                            return REJECT_CANDIDATE_SCORE
+                        }
+                    }
+                }
+            }
+
+            // 2. 歌手匹配
+            val targetArtistTokens = splitArtistTokens(targetArtists)
+            val candArtistTokens = splitArtistTokens(candidateArtists)
+            if (targetArtistTokens.isNotEmpty() && candArtistTokens.isNotEmpty()) {
+                val matchedCount = targetArtistTokens.count { t ->
+                    candArtistTokens.any { c ->
+                        c == t || (minOf(c.length, t.length) >= 2 && (c.contains(t) || t.contains(c)))
+                    }
+                }
+                score += when {
+                    matchedCount == targetArtistTokens.size -> 40
+                    matchedCount > 0 -> 30
+                    else -> -65
+                }
+            }
+
+            // 3. 版本黑名单降权/过滤（原曲本身未带对应标识时才惩罚；英文单词边界匹配，避免误伤 Alive/Discover 等词）
+            if (hasLiveMarker(candRawNorm) && !hasLiveMarker(targetRawNorm)) {
+                score -= 45
+            }
+            if (hasSevereVersionMismatch(candRawNorm, targetRawNorm)) {
+                score -= 105
+            }
+
+            // 4. 时长一致性校验
+            if (expectedDurationMs > SHORT_TRACK_DURATION_THRESHOLD_MS && candidateDurationMs > 0L) {
+                val diffMs = abs(candidateDurationMs - expectedDurationMs)
+                val ratio = diffMs.toDouble() / expectedDurationMs.toDouble()
+                score += when {
+                    diffMs <= 15_000L -> 25
+                    ratio <= 0.20 -> 10
+                    ratio <= 0.35 -> -15
+                    else -> -85
+                }
+            }
+
+            return score
+        }
+
+        internal fun <T> rankCandidates(
+            items: List<T>,
+            targetTitle: String,
+            targetArtists: String,
+            expectedDurationMs: Long,
+            extractor: (T) -> TrackCandidate
+        ): List<ScoredCandidate<T>> {
+            return items.mapIndexedNotNull { idx, item ->
+                val info = extractor(item)
+                val score = scoreCandidateMatch(
+                    targetTitle = targetTitle,
+                    targetArtists = targetArtists,
+                    expectedDurationMs = expectedDurationMs,
+                    candidateTitle = info.title,
+                    candidateArtists = info.artists,
+                    candidateDurationMs = info.durationMs
+                )
+                if (score >= MIN_CANDIDATE_PASS_SCORE) ScoredCandidate(item, score, idx) else null
+            }.sortedWith(compareByDescending<ScoredCandidate<T>> { it.score }.thenBy { it.index })
+        }
     }
+
+    internal data class TrackCandidate(
+        val title: String,
+        val artists: String,
+        val durationMs: Long = 0L
+    )
+
+    internal data class ScoredCandidate<T>(
+        val item: T,
+        val score: Int,
+        val index: Int
+    )
 
     private val gson = Gson()
 
@@ -90,10 +410,10 @@ class MusicUnblockEngine internal constructor(
         for (src in ordered) {
             val result = when (src.lowercase()) {
                 "pyncmd" -> if (songId.isNotBlank()) runCatching { searchPyncmd(songId, expectedDurationMs) }.getOrNull() else null
-                "kuwo" -> if (keyword.isNotBlank()) runCatching { searchKuwo(keyword, songName, expectedDurationMs) }.getOrNull() else null
-                "kugou" -> if (keyword.isNotBlank()) runCatching { searchKugou(keyword, songName, expectedDurationMs) }.getOrNull() else null
-                "migu" -> if (keyword.isNotBlank()) runCatching { searchMigu(keyword, songName, expectedDurationMs) }.getOrNull() else null
-                "gdmusic", "qq", "joox" -> if (keyword.isNotBlank()) runCatching { searchGdMusic(keyword, songId, expectedDurationMs) }.getOrNull() else null
+                "kuwo" -> if (keyword.isNotBlank()) runCatching { searchKuwo(keyword, songName, artists, expectedDurationMs) }.getOrNull() else null
+                "kugou" -> if (keyword.isNotBlank()) runCatching { searchKugou(keyword, songName, artists, expectedDurationMs) }.getOrNull() else null
+                "migu" -> if (keyword.isNotBlank()) runCatching { searchMigu(keyword, songName, artists, expectedDurationMs) }.getOrNull() else null
+                "gdmusic", "qq", "joox" -> if (keyword.isNotBlank()) runCatching { searchGdMusic(keyword, songId, songName, artists, expectedDurationMs) }.getOrNull() else null
                 else -> null
             }
             if (result != null && result.url.startsWith("http")) {
@@ -108,7 +428,7 @@ class MusicUnblockEngine internal constructor(
             if (pyncmdFallback != null && pyncmdFallback.url.startsWith("http")) return pyncmdFallback
         }
         if (!ordered.any { it.equals("gdmusic", ignoreCase = true) } && keyword.isNotBlank()) {
-            val fallback = runCatching { searchGdMusic(keyword, songId, expectedDurationMs) }.getOrNull()
+            val fallback = runCatching { searchGdMusic(keyword, songId, songName, artists, expectedDurationMs) }.getOrNull()
             if (fallback != null && fallback.url.startsWith("http")) return fallback
         }
         return null
@@ -137,19 +457,65 @@ class MusicUnblockEngine internal constructor(
         return null
     }
 
-    private fun searchKuwo(keyword: String, songName: String, expectedDurationMs: Long = 0L): UnblockResult? {
+    private fun parseDurationFromJson(obj: JsonObject, vararg keys: String): Long {
+        for (k in keys) {
+            val el = obj.get(k)?.takeIf { !it.isJsonNull } ?: continue
+            if (el.isJsonPrimitive) {
+                val prim = el.asJsonPrimitive
+                val ms = when {
+                    prim.isNumber -> parseDurationNumberToMs(prim.asDouble)
+                    prim.isString -> parseDurationToMs(prim.asString)
+                    else -> 0L
+                }
+                if (ms > 0L) return ms
+            }
+        }
+        return 0L
+    }
+
+    private fun extractGdArtistNames(item: JsonObject): String {
+        val raw = item.get("artist")?.takeIf { !it.isJsonNull } ?: return ""
+        return when {
+            raw.isJsonArray -> raw.asJsonArray.mapNotNull { el ->
+                el.takeIf { !it.isJsonNull }?.let {
+                    if (it.isJsonObject) it.asJsonObject.get("name")?.takeIf { n -> !n.isJsonNull }?.asString
+                    else it.asString
+                }
+            }.joinToString(" ")
+            raw.isJsonPrimitive -> raw.asString
+            else -> ""
+        }
+    }
+
+    private fun searchKuwo(
+        keyword: String,
+        songName: String,
+        artists: String,
+        expectedDurationMs: Long = 0L
+    ): UnblockResult? {
         val q = enc(keyword)
         val searchUrl =
-            "http://search.kuwo.cn/r.s?all=$q&ft=music&rformat=json&encoding=utf8&pcjson=1&vipver=1&pn=0&rn=5"
+            "http://search.kuwo.cn/r.s?all=$q&ft=music&rformat=json&encoding=utf8&pcjson=1&vipver=1&pn=0&rn=$MAX_SEARCH_CANDIDATES"
         val body = httpGetText(searchUrl, mapOf("User-Agent" to DEFAULT_UA)) ?: return null
         val root = runCatching { JsonParser.parseString(body.replace("'", "\"")).asJsonObject }.getOrNull()
             ?: return null
         val list = root.getAsJsonArray("abslist") ?: return null
         if (list.size() == 0) return null
 
-        val maxItems = minOf(3, list.size())
-        for (index in 0 until maxItems) {
-            val obj = list[index].asJsonObject
+        val rawItems = (0 until minOf(MAX_SEARCH_CANDIDATES, list.size())).mapNotNull { idx ->
+            runCatching { list[idx].asJsonObject }.getOrNull()
+        }
+        val ranked = rankCandidates(rawItems, songName, artists, expectedDurationMs) { obj ->
+            val title = obj.get("SONGNAME")?.takeIf { !it.isJsonNull }?.asString
+                ?: obj.get("NAME")?.takeIf { !it.isJsonNull }?.asString
+                ?: ""
+            val artistStr = obj.get("ARTIST")?.takeIf { !it.isJsonNull }?.asString ?: ""
+            val durMs = parseDurationFromJson(obj, "DURATION", "duration")
+            TrackCandidate(title = title, artists = artistStr, durationMs = durMs)
+        }
+
+        for (candidate in ranked.take(MAX_PROBING_CANDIDATES)) {
+            val obj = candidate.item
             val rid = obj.get("MUSICRID")?.takeIf { !it.isJsonNull }?.asString?.removePrefix("MUSIC_") ?: continue
             val urlApi =
                 "https://antiserver.kuwo.cn/anti.s?type=convert_url3&rid=$rid&format=mp3"
@@ -175,15 +541,33 @@ class MusicUnblockEngine internal constructor(
         return null
     }
 
-    private fun searchKugou(keyword: String, songName: String, expectedDurationMs: Long = 0L): UnblockResult? {
+    private fun searchKugou(
+        keyword: String,
+        songName: String,
+        artists: String,
+        expectedDurationMs: Long = 0L
+    ): UnblockResult? {
         val q = enc(keyword)
         val searchUrl =
-            "http://mobilecdn.kugou.com/api/v3/search/song?format=json&keyword=$q&page=1&pagesize=5&showtype=1"
+            "http://mobilecdn.kugou.com/api/v3/search/song?format=json&keyword=$q&page=1&pagesize=$MAX_SEARCH_CANDIDATES&showtype=1"
         val body = httpGetText(searchUrl, mapOf("User-Agent" to DEFAULT_UA)) ?: return null
         val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return null
         val info = root.getAsJsonObject("data")?.getAsJsonArray("info") ?: return null
-        for (el in info) {
-            val obj = el.asJsonObject
+        val rawItems = (0 until minOf(MAX_SEARCH_CANDIDATES, info.size())).mapNotNull { idx ->
+            runCatching { info[idx].asJsonObject }.getOrNull()
+        }
+        val ranked = rankCandidates(rawItems, songName, artists, expectedDurationMs) { obj ->
+            val title = obj.get("songname_original")?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() }
+                ?: obj.get("songname")?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() }
+                ?: obj.get("filename")?.takeIf { !it.isJsonNull }?.asString
+                ?: ""
+            val artistStr = obj.get("singername")?.takeIf { !it.isJsonNull }?.asString ?: ""
+            val durMs = parseDurationFromJson(obj, "duration", "timelength")
+            TrackCandidate(title = title, artists = artistStr, durationMs = durMs)
+        }
+
+        for (candidate in ranked.take(MAX_PROBING_CANDIDATES)) {
+            val obj = candidate.item
             val hash = obj.get("320hash")?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() }
                 ?: obj.get("hash")?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() }
                 ?: continue
@@ -208,10 +592,15 @@ class MusicUnblockEngine internal constructor(
         return null
     }
 
-    private fun searchMigu(keyword: String, songName: String, expectedDurationMs: Long = 0L): UnblockResult? {
+    private fun searchMigu(
+        keyword: String,
+        songName: String,
+        artists: String,
+        expectedDurationMs: Long = 0L
+    ): UnblockResult? {
         val q = enc(keyword)
         val searchUrl =
-            "https://pd.musicapp.migu.cn/MIGUM3.0/v1.0/content/search_all.do?text=$q&pageNo=1&pageSize=5&searchSwitch=%7B%22song%22%3A1%7D"
+            "https://pd.musicapp.migu.cn/MIGUM3.0/v1.0/content/search_all.do?text=$q&pageNo=1&pageSize=$MAX_SEARCH_CANDIDATES&searchSwitch=%7B%22song%22%3A1%7D"
         val body = httpGetText(
             searchUrl,
             mapOf(
@@ -222,8 +611,25 @@ class MusicUnblockEngine internal constructor(
         ) ?: return null
         val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return null
         val resultList = root.getAsJsonObject("songResultData")?.getAsJsonArray("result") ?: return null
-        for (el in resultList) {
-            val obj = el.asJsonObject
+        val rawItems = (0 until minOf(MAX_SEARCH_CANDIDATES, resultList.size())).mapNotNull { idx ->
+            runCatching { resultList[idx].asJsonObject }.getOrNull()
+        }
+        val ranked = rankCandidates(rawItems, songName, artists, expectedDurationMs) { obj ->
+            val title = obj.get("name")?.takeIf { !it.isJsonNull }?.asString
+                ?: obj.get("songName")?.takeIf { !it.isJsonNull }?.asString
+                ?: ""
+            val singersArr = obj.getAsJsonArray("singers")
+            val artistStr = singersArr?.mapNotNull { s ->
+                s.takeIf { it.isJsonObject }?.asJsonObject?.get("name")?.takeIf { !it.isJsonNull }?.asString
+            }?.joinToString(" ")?.takeIf { it.isNotBlank() }
+                ?: obj.get("singer")?.takeIf { !it.isJsonNull }?.asString
+                ?: ""
+            val durMs = parseDurationFromJson(obj, "duration", "length", "songTime")
+            TrackCandidate(title = title, artists = artistStr, durationMs = durMs)
+        }
+
+        for (candidate in ranked.take(MAX_PROBING_CANDIDATES)) {
+            val obj = candidate.item
             val contentId = obj.get("contentId")?.takeIf { !it.isJsonNull }?.asString ?: continue
             val copyrightId = obj.get("copyrightId")?.takeIf { !it.isJsonNull }?.asString ?: continue
             val urlApi =
@@ -256,17 +662,31 @@ class MusicUnblockEngine internal constructor(
         return null
     }
 
-    private fun searchGdMusic(keyword: String, songId: String, expectedDurationMs: Long = 0L): UnblockResult? {
+    private fun searchGdMusic(
+        keyword: String,
+        songId: String,
+        songName: String,
+        artists: String,
+        expectedDurationMs: Long = 0L
+    ): UnblockResult? {
         val sources = listOf("joox", "netease", "kugou", "tidal", "kuwo")
         val baseUrl = "https://music-api.gdstudio.xyz/api.php"
         for (source in sources) {
-            val searchUrl = "$baseUrl?types=search&source=$source&name=${enc(keyword)}&count=3&pages=1"
+            val searchUrl = "$baseUrl?types=search&source=$source&name=${enc(keyword)}&count=$MAX_SEARCH_CANDIDATES&pages=1"
             val body = httpGetText(searchUrl, mapOf("User-Agent" to DEFAULT_UA)) ?: continue
             val arr = runCatching { JsonParser.parseString(body).asJsonArray }.getOrNull() ?: continue
             if (arr.size() == 0) continue
-            val maxItems = minOf(2, arr.size())
-            for (idx in 0 until maxItems) {
-                val item = arr[idx].asJsonObject
+            val rawItems = (0 until minOf(MAX_SEARCH_CANDIDATES, arr.size())).mapNotNull { idx ->
+                runCatching { arr[idx].asJsonObject }.getOrNull()
+            }
+            val ranked = rankCandidates(rawItems, songName, artists, expectedDurationMs) { item ->
+                val title = item.get("name")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                val artistStr = extractGdArtistNames(item)
+                val durMs = parseDurationFromJson(item, "duration", "dt", "time")
+                TrackCandidate(title = title, artists = artistStr, durationMs = durMs)
+            }
+            for (candidate in ranked.take(MAX_PROBING_CANDIDATES)) {
+                val item = candidate.item
                 val trackId = item.get("id")?.takeIf { !it.isJsonNull }?.asString ?: continue
                 val trackSource = item.get("source")?.takeIf { !it.isJsonNull }?.asString ?: source
                 val urlEndpoint = "$baseUrl?types=url&source=$trackSource&id=$trackId&br=999"

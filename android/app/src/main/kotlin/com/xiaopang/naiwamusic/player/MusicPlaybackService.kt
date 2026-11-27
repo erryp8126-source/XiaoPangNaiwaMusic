@@ -98,6 +98,22 @@ class MusicPlaybackService : MediaSessionService() {
         const val CUSTOM_CMD_TOGGLE_LYRIC = "com.xiaopang.naiwamusic.TOGGLE_LYRIC"
 
         private const val MAX_NATIVE_SKIP_FAILS = 8
+        internal const val SUSPICIOUS_SHORT_DURATION_MAX_MS = 25_000L
+        internal const val SHORT_TRACK_EXPECTED_THRESHOLD_MS = 30_000L
+        internal const val MAX_SHORT_AUDIO_RETRIES_PER_TRACK = 1
+
+        internal fun shouldTriggerShortAudioRecovery(
+            actualDurationMs: Long,
+            expectedDurationMs: Long,
+            retryCountForTrack: Int,
+            isRemoteHttpUrl: Boolean
+        ): Boolean {
+            if (!isRemoteHttpUrl) return false
+            if (retryCountForTrack >= MAX_SHORT_AUDIO_RETRIES_PER_TRACK) return false
+            if (actualDurationMs <= 0L || actualDurationMs > SUSPICIOUS_SHORT_DURATION_MAX_MS) return false
+            if (expectedDurationMs in 1L until SHORT_TRACK_EXPECTED_THRESHOLD_MS) return false
+            return true
+        }
 
         @Volatile
         var instance: MusicPlaybackService? = null
@@ -228,6 +244,11 @@ class MusicPlaybackService : MediaSessionService() {
     private var currentCoverUrl: String = ""
     @Volatile
     private var currentPlayUrl: String = ""
+    @Volatile
+    private var currentExpectedDurationMs: Long = 0L
+    private var shortAudioRetryTrackKey: String = ""
+    private var shortAudioRetryCount: Int = 0
+    private var shortAudioRetryJob: Job? = null
     private var currentArtworkBitmap: Bitmap? = null
     private var hasNotifiedLoaded: Boolean = false
     private var isForegroundStarted: Boolean = false
@@ -538,7 +559,15 @@ class MusicPlaybackService : MediaSessionService() {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 snapshotPlayerState()
                 when (playbackState) {
+                    Player.STATE_BUFFERING -> {
+                        if (!userPaused) {
+                            emitAudioEvent("buffering")
+                        }
+                    }
                     Player.STATE_READY -> {
+                        if (!hasNotifiedLoaded && maybeRecoverShortPlaceholderAudio()) {
+                            return
+                        }
                         nativeConsecutiveFails = 0
                         isTransitioningTrack = false
                         releaseTransitionWakeLock()
@@ -948,6 +977,175 @@ class MusicPlaybackService : MediaSessionService() {
         nativeAdvanceJob = null
         prebufferJob?.cancel()
         prebufferJob = null
+        shortAudioRetryJob?.cancel()
+        shortAudioRetryJob = null
+    }
+
+    private fun resetShortAudioRetryIfTrackChanged(
+        songId: String,
+        title: String,
+        artist: String,
+        expectedDurationMs: Long
+    ) {
+        currentExpectedDurationMs = expectedDurationMs.coerceAtLeast(0L)
+        val key = songId.ifBlank { "$title|$artist" }
+        if (key != shortAudioRetryTrackKey) {
+            shortAudioRetryTrackKey = key
+            shortAudioRetryCount = 0
+        }
+    }
+
+    /**
+     * 检测到远端 HTTP 音频的实际时长异常短（(0, 25_000ms] 且原曲并非 <30s 短曲，例如 11s 酷我提示音）时，
+     * 立即停播并清除该曲在 SimpleCache 中的脏缓存（cacheKey），同时发起单次换源重试（单曲防死循环）。
+     */
+    private fun maybeRecoverShortPlaceholderAudio(): Boolean {
+        if (!::exoPlayer.isInitialized) return false
+        val actualDurationMs = exoPlayer.duration
+        val expectedDurationMs = currentExpectedDurationMs.takeIf { it > 0L }
+            ?: exoPlayer.currentMediaItem?.mediaMetadata?.extras?.getLong("dt", 0L)?.takeIf { it > 0L }
+            ?: nativeQueue.firstOrNull { it.id == currentSongId }?.dt
+            ?: 0L
+        val playableUri = resolvePlayableUri(currentPlayUrl)
+        val scheme = playableUri.scheme?.lowercase() ?: ""
+        val host = playableUri.host?.lowercase() ?: ""
+        val isRemoteHttp = (scheme == "http" || scheme == "https") &&
+            host != "127.0.0.1" && host != "localhost"
+
+        if (!shouldTriggerShortAudioRecovery(
+                actualDurationMs = actualDurationMs,
+                expectedDurationMs = expectedDurationMs,
+                retryCountForTrack = shortAudioRetryCount,
+                isRemoteHttpUrl = isRemoteHttp
+            )
+        ) {
+            return false
+        }
+
+        shortAudioRetryCount += 1
+        val snapshotInstanceId = currentInstanceId
+        val snapshotSongId = currentSongId
+        val snapshotTitle = currentTitle
+        val snapshotArtist = currentArtist
+        val snapshotAlbum = currentAlbum
+        val snapshotCover = currentCoverUrl
+        val snapshotUrl = currentPlayUrl
+        val snapshotExpectedDt = expectedDurationMs
+        val snapshotPlayWhenReady = !userPaused
+        val snapshotIsNative = isNativeManagedTrack
+        val snapshotQueueIndex = nativeQueueIndex
+        val snapshotIsFm = nativeIsFm
+        val snapshotSources = nativeUnblockSources.toList()
+        val cacheKey = exoPlayer.currentMediaItem?.localConfiguration?.customCacheKey
+            ?.takeIf { it.isNotBlank() }
+            ?: if (snapshotSongId.isNotBlank()) "song_${snapshotSongId}_${nativeMusicQuality}" else ""
+
+        Log.w(
+            TAG,
+            "Detected suspicious short audio (${actualDurationMs}ms, expected=${expectedDurationMs}ms) for [$snapshotTitle/$snapshotSongId]; evicting cacheKey=$cacheKey and retrying ($shortAudioRetryCount/$MAX_SHORT_AUDIO_RETRIES_PER_TRACK)"
+        )
+
+        // 先停止 ExoPlayer 释放对 SimpleCache span 的占用，再异步清除脏缓存并重新解灰
+        exoPlayer.stop()
+        hasNotifiedLoaded = false
+        isTransitioningTrack = true
+        uiHandler.removeCallbacks(progressTicker)
+        if (!userPaused) {
+            emitAudioEvent("buffering")
+        }
+
+        shortAudioRetryJob?.cancel()
+        shortAudioRetryJob = serviceScope.launch {
+            if (cacheKey.isNotBlank()) {
+                AudioCacheManager.evictCacheKey(this@MusicPlaybackService, cacheKey)
+            }
+            val retrySources = snapshotSources
+                .filterNot { it.equals("kuwo", ignoreCase = true) }
+                .ifEmpty { listOf("pyncmd", "gdmusic", "migu", "kugou") }
+            val unblocked = runCatching {
+                NaiwaApp.instance.unblockEngine.unblock(
+                    snapshotSongId,
+                    snapshotTitle,
+                    snapshotArtist,
+                    retrySources,
+                    snapshotExpectedDt
+                )
+            }.getOrNull()
+            val retryUrl = when {
+                unblocked != null && unblocked.url.startsWith("http") -> unblocked.url
+                snapshotUrl.startsWith("http") &&
+                    runCatching {
+                        NaiwaApp.instance.unblockEngine.checkAudioUrlReachable(snapshotUrl, snapshotExpectedDt)
+                    }.getOrDefault(false) -> snapshotUrl
+                else -> null
+            }
+
+            uiHandler.post {
+                if (currentInstanceId != snapshotInstanceId ||
+                    currentSongId != snapshotSongId ||
+                    !::exoPlayer.isInitialized
+                ) {
+                    return@post
+                }
+                if (!retryUrl.isNullOrBlank()) {
+                    currentPlayUrl = retryUrl
+                    hasNotifiedLoaded = false
+                    isTransitioningTrack = snapshotPlayWhenReady
+                    val retryItem = NativeQueueItem(
+                        id = snapshotSongId,
+                        name = snapshotTitle,
+                        artist = snapshotArtist,
+                        album = snapshotAlbum,
+                        cover = snapshotCover,
+                        url = retryUrl,
+                        source = "netease",
+                        dt = snapshotExpectedDt
+                    )
+                    val mediaItem = buildMediaItemWithMeta(retryItem, retryUrl, snapshotQueueIndex, snapshotIsFm)
+                    exoPlayer.setMediaItem(mediaItem)
+                    syncExoPlayerRepeatMode()
+                    exoPlayer.playWhenReady = snapshotPlayWhenReady
+                    exoPlayer.prepare()
+                    snapshotPlayerState()
+                    ensureForegroundNotification()
+                    updateNotification()
+                    if (snapshotIsNative) {
+                        val syncPayload = gson.toJson(
+                            mapOf(
+                                "type" to "native-track-changed",
+                                "instanceId" to currentInstanceId,
+                                "index" to snapshotQueueIndex,
+                                "songId" to snapshotSongId,
+                                "url" to retryUrl,
+                                "title" to snapshotTitle,
+                                "artist" to snapshotArtist,
+                                "album" to snapshotAlbum,
+                                "cover" to snapshotCover,
+                                "duration" to (snapshotExpectedDt / 1000.0),
+                                "position" to 0.0,
+                                "playing" to snapshotPlayWhenReady,
+                                "isFm" to snapshotIsFm
+                            )
+                        )
+                        pendingTrackSyncJson = syncPayload
+                        eventEmitter?.invoke("audio-event", syncPayload)
+                    }
+                    Log.i(TAG, "Recovered short placeholder audio for [$snapshotTitle] with url=${retryUrl.take(80)}")
+                } else {
+                    isTransitioningTrack = false
+                    releaseTransitionWakeLock()
+                    if (!snapshotIsNative) {
+                        emitAudioEvent("loaderror", "Detected short placeholder audio (${actualDurationMs}ms); cache evicted")
+                    } else if (!userPaused && nativeConsecutiveFails < MAX_NATIVE_SKIP_FAILS) {
+                        nativeConsecutiveFails++
+                        acquireTransitionWakeLock(45_000L)
+                        isTransitioningTrack = true
+                        advanceNativeQueue(delta = 1, fromEnded = false)
+                    }
+                }
+            }
+        }
+        return true
     }
 
     private fun buildMediaItemWithMeta(
@@ -1143,6 +1341,7 @@ class MusicPlaybackService : MediaSessionService() {
         nativeConsecutiveFails = 0
         prequeuedForInstanceId = 0
         prequeuedNextSongId = ""
+        resetShortAudioRetryIfTrackChanged(songId, title, artist, dt)
 
         if (isFm && songId.isNotBlank()) {
             nativeQueue = listOf(
@@ -1154,6 +1353,9 @@ class MusicPlaybackService : MediaSessionService() {
         val curItemIdx = exoPlayer.currentMediaItemIndex
         if (curItemIdx > 0) {
             exoPlayer.removeMediaItems(0, curItemIdx)
+        }
+        if (maybeRecoverShortPlaceholderAudio()) {
+            return
         }
 
         syncFavoriteStateForTrack()
@@ -1541,6 +1743,9 @@ class MusicPlaybackService : MediaSessionService() {
         currentAlbum = item.album
         currentCoverUrl = item.cover
         currentPlayUrl = url
+        shortAudioRetryJob?.cancel()
+        shortAudioRetryJob = null
+        resetShortAudioRetryIfTrackChanged(item.id, currentTitle, currentArtist, item.dt)
 
         val mediaItem = buildMediaItemWithMeta(item, url, index, nativeIsFm)
 
@@ -1756,6 +1961,12 @@ class MusicPlaybackService : MediaSessionService() {
 
             hasNotifiedLoaded = false
             cancelVolumeFade()
+            resetShortAudioRetryIfTrackChanged(
+                currentSongId,
+                currentTitle,
+                currentArtist,
+                (expectedDurSec * 1000.0).toLong()
+            )
 
             val currentItem = NativeQueueItem(
                 id = currentSongId,

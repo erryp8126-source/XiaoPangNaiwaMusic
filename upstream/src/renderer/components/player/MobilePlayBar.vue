@@ -56,7 +56,8 @@
       <!-- 右侧播控按钮 -->
       <div class="mini-playback-controls">
         <button type="button" class="mini-play-btn" @click.stop="playMusicEvent">
-          <i :class="play ? 'ri-pause-fill' : 'ri-play-fill ml-0.5'"></i>
+          <i v-if="isPlayLoading" class="ri-loader-4-line animate-spin"></i>
+          <i v-else :class="play ? 'ri-pause-fill' : 'ri-play-fill ml-0.5'"></i>
         </button>
         <button type="button" class="mini-list-btn" @click.stop="openPlayListDrawer">
           <i class="ri-play-list-2-fill"></i>
@@ -97,6 +98,9 @@ const playerStore = usePlayerStore();
 const settingsStore = useSettingsStore();
 
 const play = computed(() => playerStore.isPlay);
+const isPlayLoading = computed(() =>
+  Boolean(playMusic.value?.playLoading || playerStore.isBuffering)
+);
 const background = ref('#131926');
 
 const dynamicBackgroundEnabled = computed(

@@ -43,7 +43,8 @@ export const usePlayerStore = defineStore('player', () => {
     volume,
     userPlayIntent,
     isFmPlaying,
-    isSeedingLaunchTrack
+    isSeedingLaunchTrack,
+    isBuffering
   } = storeToRefs(playerCore);
 
   const { playList, playListIndex, playMode, originalPlayList, playListDrawerVisible } =
@@ -100,6 +101,7 @@ export const usePlayerStore = defineStore('player', () => {
     userPlayIntent,
     isFmPlaying,
     isSeedingLaunchTrack,
+    isBuffering,
 
     // PlayerCore - Computed
     currentSong,
@@ -107,6 +109,7 @@ export const usePlayerStore = defineStore('player', () => {
 
     // PlayerCore - Actions
     setIsPlay: playerCore.setIsPlay,
+    setBuffering: playerCore.setBuffering,
     setMusicFull: playerCore.setMusicFull,
     setPlayMusic: playerCore.setPlayMusic,
     setPlaybackRate: playerCore.setPlaybackRate,

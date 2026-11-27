@@ -16,6 +16,7 @@ export class NativeHowl {
     durationSec: number;
   };
   private _state: 'loading' | 'loaded' | 'unloaded' = 'loading';
+  private _buffering = false;
   private _playing = false;
   private _position = 0;
   private _duration = 0;
@@ -185,8 +186,15 @@ export class NativeHowl {
     }
 
     switch (evt.type) {
+      case 'buffering':
+        if (!this._buffering) {
+          this._buffering = true;
+          this._emit('buffering', this.instanceId, true);
+        }
+        break;
       case 'loaded':
         this._state = 'loaded';
+        this.clearBuffering();
         if (!this.loadedEmitted) {
           this.loadedEmitted = true;
           this._emit('load', this.instanceId);
@@ -195,6 +203,7 @@ export class NativeHowl {
       case 'play':
         this._state = 'loaded';
         this._playing = true;
+        this.clearBuffering();
         if (!this.loadedEmitted) {
           this.loadedEmitted = true;
           this._emit('load', this.instanceId);
@@ -203,23 +212,28 @@ export class NativeHowl {
         break;
       case 'pause':
         this._playing = false;
+        this.clearBuffering();
         this._emit('pause', this.instanceId);
         break;
       case 'end':
         this._playing = false;
+        this.clearBuffering();
         this._emit('end', this.instanceId);
         break;
       case 'replayed':
         this._position = 0;
         this._playing = true;
+        this.clearBuffering();
         this._emit('seek', this.instanceId);
         this._emit('play', this.instanceId);
         break;
       case 'sync-state':
         this._emit('seek', this.instanceId);
         if (this._playing && !prevPlaying) {
+          this.clearBuffering();
           this._emit('play', this.instanceId);
         } else if (!this._playing && prevPlaying) {
+          this.clearBuffering();
           this._emit('pause', this.instanceId);
         }
         break;
@@ -229,14 +243,24 @@ export class NativeHowl {
       case 'loaderror':
         this._playing = false;
         this._state = 'unloaded';
+        this.clearBuffering();
         this._emit('loaderror', this.instanceId, evt.error || 'Native player load error');
         break;
       case 'playerror':
         this._playing = false;
+        this.clearBuffering();
         this._emit('playerror', this.instanceId, evt.error || 'Native player play error');
         break;
       case 'timeupdate':
+        this.clearBuffering();
         break;
+    }
+  }
+
+  private clearBuffering(): void {
+    if (this._buffering) {
+      this._buffering = false;
+      this._emit('buffering', this.instanceId, false);
     }
   }
 

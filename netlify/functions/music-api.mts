@@ -88,7 +88,7 @@ function isPublicIpAddress(ip: string): boolean {
   return false;
 }
 
-export const MIN_VALID_AUDIO_BYTES = 400 * 1024;
+export const MIN_VALID_AUDIO_BYTES = 800 * 1024;
 export const MIN_SHORT_TRACK_AUDIO_BYTES = 80 * 1024;
 export const SHORT_TRACK_DURATION_THRESHOLD_MS = 30_000;
 const HEAD_FALLBACK_CODES = new Set([400, 403, 405, 501]);
@@ -725,6 +725,224 @@ export async function checkAudioUrlReachable(
   }
 }
 
+export const MIN_CANDIDATE_PASS_SCORE = 35;
+export const REJECT_CANDIDATE_SCORE = -1_000_000;
+const MAX_SEARCH_CANDIDATES = 8;
+const MAX_PROBING_CANDIDATES = 3;
+
+const LIVE_VERSION_REGEX = /(?<![a-z])live(?![a-z])|现场/i;
+const SEVERE_VERSION_PATTERNS = [
+  /(?<![a-z])dj(?![a-z])/i,
+  /(?<![a-z])remix(?![a-z])/i,
+  /(?<![a-z])cover(?![a-z])/i,
+  /(?<![a-z])instrumental(?![a-z])/i,
+  /(?<![a-z])karaoke(?![a-z])/i,
+  /(?<![a-z])ktv(?![a-z])/i,
+  /(?<![a-z])slowed(?![a-z])/i,
+  /(?<![a-z])sped\s+up(?![a-z])/i,
+  /(?<![a-z])speed\s+up(?![a-z])/i,
+  /伴奏/,
+  /翻唱/,
+  /片段/,
+  /铃声/,
+  /纯音乐/,
+  /试听/,
+  /串烧/,
+  /高潮版/,
+];
+
+function normalizeTrackText(raw: string): string {
+  if (!raw || !raw.trim()) return "";
+  const decoded = raw
+    .replace(/&amp;/gi, "&")
+    .replace(/&apos;|&#39;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/&nbsp;/gi, " ");
+  let mapped = "";
+  for (const ch of decoded) {
+    const code = ch.charCodeAt(0);
+    if (code >= 0xff01 && code <= 0xff5e) {
+      mapped += String.fromCharCode(code - 0xfee0);
+    } else if (code === 0x3000 || ch === "《" || ch === "》") {
+      mapped += " ";
+    } else if (ch === "【" || ch === "「") {
+      mapped += "[";
+    } else if (ch === "】" || ch === "」") {
+      mapped += "]";
+    } else {
+      mapped += ch;
+    }
+  }
+  return mapped.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function stripBracketSuffixes(normalized: string): string {
+  if (!normalized) return "";
+  const cleaned = normalized
+    .replace(/\([^)]*\)|\[[^\]]*\]|\{[^}]*\}/g, " ")
+    .replace(
+      /\s+-\s+(?:live|现场|dj|remix|伴奏|翻唱|cover|片段|铃声|纯音乐|instrumental|karaoke|ktv|试听|串烧|高潮版|slowed|sped\s+up|speed\s+up|ver\.?|version|edit|mix|acoustic).*$/i,
+      ""
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || normalized;
+}
+
+function compactTrackText(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function splitArtistTokens(artists: string): string[] {
+  const norm = normalizeTrackText(artists);
+  if (!norm) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of norm.split(/[\s/,&、+·;；|]+/)) {
+    const token = compactTrackText(stripBracketSuffixes(part));
+    if (token && !seen.has(token)) {
+      seen.add(token);
+      out.push(token);
+    }
+  }
+  return out;
+}
+
+export function parseDurationToMs(raw: unknown): number {
+  if (raw === null || raw === undefined) return 0;
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw) || raw <= 0) return 0;
+    return raw < 10_000 ? Math.round(raw * 1000) : Math.round(raw);
+  }
+  const trimmed = String(raw).trim();
+  if (!trimmed) return 0;
+  const clock = /^(\d+):(\d{1,2})(?::(\d{1,2}))?$/.exec(trimmed);
+  if (clock) {
+    const p1 = Number(clock[1] || 0);
+    const p2 = Number(clock[2] || 0);
+    const p3 = clock[3] ? Number(clock[3]) : null;
+    return p3 !== null ? (p1 * 3600 + p2 * 60 + p3) * 1000 : (p1 * 60 + p2) * 1000;
+  }
+  const num = Number(trimmed);
+  if (!Number.isFinite(num) || num <= 0) return 0;
+  return num < 10_000 ? Math.round(num * 1000) : Math.round(num);
+}
+
+export function scoreCandidateMatch(params: {
+  targetTitle: string;
+  targetArtists: string;
+  expectedDurationMs?: number;
+  candidateTitle: string;
+  candidateArtists: string;
+  candidateDurationMs?: number;
+}): number {
+  const targetRawNorm = normalizeTrackText(params.targetTitle);
+  const candRawNorm = normalizeTrackText(params.candidateTitle);
+  const targetCoreStr = stripBracketSuffixes(targetRawNorm);
+  const candCoreStr = stripBracketSuffixes(candRawNorm);
+
+  const targetRawCompact = compactTrackText(targetRawNorm);
+  const candRawCompact = compactTrackText(candRawNorm);
+  const targetCore = compactTrackText(targetCoreStr) || targetRawCompact;
+  const candCore = compactTrackText(candCoreStr) || candRawCompact;
+
+  let score = 0;
+
+  if (targetCore) {
+    if (!candCore) return REJECT_CANDIDATE_SCORE;
+    if (candCore === targetCore || (candRawCompact && candRawCompact === targetRawCompact)) {
+      score += 60;
+      if (candRawCompact === targetRawCompact) score += 10;
+    } else if (targetCore.length >= 2 && candCore.includes(targetCore)) {
+      score += 42;
+    } else if (
+      candCore.length >= 2 &&
+      targetCore.includes(candCore) &&
+      candCore.length / targetCore.length >= 0.5
+    ) {
+      score += 32;
+    } else {
+      const targetTokens = (targetCoreStr.match(/[\p{L}\p{N}]{2,}/gu) || []).map((t) =>
+        compactTrackText(t)
+      );
+      if (targetTokens.length >= 2 && targetTokens.every((t) => candCore.includes(t))) {
+        score += 30;
+      } else {
+        return REJECT_CANDIDATE_SCORE;
+      }
+    }
+  }
+
+  const targetArtistTokens = splitArtistTokens(params.targetArtists);
+  const candArtistTokens = splitArtistTokens(params.candidateArtists);
+  if (targetArtistTokens.length > 0 && candArtistTokens.length > 0) {
+    const matched = targetArtistTokens.filter((t) =>
+      candArtistTokens.some(
+        (c) => c === t || (Math.min(c.length, t.length) >= 2 && (c.includes(t) || t.includes(c)))
+      )
+    ).length;
+    if (matched === targetArtistTokens.length) {
+      score += 40;
+    } else if (matched > 0) {
+      score += 30;
+    } else {
+      score -= 65;
+    }
+  }
+
+  if (LIVE_VERSION_REGEX.test(candRawNorm) && !LIVE_VERSION_REGEX.test(targetRawNorm)) {
+    score -= 45;
+  }
+  const hasUndesiredVersion = SEVERE_VERSION_PATTERNS.some(
+    (pat) => pat.test(candRawNorm) && !pat.test(targetRawNorm)
+  );
+  if (hasUndesiredVersion) {
+    score -= 105;
+  }
+
+  const expectedDurationMs = params.expectedDurationMs ?? 0;
+  const candidateDurationMs = params.candidateDurationMs ?? 0;
+  if (expectedDurationMs > SHORT_TRACK_DURATION_THRESHOLD_MS && candidateDurationMs > 0) {
+    const diffMs = Math.abs(candidateDurationMs - expectedDurationMs);
+    const ratio = diffMs / expectedDurationMs;
+    if (diffMs <= 15_000) {
+      score += 25;
+    } else if (ratio <= 0.2) {
+      score += 10;
+    } else if (ratio <= 0.35) {
+      score -= 15;
+    } else {
+      score -= 85;
+    }
+  }
+
+  return score;
+}
+
+export function rankCandidates<T>(
+  items: T[],
+  extractor: (item: T) => { title: string; artists: string; durationMs?: number },
+  target: { targetTitle: string; targetArtists: string; expectedDurationMs?: number }
+): Array<{ item: T; score: number }> {
+  return items
+    .slice(0, MAX_SEARCH_CANDIDATES)
+    .map((item, idx) => {
+      const info = extractor(item);
+      const score = scoreCandidateMatch({
+        targetTitle: target.targetTitle,
+        targetArtists: target.targetArtists,
+        expectedDurationMs: target.expectedDurationMs ?? 0,
+        candidateTitle: info.title,
+        candidateArtists: info.artists,
+        candidateDurationMs: info.durationMs ?? 0,
+      });
+      return { item, score, idx };
+    })
+    .filter((entry) => entry.score >= MIN_CANDIDATE_PASS_SCORE)
+    .sort((a, b) => (a.score !== b.score ? b.score - a.score : a.idx - b.idx))
+    .map(({ item, score }) => ({ item, score }));
+}
+
 async function handleMusicUnblock(params: Record<string, any>, corsHeaders: Record<string, string>): Promise<Response> {
   const id = String(params.id || "").trim();
   if (!/^\d{1,16}$/.test(id)) {
@@ -805,7 +1023,7 @@ async function handleMusicUnblock(params: Record<string, any>, corsHeaders: Reco
     for (const source of ["joox", "netease", "kuwo"]) {
       try {
         const searchResp = await safeFetchWithRedirects(
-          `https://music-api.gdstudio.xyz/api.php?types=search&source=${source}&name=${encodeURIComponent(keyword)}&count=3&pages=1`,
+          `https://music-api.gdstudio.xyz/api.php?types=search&source=${source}&name=${encodeURIComponent(keyword)}&count=${MAX_SEARCH_CANDIDATES}&pages=1`,
           {
             headers: {
               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -816,15 +1034,30 @@ async function handleMusicUnblock(params: Record<string, any>, corsHeaders: Reco
         if (!searchResp.ok) continue;
         const list: any = await searchResp.json();
         if (!Array.isArray(list) || list.length === 0) continue;
-        const matched = list[0];
-        const trackId = matched?.url_id || matched?.id;
-        if (!trackId) continue;
-        const resolved = await tryGdMusic(source, String(trackId));
-        if (resolved) {
-          return Response.json(
-            { code: 200, message: "success", data: { url: resolved, source: `gdmusic-${source}` } },
-            { status: 200, headers: corsHeaders }
-          );
+        const ranked = rankCandidates(
+          list,
+          (matched: any) => ({
+            title: String(matched?.name || ""),
+            artists: Array.isArray(matched?.artist)
+              ? matched.artist
+                  .map((a: any) => (typeof a === "string" ? a : a?.name || ""))
+                  .filter(Boolean)
+                  .join(" ")
+              : String(matched?.artist || ""),
+            durationMs: parseDurationToMs(matched?.duration ?? matched?.dt ?? matched?.time),
+          }),
+          { targetTitle: songName, targetArtists: artistName, expectedDurationMs }
+        );
+        for (const { item: matched } of ranked.slice(0, MAX_PROBING_CANDIDATES)) {
+          const trackId = matched?.url_id || matched?.id;
+          if (!trackId) continue;
+          const resolved = await tryGdMusic(source, String(trackId));
+          if (resolved) {
+            return Response.json(
+              { code: 200, message: "success", data: { url: resolved, source: `gdmusic-${source}` } },
+              { status: 200, headers: corsHeaders }
+            );
+          }
         }
       } catch {
         // try next source

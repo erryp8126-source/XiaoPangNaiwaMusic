@@ -57,6 +57,7 @@ export const usePlayerCoreStore = defineStore(
     const userPlayIntent = ref(false); // 用户是否想要播放
     const isFmPlaying = ref(false); // 是否正在播放私人FM
     const isSeedingLaunchTrack = ref(false); // 首次打开无历史记录时正在拉取推荐首曲
+    const isBuffering = ref(false); // 切歌解析或原生播放器缓冲中
     const lastPlaybackError = ref('');
     const lastFailureCode = ref<string>('');
 
@@ -79,6 +80,7 @@ export const usePlayerCoreStore = defineStore(
         checkPlayTime = null;
       }
       checkPlaybackRetryCount = 0;
+      isBuffering.value = false;
       play.value = false;
       isPlay.value = false;
       userPlayIntent.value = false;
@@ -87,6 +89,19 @@ export const usePlayerCoreStore = defineStore(
       }
     });
 
+    audioService.on('buffering', (buffering: boolean) => {
+      isBuffering.value = Boolean(buffering);
+    });
+    const clearBufferingState = () => {
+      isBuffering.value = false;
+    };
+    audioService.on('load', clearBufferingState);
+    audioService.on('play', clearBufferingState);
+    audioService.on('pause', clearBufferingState);
+    audioService.on('end', clearBufferingState);
+    audioService.on('loaderror', clearBufferingState);
+    audioService.on('playerror', clearBufferingState);
+
     // ==================== Computed ====================
     const currentSong = computed(() => playMusic.value);
     const isPlaying = computed(() => isPlay.value);
@@ -94,11 +109,21 @@ export const usePlayerCoreStore = defineStore(
     // ==================== Actions ====================
 
     /**
+     * 设置缓冲中状态
+     */
+    const setBuffering = (value: boolean) => {
+      isBuffering.value = Boolean(value);
+    };
+
+    /**
      * 设置播放状态
      */
     const setIsPlay = (value: boolean) => {
       isPlay.value = value;
       play.value = value;
+      if (!value) {
+        isBuffering.value = false;
+      }
       window.electron?.ipcRenderer.send('update-play-state', value);
     };
 
@@ -529,6 +554,7 @@ export const usePlayerCoreStore = defineStore(
           });
           lastPlaybackError.value = diagnosis.userMessage;
           lastFailureCode.value = diagnosis.code;
+          isBuffering.value = false;
           updatedPlayMusic.playLoading = false;
           playMusic.value = updatedPlayMusic;
           setIsPlay(false);
@@ -614,11 +640,13 @@ export const usePlayerCoreStore = defineStore(
             return false;
           }
         } catch (error) {
+          isBuffering.value = false;
           console.error('自动播放音频失败:', error);
           playbackRequestManager.failRequest(requestId);
           return false;
         }
       } catch (error) {
+        isBuffering.value = false;
         if (isAutoplayBlockedError(error)) {
           console.info('[handlePlayMusic] Browser autoplay blocked, staying paused ready-to-play');
           if (playMusic.value) {
@@ -714,6 +742,9 @@ export const usePlayerCoreStore = defineStore(
         }
 
         // 播放新音频，传入已加载的 sound 实例
+        if (shouldPlay) {
+          isBuffering.value = true;
+        }
         const newSound = await audioService.play(
           playMusicUrl.value,
           playMusic.value,
@@ -744,6 +775,7 @@ export const usePlayerCoreStore = defineStore(
 
         return newSound;
       } catch (error) {
+        isBuffering.value = false;
         if (isAutoplayBlockedError(error)) {
           console.info('[playAudio] Browser autoplay blocked, staying paused ready-to-play');
           if (playMusic.value) {
@@ -795,6 +827,7 @@ export const usePlayerCoreStore = defineStore(
      */
     const handlePause = async () => {
       try {
+        isBuffering.value = false;
         const currentSound = audioService.getCurrentSound();
         if (currentSound) {
           currentSound.pause();
@@ -1239,6 +1272,7 @@ export const usePlayerCoreStore = defineStore(
       userPlayIntent,
       isFmPlaying,
       isSeedingLaunchTrack,
+      isBuffering,
       lastPlaybackError,
       lastFailureCode,
       audioOutputDeviceId,
@@ -1250,6 +1284,7 @@ export const usePlayerCoreStore = defineStore(
 
       // Actions
       setIsPlay,
+      setBuffering,
       setMusicFull,
       setPlayMusic,
       setPlaybackRate,

@@ -28,6 +28,7 @@ object AudioCacheManager {
     private const val TAG = "AudioCacheManager"
     private const val CACHE_DIR_NAME = "media_audio_cache"
     const val BYTES_PER_MB: Long = 1024L * 1024L
+    const val MIN_VALID_CACHED_BYTES: Long = 800L * 1024L
 
     data class CacheLimitUpdateResult(
         val maxMb: Int,
@@ -52,6 +53,11 @@ object AudioCacheManager {
     ): Boolean {
         return cacheInitialized && activeMaxMb != null && activeMaxMb != newMaxMb
     }
+
+    internal fun hasSufficientCachedBytes(
+        totalCachedBytes: Long,
+        minBytes: Long = MIN_VALID_CACHED_BYTES
+    ): Boolean = totalCachedBytes >= minBytes
 
     fun getMaxCacheMb(context: Context): Int {
         return AppPrefs(context.applicationContext).audioCacheMaxMb
@@ -133,13 +139,30 @@ object AudioCacheManager {
         if (cacheKey.isBlank()) return false
         val cache = getCache(context) ?: return false
         return runCatching {
-            val spans = cache.getCachedSpans(cacheKey)
-            spans.isNotEmpty() && spans.any { it.isCached && it.length > 0L }
+            val totalCachedBytes = cache.getCachedSpans(cacheKey)
+                .asSequence()
+                .filter { it.isCached && it.length > 0L }
+                .sumOf { it.length }
+            hasSufficientCachedBytes(totalCachedBytes)
         }.getOrDefault(false)
     }
 
+    fun evictCacheKey(context: Context, cacheKey: String): Boolean {
+        if (cacheKey.isBlank()) return false
+        val cache = getCache(context) ?: return false
+        return synchronized(lock) {
+            runCatching {
+                cache.removeResource(cacheKey)
+                runCatching { Log.i(TAG, "Evicted dirty/short audio cache key: $cacheKey") }
+                true
+            }.onFailure {
+                runCatching { Log.w(TAG, "Evict audio cache key failed ($cacheKey): ${it.message}") }
+            }.getOrDefault(false)
+        }
+    }
+
     /**
-     * 聚合 SimpleCache 中所有实际已有缓存数据块的歌曲 ID（解析 song_<songId>_<quality> 键）
+     * 聚合 SimpleCache 中所有实际已有有效缓存数据块的歌曲 ID（解析 song_<songId>_<quality> 键）
      */
     fun getCachedSongIds(context: Context): Set<String> {
         val cache = getCache(context) ?: return emptySet()
@@ -148,9 +171,11 @@ object AudioCacheManager {
             val keys = cache.keys.toList()
             for (key in keys) {
                 if (!key.startsWith("song_")) continue
-                val spans = cache.getCachedSpans(key)
-                val hasData = spans.isNotEmpty() && spans.any { it.isCached && it.length > 0L }
-                if (!hasData) continue
+                val totalCachedBytes = cache.getCachedSpans(key)
+                    .asSequence()
+                    .filter { it.isCached && it.length > 0L }
+                    .sumOf { it.length }
+                if (!hasSufficientCachedBytes(totalCachedBytes)) continue
                 val rest = key.removePrefix("song_")
                 val lastUnderscore = rest.lastIndexOf('_')
                 val songId = if (lastUnderscore > 0) rest.substring(0, lastUnderscore) else rest
