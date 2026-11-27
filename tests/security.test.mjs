@@ -2659,3 +2659,248 @@ test("configurable audio cache limit: whitelist tiers, concurrency-safe SimpleCa
   );
   assert.match(mobileSettingsSrc, /audioCacheMaxLabel/);
 });
+
+test("audio probe & kuwo demotion: intercepts short kuwo notices, supports HEAD->Range GET fallback, and demotes kuwo priority", async () => {
+  const seenRequests = [];
+  const publicDns = async () => [{ address: "1.2.3.4", family: 4 }];
+  const mockFetch = async (url, init = {}) => {
+    const method = (init.method || "GET").toUpperCase();
+    const range = new Headers(init.headers).get("range");
+    seenRequests.push({ url, method, range });
+
+    if (url.includes("/kuwo-80kb.mp3")) {
+      return new Response(null, {
+        status: 200,
+        headers: { "content-type": "audio/mpeg", "content-length": "81920" },
+      });
+    }
+    if (url.includes("/normal-3mb.mp3")) {
+      return new Response(null, {
+        status: 200,
+        headers: { "content-type": "audio/mpeg", "content-length": "3145728" },
+      });
+    }
+    if (url.includes("/short-120kb.mp3")) {
+      return new Response(null, {
+        status: 200,
+        headers: { "content-type": "audio/mpeg", "content-length": "122880" },
+      });
+    }
+    if (url.includes("/head-405-80kb.mp3")) {
+      if (method === "HEAD") return new Response(null, { status: 405 });
+      return new Response("ID", {
+        status: 206,
+        headers: {
+          "content-type": "audio/mpeg",
+          "content-length": "2",
+          "content-range": "bytes 0-1/81920",
+        },
+      });
+    }
+    if (url.includes("/head-403-3mb.mp3")) {
+      if (method === "HEAD") return new Response(null, { status: 403 });
+      return new Response("ID", {
+        status: 206,
+        headers: {
+          "content-type": "audio/mpeg",
+          "content-length": "2",
+          "content-range": "bytes 0-1/3145728",
+        },
+      });
+    }
+    if (url.includes("/head-no-cl-3mb.mp3")) {
+      if (method === "HEAD") {
+        return new Response(null, { status: 200, headers: { "content-type": "audio/mpeg" } });
+      }
+      return new Response("ID", {
+        status: 206,
+        headers: {
+          "content-type": "audio/mpeg",
+          "content-length": "2",
+          "content-range": "bytes 0-1/3145728",
+        },
+      });
+    }
+    return new Response("<html>err</html>", {
+      status: 200,
+      headers: { "content-type": "text/html", "content-length": "3145728" },
+    });
+  };
+
+  assert.equal(
+    await musicApiMod.checkAudioUrlReachable("https://thirdparty-cdn.example.net/kuwo-80kb.mp3", {
+      fetchImpl: mockFetch,
+      dnsLookup: publicDns,
+    }),
+    false
+  );
+  assert.equal(
+    await musicApiMod.checkAudioUrlReachable("https://thirdparty-cdn.example.net/normal-3mb.mp3", {
+      fetchImpl: mockFetch,
+      dnsLookup: publicDns,
+    }),
+    true
+  );
+  assert.equal(
+    await musicApiMod.checkAudioUrlReachable("https://thirdparty-cdn.example.net/short-120kb.mp3", {
+      expectedDurationMs: 0,
+      fetchImpl: mockFetch,
+      dnsLookup: publicDns,
+    }),
+    false
+  );
+  assert.equal(
+    await musicApiMod.checkAudioUrlReachable("https://thirdparty-cdn.example.net/short-120kb.mp3", {
+      expectedDurationMs: 15000,
+      fetchImpl: mockFetch,
+      dnsLookup: publicDns,
+    }),
+    true
+  );
+
+  seenRequests.length = 0;
+  assert.equal(
+    await musicApiMod.checkAudioUrlReachable("https://thirdparty-cdn.example.net/head-405-80kb.mp3", {
+      fetchImpl: mockFetch,
+      dnsLookup: publicDns,
+    }),
+    false
+  );
+  assert.deepEqual(
+    seenRequests.map((r) => [r.method, r.range]),
+    [
+      ["HEAD", null],
+      ["GET", "bytes=0-1"],
+    ]
+  );
+
+  seenRequests.length = 0;
+  assert.equal(
+    await musicApiMod.checkAudioUrlReachable("https://thirdparty-cdn.example.net/head-403-3mb.mp3", {
+      fetchImpl: mockFetch,
+      dnsLookup: publicDns,
+    }),
+    true
+  );
+  assert.deepEqual(
+    seenRequests.map((r) => [r.method, r.range]),
+    [
+      ["HEAD", null],
+      ["GET", "bytes=0-1"],
+    ]
+  );
+
+  assert.equal(
+    await musicApiMod.checkAudioUrlReachable("https://thirdparty-cdn.example.net/head-no-cl-3mb.mp3", {
+      fetchImpl: mockFetch,
+      dnsLookup: publicDns,
+    }),
+    true
+  );
+  assert.equal(
+    await musicApiMod.checkAudioUrlReachable("https://other.sycdn.kuwo.cn/resource/audition/notice.mp3", {
+      fetchImpl: mockFetch,
+      dnsLookup: publicDns,
+    }),
+    false
+  );
+  assert.equal(
+    musicApiMod.isSuspiciousKuwoPlaceholderUrl("https://sycdn.kuwo.cn/resource/n1/12/34/567890.mp3"),
+    false
+  );
+  assert.equal(
+    await musicApiMod.checkAudioUrlReachable("https://abc.supabase.co/track.mp3", {
+      fetchImpl: mockFetch,
+      dnsLookup: publicDns,
+    }),
+    false
+  );
+  assert.equal(
+    await musicApiMod.checkAudioUrlReachable("http://127.0.0.1:8080/track.mp3", {
+      fetchImpl: mockFetch,
+    }),
+    false
+  );
+
+  const builtinMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/services/builtinLxSources.ts")).href
+  );
+  assert.deepEqual(builtinMod.DEFAULT_ENABLED_MUSIC_SOURCES, [
+    "pyncmd",
+    "gdmusic",
+    "migu",
+    "kugou",
+    "kuwo",
+  ]);
+  const upgraded = builtinMod.applyBuiltinMusicSourceDefaults({
+    builtinSourcesPresetVersion: "2026-11-22-clean-sources-v2-pyncmd",
+    enabledMusicSources: ["pyncmd", "kuwo", "kugou", "migu", "gdmusic"],
+  });
+  assert.deepEqual(upgraded.enabledMusicSources, ["pyncmd", "gdmusic", "migu", "kugou", "kuwo"]);
+
+  const preservedUserFilter = builtinMod.applyBuiltinMusicSourceDefaults({
+    builtinSourcesPresetVersion: "2026-11-22-clean-sources-v2-pyncmd",
+    enabledMusicSources: ["pyncmd", "kuwo", "migu"],
+  });
+  assert.deepEqual(preservedUserFilter.enabledMusicSources, ["pyncmd", "migu", "kuwo"]);
+});
+
+test("custom LX SSRF relaxation: permits public domains only for scope=lx while keeping supabase/private IPs and cloudSync locked down", () => {
+  const androidGuard = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/SafeHttpGuard.kt"),
+    "utf-8"
+  );
+  assert.match(androidGuard, /CUSTOM_LX_BLOCKED_DOMAINS/);
+  assert.match(androidGuard, /"supabase\.co"/);
+  assert.match(androidGuard, /"localhost"/);
+  assert.match(androidGuard, /fun validateCustomLxUrlAndResolve\(/);
+  assert.match(androidGuard, /fun createCustomLxSafeDns\(/);
+  assert.match(androidGuard, /fun executeCustomLxWithSafeRedirects\(/);
+
+  const androidUnblock = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/MusicUnblockEngine.kt"),
+    "utf-8"
+  );
+  assert.match(androidUnblock, /listOf\("pyncmd",\s*"gdmusic",\s*"migu",\s*"kugou",\s*"kuwo"\)/);
+  assert.match(androidUnblock, /isCustomLx:\s*Boolean\s*=\s*false/);
+  assert.match(androidUnblock, /SafeHttpGuard\.executeCustomLxWithSafeRedirects/);
+  assert.match(androidUnblock, /SafeHttpGuard\.createCustomLxSafeDns/);
+
+  const iosGuard = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Server/SafeHttpGuard.swift"),
+    "utf-8"
+  );
+  assert.match(iosGuard, /customLxBlockedDomains/);
+  assert.match(iosGuard, /validateCustomLxUrlAndResolve/);
+
+  const iosUnblock = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Server/MusicUnblockEngine.swift"),
+    "utf-8"
+  );
+  assert.match(iosUnblock, /\["pyncmd",\s*"gdmusic",\s*"migu",\s*"kugou",\s*"kuwo"\]/);
+  assert.match(iosUnblock, /isCustomLx:\s*Bool\s*=\s*false/);
+
+  const windowApiSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/utils/bridge/windowApi.ts"),
+    "utf-8"
+  );
+  assert.match(windowApiSrc, /scope:\s*'lx'/);
+
+  const cloudSyncSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/cloudSync.ts"),
+    "utf-8"
+  );
+  assert.doesNotMatch(cloudSyncSrc, /scope:\s*['"]lx['"]/);
+
+  const androidBridgeSrc = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/bridge/AndroidJsBridge.kt"),
+    "utf-8"
+  );
+  assert.match(androidBridgeSrc, /val isCustomLx = requestScope == "lx"/);
+
+  const iosBridgeSrc = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Bridge/IOSJsBridge.swift"),
+    "utf-8"
+  );
+  assert.match(iosBridgeSrc, /let isCustomLx = \(requestScope == "lx"\)/);
+});

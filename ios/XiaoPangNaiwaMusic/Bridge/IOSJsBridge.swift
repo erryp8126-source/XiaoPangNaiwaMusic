@@ -546,9 +546,18 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             }
         }
         let artists = artistNames.joined(separator: " ")
-        let sources = (payload["enabledSources"] as? [String]) ?? ["pyncmd", "kuwo", "kugou", "migu", "gdmusic"]
+        let expectedDurationMs = (songData?["dt"] as? NSNumber)?.int64Value
+            ?? (songData?["duration"] as? NSNumber)?.int64Value
+            ?? 0
+        let sources = (payload["enabledSources"] as? [String]) ?? ["pyncmd", "gdmusic", "migu", "kugou", "kuwo"]
 
-        if let res = unblockEngine.unblock(songId: songId, songName: songName, artists: artists, enabledSources: sources) {
+        if let res = unblockEngine.unblock(
+            songId: songId,
+            songName: songName,
+            artists: artists,
+            enabledSources: sources,
+            expectedDurationMs: expectedDurationMs
+        ) {
             let wrapped: [String: Any] = [
                 "data": [
                     "data": [
@@ -574,6 +583,8 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         }
         let method = (payload["method"] as? String) ?? "GET"
         let timeout = (payload["timeout"] as? Double) ?? 15000
+        let requestScope = (payload["scope"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let isCustomLx = (requestScope == "lx")
         var headers = [String: String]()
         if let rawH = payload["headers"] as? [String: Any] {
             for (k, v) in rawH where !(v is NSNull) {
@@ -603,7 +614,8 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             headers: headers,
             body: bodyStr,
             form: formMap,
-            timeoutMs: timeout
+            timeoutMs: timeout,
+            isCustomLx: isCustomLx
         )
         callbackDispatcher(callbackId, true, jsonString(resp))
     }

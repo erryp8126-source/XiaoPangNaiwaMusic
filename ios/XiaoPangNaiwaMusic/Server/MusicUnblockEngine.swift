@@ -12,8 +12,23 @@ final class MusicUnblockEngine {
     static let defaultUA =
         "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
 
+    static let defaultEnabledSources = ["pyncmd", "gdmusic", "migu", "kugou", "kuwo"]
+    static let minValidAudioBytes: Int64 = 400 * 1024
+    static let minShortTrackAudioBytes: Int64 = 80 * 1024
+    static let shortTrackDurationThresholdMs: Int64 = 30_000
+    private static let headFallbackCodes: Set<Int> = [400, 403, 405, 501]
+    private static let disallowedAudioContentTypes: Set<String> = [
+        "text/html",
+        "application/json",
+        "application/xml",
+        "text/plain",
+        "text/xml"
+    ]
+
     private let redirectDelegate: SafeRedirectSessionDelegate
     private let session: URLSession
+    private let customLxRedirectDelegate: SafeRedirectSessionDelegate
+    private let customLxSession: URLSession
     private let mediaProbeRedirectDelegate: SafeRedirectSessionDelegate
     private let mediaProbeSession: URLSession
 
@@ -25,6 +40,12 @@ final class MusicUnblockEngine {
         let del = SafeRedirectSessionDelegate(allowedSuffixes: SafeHttpGuard.audioAndProxyAllowedDomains)
         self.redirectDelegate = del
         self.session = URLSession(configuration: cfg, delegate: del, delegateQueue: nil)
+        let lxDel = SafeRedirectSessionDelegate(
+            allowedSuffixes: nil,
+            blockedSuffixes: SafeHttpGuard.customLxBlockedDomains
+        )
+        self.customLxRedirectDelegate = lxDel
+        self.customLxSession = URLSession(configuration: cfg, delegate: lxDel, delegateQueue: nil)
         let probeDel = SafeRedirectSessionDelegate(allowedSuffixes: nil)
         self.mediaProbeRedirectDelegate = probeDel
         self.mediaProbeSession = URLSession(configuration: cfg, delegate: probeDel, delegateQueue: nil)
@@ -34,25 +55,26 @@ final class MusicUnblockEngine {
         songId: String,
         songName: String,
         artists: String,
-        enabledSources: [String] = ["pyncmd", "kuwo", "kugou", "migu", "gdmusic"]
+        enabledSources: [String] = MusicUnblockEngine.defaultEnabledSources,
+        expectedDurationMs: Int64 = 0
     ) -> UnblockResult? {
         let keyword = "\(songName) \(artists)".trimmingCharacters(in: .whitespacesAndNewlines)
         guard !keyword.isEmpty || !songId.isEmpty else { return nil }
 
-        let ordered = enabledSources.isEmpty ? ["pyncmd", "kuwo", "kugou", "migu", "gdmusic"] : enabledSources
+        let ordered = enabledSources.isEmpty ? Self.defaultEnabledSources : enabledSources
         for src in ordered {
             let res: UnblockResult?
             switch src.lowercased() {
             case "pyncmd":
-                res = songId.isEmpty ? nil : searchPyncmd(songId: songId)
+                res = songId.isEmpty ? nil : searchPyncmd(songId: songId, expectedDurationMs: expectedDurationMs)
             case "kuwo":
-                res = keyword.isEmpty ? nil : searchKuwo(keyword: keyword)
+                res = keyword.isEmpty ? nil : searchKuwo(keyword: keyword, expectedDurationMs: expectedDurationMs)
             case "kugou":
-                res = keyword.isEmpty ? nil : searchKugou(keyword: keyword)
+                res = keyword.isEmpty ? nil : searchKugou(keyword: keyword, expectedDurationMs: expectedDurationMs)
             case "migu":
-                res = keyword.isEmpty ? nil : searchMigu(keyword: keyword)
+                res = keyword.isEmpty ? nil : searchMigu(keyword: keyword, expectedDurationMs: expectedDurationMs)
             case "gdmusic", "qq", "joox":
-                res = keyword.isEmpty ? nil : searchGdMusic(keyword: keyword)
+                res = keyword.isEmpty ? nil : searchGdMusic(keyword: keyword, expectedDurationMs: expectedDurationMs)
             default:
                 res = nil
             }
@@ -62,12 +84,14 @@ final class MusicUnblockEngine {
         }
 
         if !ordered.contains(where: { $0.lowercased() == "pyncmd" }), !songId.isEmpty {
-            if let pyncmdFallback = searchPyncmd(songId: songId), pyncmdFallback.url.hasPrefix("http") {
+            if let pyncmdFallback = searchPyncmd(songId: songId, expectedDurationMs: expectedDurationMs),
+               pyncmdFallback.url.hasPrefix("http") {
                 return pyncmdFallback
             }
         }
         if !ordered.contains(where: { $0.lowercased() == "gdmusic" }), !keyword.isEmpty {
-            if let fallback = searchGdMusic(keyword: keyword), fallback.url.hasPrefix("http") {
+            if let fallback = searchGdMusic(keyword: keyword, expectedDurationMs: expectedDurationMs),
+               fallback.url.hasPrefix("http") {
                 return fallback
             }
         }
@@ -75,7 +99,7 @@ final class MusicUnblockEngine {
     }
 
     /// 精准网易云 ID 无损解析（对齐 @unblockneteasemusic/server pyncmd 通道）
-    private func searchPyncmd(songId: String) -> UnblockResult? {
+    private func searchPyncmd(songId: String, expectedDurationMs: Int64 = 0) -> UnblockResult? {
         let cleanId = songId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanId.isEmpty, cleanId.allSatisfy({ $0.isNumber }) else { return nil }
         let baseUrl = "https://music-api.gdstudio.xyz/api.php"
@@ -91,6 +115,7 @@ final class MusicUnblockEngine {
                     with: "https://$1",
                     options: [.regularExpression, .caseInsensitive]
                 )
+                guard checkAudioUrlReachable(playUrl, expectedDurationMs: expectedDurationMs) else { continue }
                 let bitrate = ((urlObj["br"] as? Int) ?? 320) * 1000
                 let size = (urlObj["size"] as? NSNumber)?.int64Value ?? 0
                 return UnblockResult(url: playUrl, br: bitrate, size: size, platform: "pyncmd")
@@ -99,7 +124,7 @@ final class MusicUnblockEngine {
         return nil
     }
 
-    private func searchKuwo(keyword: String) -> UnblockResult? {
+    private func searchKuwo(keyword: String, expectedDurationMs: Int64 = 0) -> UnblockResult? {
         let q = enc(keyword)
         let searchUrl = "http://search.kuwo.cn/r.s?all=\(q)&ft=music&rformat=json&encoding=utf8&pcjson=1&vipver=1&pn=0&rn=5"
         guard let body = httpGetText(searchUrl, headers: ["User-Agent": Self.defaultUA]),
@@ -108,13 +133,15 @@ final class MusicUnblockEngine {
             return nil
         }
 
-        for obj in list {
+        for obj in list.prefix(3) {
             guard let rawRid = obj["MUSICRID"] as? String else { continue }
             let rid = rawRid.hasPrefix("MUSIC_") ? String(rawRid.dropFirst(6)) : rawRid
             let urlApi = "https://antiserver.kuwo.cn/anti.s?type=convert_url3&rid=\(rid)&format=mp3"
             if let urlBody = httpGetText(urlApi, headers: ["User-Agent": Self.defaultUA]),
                let urlJson = parseJsonObject(urlBody),
-               let playUrl = urlJson["url"] as? String, playUrl.hasPrefix("http") {
+               let playUrl = (urlJson["url"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               playUrl.hasPrefix("http"),
+               checkAudioUrlReachable(playUrl, expectedDurationMs: expectedDurationMs) {
                 return UnblockResult(url: playUrl, br: 320000, size: 0, platform: "kuwo")
             }
 
@@ -122,14 +149,16 @@ final class MusicUnblockEngine {
             if let altBody = httpGetText(altApi, headers: ["User-Agent": Self.defaultUA, "Referer": "http://www.kuwo.cn/"]),
                let altJson = parseJsonObject(altBody),
                let data = altJson["data"] as? [String: Any],
-               let altUrl = data["url"] as? String, altUrl.hasPrefix("http") {
+               let altUrl = (data["url"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               altUrl.hasPrefix("http"),
+               checkAudioUrlReachable(altUrl, expectedDurationMs: expectedDurationMs) {
                 return UnblockResult(url: altUrl, br: 320000, size: 0, platform: "kuwo")
             }
         }
         return nil
     }
 
-    private func searchKugou(keyword: String) -> UnblockResult? {
+    private func searchKugou(keyword: String, expectedDurationMs: Int64 = 0) -> UnblockResult? {
         let q = enc(keyword)
         let searchUrl = "http://mobilecdn.kugou.com/api/v3/search/song?format=json&keyword=\(q)&page=1&pagesize=5&showtype=1"
         guard let body = httpGetText(searchUrl, headers: ["User-Agent": Self.defaultUA]),
@@ -156,14 +185,14 @@ final class MusicUnblockEngine {
             let primary = (pData["play_url"] as? String) ?? ""
             let backup = (pData["play_backup_url"] as? String) ?? ""
             let chosen = primary.hasPrefix("http") ? primary : (backup.hasPrefix("http") ? backup : "")
-            if !chosen.isEmpty {
+            if !chosen.isEmpty, checkAudioUrlReachable(chosen, expectedDurationMs: expectedDurationMs) {
                 return UnblockResult(url: chosen, br: 320000, size: 0, platform: "kugou")
             }
         }
         return nil
     }
 
-    private func searchMigu(keyword: String) -> UnblockResult? {
+    private func searchMigu(keyword: String, expectedDurationMs: Int64 = 0) -> UnblockResult? {
         let q = enc(keyword)
         let searchUrl = "https://pd.musicapp.migu.cn/MIGUM3.0/v1.0/content/search_all.do?text=\(q)&pageNo=1&pageSize=5&searchSwitch=%7B%22song%22%3A1%7D"
         guard let body = httpGetText(searchUrl, headers: [
@@ -193,40 +222,41 @@ final class MusicUnblockEngine {
                         with: "https://freetyst.nf.migu.cn",
                         options: .regularExpression
                     )
-                    if finalUrl.hasPrefix("http") {
+                    if finalUrl.hasPrefix("http"), checkAudioUrlReachable(finalUrl, expectedDurationMs: expectedDurationMs) {
                         return UnblockResult(url: finalUrl, br: 320000, size: 0, platform: "migu")
                     }
                 }
             }
             let direct = "https://app.pd.nf.migu.cn/MIGUM3.0/v1.0/content/sub/listenSong.do?channel=mx&copyrightId=\(copyrightId)&contentId=\(contentId)&toneFlag=HQ&resourceType=2&userId=15548614588710179085069&netType=00"
-            if checkAudioUrlReachable(direct) {
+            if checkAudioUrlReachable(direct, expectedDurationMs: expectedDurationMs) {
                 return UnblockResult(url: direct, br: 320000, size: 0, platform: "migu")
             }
         }
         return nil
     }
 
-    private func searchGdMusic(keyword: String) -> UnblockResult? {
-        let sources = ["joox", "kuwo", "kugou", "netease", "tidal"]
+    private func searchGdMusic(keyword: String, expectedDurationMs: Int64 = 0) -> UnblockResult? {
+        let sources = ["joox", "netease", "kugou", "tidal", "kuwo"]
         let baseUrl = "https://music-api.gdstudio.xyz/api.php"
         for source in sources {
             let searchUrl = "\(baseUrl)?types=search&source=\(source)&name=\(enc(keyword))&count=3&pages=1"
             guard let body = httpGetText(searchUrl, headers: ["User-Agent": Self.defaultUA]),
                   let data = body.data(using: .utf8),
-                  let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]],
-                  let first = arr.first else { continue }
-            let trackId = "\(first["id"] ?? "")"
-            if trackId.isEmpty { continue }
-            let trackSource = (first["source"] as? String) ?? source
-            let urlEndpoint = "\(baseUrl)?types=url&source=\(trackSource)&id=\(trackId)&br=999"
-            guard let urlBody = httpGetText(urlEndpoint, headers: ["User-Agent": Self.defaultUA]),
-                  let urlObj = parseJsonObject(urlBody),
-                  let rawUrl = urlObj["url"] as? String else { continue }
-            let playUrl = rawUrl.replacingOccurrences(of: "\\", with: "")
-            if playUrl.hasPrefix("http") {
-                let br = ((urlObj["br"] as? Int) ?? 320) * 1000
-                let size = (urlObj["size"] as? NSNumber)?.int64Value ?? 0
-                return UnblockResult(url: playUrl, br: br, size: size, platform: "gdmusic:\(trackSource)")
+                  let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { continue }
+            for item in arr.prefix(2) {
+                let trackId = "\(item["id"] ?? "")"
+                if trackId.isEmpty { continue }
+                let trackSource = (item["source"] as? String) ?? source
+                let urlEndpoint = "\(baseUrl)?types=url&source=\(trackSource)&id=\(trackId)&br=999"
+                guard let urlBody = httpGetText(urlEndpoint, headers: ["User-Agent": Self.defaultUA]),
+                      let urlObj = parseJsonObject(urlBody),
+                      let rawUrl = urlObj["url"] as? String else { continue }
+                let playUrl = rawUrl.replacingOccurrences(of: "\\", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if playUrl.hasPrefix("http"), checkAudioUrlReachable(playUrl, expectedDurationMs: expectedDurationMs) {
+                    let br = ((urlObj["br"] as? Int) ?? 320) * 1000
+                    let size = (urlObj["size"] as? NSNumber)?.int64Value ?? 0
+                    return UnblockResult(url: playUrl, br: br, size: size, platform: "gdmusic:\(trackSource)")
+                }
             }
         }
         return nil
@@ -242,10 +272,22 @@ final class MusicUnblockEngine {
         headers: [String: String] = [:],
         body: String? = nil,
         form: [String: String]? = nil,
-        timeoutMs: Double = 15000
+        timeoutMs: Double = 15000,
+        isCustomLx: Bool = false
     ) -> [String: Any] {
-        guard let nsUrl = URL(string: url), Self.isSafePublicHttpUrl(nsUrl) else {
+        guard let nsUrl = URL(string: url) else {
             return ["statusCode": 403, "headers": [:], "body": "Blocked non-allowlisted or unsafe URL", "finalUrl": url]
+        }
+        let isAllowed = isCustomLx
+            ? SafeHttpGuard.validateCustomLxUrlAndResolve(nsUrl)
+            : Self.isSafePublicHttpUrl(nsUrl)
+        guard isAllowed else {
+            return [
+                "statusCode": 403,
+                "headers": [:],
+                "body": isCustomLx ? "Blocked unsafe or restricted LX URL" : "Blocked non-allowlisted or unsafe URL",
+                "finalUrl": url
+            ]
         }
 
         var req = URLRequest(url: nsUrl, timeoutInterval: max(3.0, timeoutMs / 1000.0))
@@ -283,7 +325,8 @@ final class MusicUnblockEngine {
         var httpResp: HTTPURLResponse?
         var finalUrl = url
 
-        let task = session.dataTask(with: req) { data, response, _ in
+        let targetSession = isCustomLx ? customLxSession : session
+        let task = targetSession.dataTask(with: req) { data, response, _ in
             respData = data
             httpResp = response as? HTTPURLResponse
             if let u = response?.url?.absoluteString { finalUrl = u }
@@ -316,22 +359,119 @@ final class MusicUnblockEngine {
         ]
     }
 
-    private func checkAudioUrlReachable(_ url: String) -> Bool {
-        guard let u = URL(string: url), SafeHttpGuard.validatePublicHttpUrlAndResolve(u) else { return false }
-        var req = URLRequest(url: u, timeoutInterval: 8)
-        req.httpMethod = "HEAD"
-        req.setValue(Self.defaultUA, forHTTPHeaderField: "User-Agent")
-        let sem = DispatchSemaphore(value: 0)
-        var ok = false
-        mediaProbeSession.dataTask(with: req) { _, resp, _ in
-            if let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode) {
-                let ct = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
-                ok = !ct.contains("text/html")
+    private func resolveMinValidAudioBytes(_ expectedDurationMs: Int64) -> Int64 {
+        if expectedDurationMs > 0 && expectedDurationMs < Self.shortTrackDurationThresholdMs {
+            return Self.minShortTrackAudioBytes
+        }
+        return Self.minValidAudioBytes
+    }
+
+    private func isSuspiciousKuwoPlaceholderUrl(_ url: String) -> Bool {
+        let lower = url.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard lower.contains("kuwo") || lower.contains("kwcdn") else { return false }
+        let comps = URLComponents(string: lower)
+        let target = "\(comps?.path ?? "")?\(comps?.query ?? "")"
+        let checkStr = target == "?" ? lower : target
+        let pattern = #"(^|[/?&_=-])(audition|shiting|tishi|viptip|vip[_-]?tip|free[_-]?tip|notice|prompt|trylisten|try[_-]?listen|preview)([/?&_=.-]|$)"#
+        return checkStr.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    private func parseTotalBytesFromHeaders(
+        statusCode: Int,
+        contentLengthHeader: String?,
+        contentRangeHeader: String?
+    ) -> Int64? {
+        if statusCode == 206 {
+            let range = (contentRangeHeader ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let regex = try? NSRegularExpression(pattern: #"bytes\s+\d+-\d+/(\d+)"#, options: [.caseInsensitive]),
+                  let match = regex.firstMatch(in: range, range: NSRange(range.startIndex..., in: range)),
+                  match.numberOfRanges > 1,
+                  let totalRange = Range(match.range(at: 1), in: range) else {
+                return nil
             }
-            sem.signal()
+            return Int64(range[totalRange])
+        }
+        guard let cl = contentLengthHeader?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return nil
+        }
+        return Int64(cl)
+    }
+
+    private func isDisallowedAudioContentType(_ contentType: String?) -> Bool {
+        let normalized = (contentType ?? "")
+            .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        if normalized.isEmpty { return false }
+        return Self.disallowedAudioContentTypes.contains(normalized)
+    }
+
+    func checkAudioUrlReachable(_ url: String, expectedDurationMs: Int64 = 0) -> Bool {
+        if isSuspiciousKuwoPlaceholderUrl(url) { return false }
+        guard let u = URL(string: url), SafeHttpGuard.validatePublicHttpUrlAndResolve(u) else { return false }
+        let minValidBytes = resolveMinValidAudioBytes(expectedDurationMs)
+
+        var headReq = URLRequest(url: u, timeoutInterval: 8)
+        headReq.httpMethod = "HEAD"
+        headReq.setValue(Self.defaultUA, forHTTPHeaderField: "User-Agent")
+        let headSem = DispatchSemaphore(value: 0)
+        var headOk = false
+        var shouldFallbackToRangeGet = false
+
+        mediaProbeSession.dataTask(with: headReq) { _, resp, _ in
+            if let http = resp as? HTTPURLResponse {
+                let ct = http.value(forHTTPHeaderField: "Content-Type")
+                if !self.isDisallowedAudioContentType(ct) {
+                    if (200...299).contains(http.statusCode) {
+                        if let totalBytes = self.parseTotalBytesFromHeaders(
+                            statusCode: http.statusCode,
+                            contentLengthHeader: http.value(forHTTPHeaderField: "Content-Length"),
+                            contentRangeHeader: http.value(forHTTPHeaderField: "Content-Range")
+                        ), totalBytes > 0 {
+                            headOk = totalBytes >= minValidBytes
+                        } else {
+                            shouldFallbackToRangeGet = true
+                        }
+                    } else if Self.headFallbackCodes.contains(http.statusCode) {
+                        shouldFallbackToRangeGet = true
+                    }
+                }
+            }
+            headSem.signal()
         }.resume()
-        _ = sem.wait(timeout: .now() + 9)
-        return ok
+        _ = headSem.wait(timeout: .now() + 9)
+
+        if headOk { return true }
+        if !shouldFallbackToRangeGet { return false }
+
+        var rangeReq = URLRequest(url: u, timeoutInterval: 8)
+        rangeReq.httpMethod = "GET"
+        rangeReq.setValue(Self.defaultUA, forHTTPHeaderField: "User-Agent")
+        rangeReq.setValue("bytes=0-1", forHTTPHeaderField: "Range")
+        let rangeSem = DispatchSemaphore(value: 0)
+        var rangeOk = false
+
+        mediaProbeSession.dataTask(with: rangeReq) { _, resp, _ in
+            if let http = resp as? HTTPURLResponse,
+               http.statusCode == 200 || http.statusCode == 206 {
+                let ct = http.value(forHTTPHeaderField: "Content-Type")
+                if !self.isDisallowedAudioContentType(ct) {
+                    if let totalBytes = self.parseTotalBytesFromHeaders(
+                        statusCode: http.statusCode,
+                        contentLengthHeader: http.value(forHTTPHeaderField: "Content-Length"),
+                        contentRangeHeader: http.value(forHTTPHeaderField: "Content-Range")
+                    ) {
+                        rangeOk = totalBytes >= minValidBytes
+                    } else {
+                        rangeOk = true
+                    }
+                }
+            }
+            rangeSem.signal()
+        }.resume()
+        _ = rangeSem.wait(timeout: .now() + 9)
+        return rangeOk
     }
 
     private func httpGetText(_ url: String, headers: [String: String]) -> String? {

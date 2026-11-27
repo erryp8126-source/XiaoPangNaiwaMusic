@@ -227,13 +227,16 @@ class AndroidJsBridge(
     }
 
     private fun handleUnblockMusic(callbackId: String, payload: JsonObject) {
-        val songId = payload.get("id")?.asString ?: ""
+        val songId = payload.get("id")?.takeIf { !it.isJsonNull }?.asString ?: ""
         val songData = payload.getAsJsonObject("songData")
-        val songName = songData?.get("name")?.asString ?: ""
+        val songName = songData?.get("name")?.takeIf { !it.isJsonNull }?.asString ?: ""
+        val expectedDurationMs = songData?.get("dt")?.takeIf { !it.isJsonNull }?.asLong
+            ?: songData?.get("duration")?.takeIf { !it.isJsonNull }?.asLong
+            ?: 0L
         val artists = buildString {
             val ar = songData?.getAsJsonArray("ar") ?: songData?.getAsJsonArray("artists")
             ar?.forEach { el ->
-                val name = el.asJsonObject.get("name")?.asString
+                val name = el.asJsonObject.get("name")?.takeIf { !it.isJsonNull }?.asString
                 if (!name.isNullOrBlank()) {
                     if (isNotEmpty()) append(" ")
                     append(name)
@@ -242,10 +245,10 @@ class AndroidJsBridge(
         }
         val sources = mutableListOf<String>()
         payload.getAsJsonArray("enabledSources")?.forEach { el ->
-            el.asString?.let { sources.add(it) }
+            el.takeIf { !it.isJsonNull }?.asString?.let { sources.add(it) }
         }
 
-        val res = app.unblockEngine.unblock(songId, songName, artists, sources)
+        val res = app.unblockEngine.unblock(songId, songName, artists, sources, expectedDurationMs)
         if (res != null) {
             val wrapped = mapOf(
                 "data" to mapOf(
@@ -266,9 +269,11 @@ class AndroidJsBridge(
     }
 
     private fun handleHttpRequest(callbackId: String, payload: JsonObject) {
-        val url = payload.get("url")?.asString ?: throw IllegalArgumentException("Missing URL")
-        val method = payload.get("method")?.asString ?: "GET"
-        val timeout = payload.get("timeout")?.asLong ?: 15000L
+        val url = payload.get("url")?.takeIf { !it.isJsonNull }?.asString ?: throw IllegalArgumentException("Missing URL")
+        val method = payload.get("method")?.takeIf { !it.isJsonNull }?.asString ?: "GET"
+        val timeout = payload.get("timeout")?.takeIf { !it.isJsonNull }?.asLong ?: 15000L
+        val requestScope = payload.get("scope")?.takeIf { !it.isJsonNull }?.asString?.trim()?.lowercase()
+        val isCustomLx = requestScope == "lx"
         val headers = LinkedHashMap<String, String>()
         payload.getAsJsonObject("headers")?.entrySet()?.forEach { (k, v) ->
             if (!v.isJsonNull) headers[k] = v.asString
@@ -284,7 +289,7 @@ class AndroidJsBridge(
             }
         }
 
-        val resp = app.unblockEngine.proxyHttpRequest(url, method, headers, body, form, timeout)
+        val resp = app.unblockEngine.proxyHttpRequest(url, method, headers, body, form, timeout, isCustomLx)
         callbackDispatcher(callbackId, true, gson.toJson(resp))
     }
 

@@ -58,7 +58,7 @@ export function installAndroidWindowApi(): void {
       return invokeAndroidAsync('unblock-music', {
         id: Number(id) || id,
         songData,
-        enabledSources: enabledSources || ['pyncmd', 'kuwo', 'kugou', 'migu', 'gdmusic']
+        enabledSources: enabledSources || ['pyncmd', 'gdmusic', 'migu', 'kugou', 'kuwo']
       });
     },
 
@@ -75,6 +75,7 @@ export function installAndroidWindowApi(): void {
       return invokeAndroidAsync(
         'http-request',
         {
+          scope: 'lx',
           url: safeUrl,
           method: params.options?.method || 'GET',
           headers: params.options?.headers || {},

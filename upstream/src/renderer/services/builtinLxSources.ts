@@ -5,16 +5,16 @@ import type { Platform } from '@/types/music';
  * 默认启用的内置合规解灰通道（不包含任何混淆或外连第三方黑盒脚本）
  * 用户如需使用落雪（LX Music）自定义音源，请在「设置 → 播放 → 音源设置」中自行导入本地 .js 脚本或自建模板。
  */
-export const BUILTIN_SOURCES_PRESET_VERSION = '2026-11-22-clean-sources-v2-pyncmd';
+export const BUILTIN_SOURCES_PRESET_VERSION = '2026-11-27-clean-sources-v3-demote-kuwo';
 
 const REMOVED_LEGACY_BUILTIN_LX_IDS = new Set(['builtin_lx_yuningxi_pro_v1_2_5']);
 
 export const DEFAULT_ENABLED_MUSIC_SOURCES: Platform[] = [
   'pyncmd',
-  'kuwo',
-  'kugou',
+  'gdmusic',
   'migu',
-  'gdmusic'
+  'kugou',
+  'kuwo'
 ];
 
 /**
@@ -91,15 +91,27 @@ export const applyBuiltinMusicSourceDefaults = <T extends Record<string, any>>(s
         cleanedScripts.some((s) => s && s.id === next.activeLxMusicApiId)
     );
 
+    const hasKuwo = currentSources.includes('kuwo');
+    const nonKuwoSources = currentSources.filter((s) => s !== 'kuwo');
     const mergedSources: string[] = [];
-    if (!currentSources.includes('pyncmd')) {
-      mergedSources.push('pyncmd');
+    if (hasUserLxScript && nonKuwoSources.includes('lxMusic')) {
+      mergedSources.push('lxMusic');
     }
-    for (const s of currentSources) {
+    mergedSources.push('pyncmd');
+    for (const preferred of DEFAULT_ENABLED_MUSIC_SOURCES) {
+      if (preferred === 'kuwo' || preferred === 'pyncmd') continue;
+      if (nonKuwoSources.includes(preferred) && !mergedSources.includes(preferred)) {
+        mergedSources.push(preferred);
+      }
+    }
+    for (const s of nonKuwoSources) {
       if (s === 'lxMusic' && !hasUserLxScript) continue;
       if (!mergedSources.includes(s)) {
         mergedSources.push(s);
       }
+    }
+    if (hasKuwo && !mergedSources.includes('kuwo')) {
+      mergedSources.push('kuwo');
     }
     next.enabledMusicSources =
       mergedSources.length > 0 ? mergedSources : [...DEFAULT_ENABLED_MUSIC_SOURCES];

@@ -47,6 +47,14 @@ object SafeHttpGuard {
         "netlify.app"
     )
 
+    // 自定义 LX 音源仅屏蔽本地敏感主机与云同步域，放开第三方公网解析域名（仍全量强制公网 IP + 重定向 SSRF 防护）
+    val CUSTOM_LX_BLOCKED_DOMAINS = setOf(
+        "supabase.co",
+        "localhost",
+        "local",
+        "internal"
+    )
+
     private val REDIRECT_CODES = setOf(301, 302, 307, 308)
 
     fun isAllowedDomain(host: String, allowedSuffixes: Set<String>): Boolean {
@@ -55,6 +63,13 @@ object SafeHttpGuard {
         return allowedSuffixes.any { suffix ->
             clean == suffix || clean.endsWith(".$suffix")
         }
+    }
+
+    fun isBlockedDomain(
+        host: String,
+        blockedSuffixes: Set<String> = CUSTOM_LX_BLOCKED_DOMAINS
+    ): Boolean {
+        return isAllowedDomain(host, blockedSuffixes)
     }
 
     private fun isPublicIpv4Bytes(bytes: ByteArray): Boolean {
@@ -133,6 +148,16 @@ object SafeHttpGuard {
         return parsed
     }
 
+    fun validateCustomLxUrlSyntax(
+        rawUrl: String,
+        blockedSuffixes: Set<String> = CUSTOM_LX_BLOCKED_DOMAINS
+    ): URI? {
+        val parsed = validatePublicHttpUrlSyntax(rawUrl) ?: return null
+        val host = parsed.host?.lowercase()?.trim() ?: return null
+        if (isBlockedDomain(host, blockedSuffixes)) return null
+        return parsed
+    }
+
     private fun validateResolvedPublicIps(host: String): Boolean {
         val addresses = runCatching { InetAddress.getAllByName(host) }.getOrNull()
         if (addresses.isNullOrEmpty()) return false
@@ -147,6 +172,15 @@ object SafeHttpGuard {
 
     fun validateUrlAndResolve(rawUrl: String, allowedSuffixes: Set<String>): Boolean {
         val parsed = validateUrlSyntax(rawUrl, allowedSuffixes) ?: return false
+        val host = parsed.host ?: return false
+        return validateResolvedPublicIps(host)
+    }
+
+    fun validateCustomLxUrlAndResolve(
+        rawUrl: String,
+        blockedSuffixes: Set<String> = CUSTOM_LX_BLOCKED_DOMAINS
+    ): Boolean {
+        val parsed = validateCustomLxUrlSyntax(rawUrl, blockedSuffixes) ?: return false
         val host = parsed.host ?: return false
         return validateResolvedPublicIps(host)
     }
@@ -182,6 +216,23 @@ object SafeHttpGuard {
         }
     }
 
+    fun createCustomLxSafeDns(
+        blockedSuffixes: Set<String> = CUSTOM_LX_BLOCKED_DOMAINS
+    ): Dns {
+        return object : Dns {
+            override fun lookup(hostname: String): List<InetAddress> {
+                if (isBlockedDomain(hostname, blockedSuffixes)) {
+                    throw UnknownHostException("Blocked restricted local/cloud domain for LX host: $hostname")
+                }
+                val resolved = InetAddress.getAllByName(hostname)
+                if (resolved.isEmpty() || resolved.any { !isPublicAddress(it) }) {
+                    throw UnknownHostException("Blocked non-public resolved IP for LX host: $hostname")
+                }
+                return resolved.toList()
+            }
+        }
+    }
+
     /**
      * 执行带严格 SSRF 校验的 HTTP 请求：关闭自动重定向，手动跟随最多 maxRedirects 跳（301/302/307/308），
      * 每一跳先校验协议与域名白名单，再校验 InetAddress.getAllByName 解析出的全部 IP。
@@ -192,7 +243,20 @@ object SafeHttpGuard {
         allowedSuffixes: Set<String>,
         maxRedirects: Int = MAX_REDIRECTS
     ): Response {
-        return executeRedirectsInternal(client, initialRequest, allowedSuffixes, maxRedirects)
+        return executeRedirectsInternal(client, initialRequest, allowedSuffixes, null, maxRedirects)
+    }
+
+    /**
+     * 用于用户启用的自定义 LX 音源请求：放开公网第三方域名，
+     * 同时每一跳强制拦截内网/私网/回环/元数据 IP 与云同步域名（supabase.co）及 localhost。
+     */
+    fun executeCustomLxWithSafeRedirects(
+        client: OkHttpClient,
+        initialRequest: Request,
+        blockedSuffixes: Set<String> = CUSTOM_LX_BLOCKED_DOMAINS,
+        maxRedirects: Int = MAX_REDIRECTS
+    ): Response {
+        return executeRedirectsInternal(client, initialRequest, null, blockedSuffixes, maxRedirects)
     }
 
     /**
@@ -204,14 +268,18 @@ object SafeHttpGuard {
         initialRequest: Request,
         maxRedirects: Int = MAX_REDIRECTS
     ): Response {
-        return executeRedirectsInternal(client, initialRequest, null, maxRedirects)
+        return executeRedirectsInternal(client, initialRequest, null, null, maxRedirects)
     }
 
-    private fun isUrlAllowedForRedirect(targetUrl: String, allowedSuffixes: Set<String>?): Boolean {
-        return if (allowedSuffixes != null) {
-            validateUrlAndResolve(targetUrl, allowedSuffixes)
-        } else {
-            validatePublicHttpUrlAndResolve(targetUrl)
+    private fun isUrlAllowedForRedirect(
+        targetUrl: String,
+        allowedSuffixes: Set<String>?,
+        blockedSuffixes: Set<String>?
+    ): Boolean {
+        return when {
+            allowedSuffixes != null -> validateUrlAndResolve(targetUrl, allowedSuffixes)
+            blockedSuffixes != null -> validateCustomLxUrlAndResolve(targetUrl, blockedSuffixes)
+            else -> validatePublicHttpUrlAndResolve(targetUrl)
         }
     }
 
@@ -219,13 +287,14 @@ object SafeHttpGuard {
         client: OkHttpClient,
         initialRequest: Request,
         allowedSuffixes: Set<String>?,
+        blockedSuffixes: Set<String>?,
         maxRedirects: Int
     ): Response {
         var currentReq = initialRequest
         var hop = 0
         while (true) {
             val targetUrl = currentReq.url.toString()
-            if (!isUrlAllowedForRedirect(targetUrl, allowedSuffixes)) {
+            if (!isUrlAllowedForRedirect(targetUrl, allowedSuffixes, blockedSuffixes)) {
                 throw SecurityException("Blocked unsafe or non-allowlisted URL: ${currentReq.url.host}")
             }
 
@@ -243,7 +312,7 @@ object SafeHttpGuard {
 
             val nextUrl = currentReq.url.resolve(location)
                 ?: throw SecurityException("Malformed redirect target")
-            if (!isUrlAllowedForRedirect(nextUrl.toString(), allowedSuffixes)) {
+            if (!isUrlAllowedForRedirect(nextUrl.toString(), allowedSuffixes, blockedSuffixes)) {
                 throw SecurityException("Blocked redirect to unsafe or non-allowlisted host: ${nextUrl.host}")
             }
 

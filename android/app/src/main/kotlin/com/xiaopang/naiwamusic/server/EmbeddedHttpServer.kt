@@ -175,27 +175,35 @@ class EmbeddedHttpServer(
         val songId = params["id"] ?: ""
         var songName = params["name"] ?: ""
         var artists = params["artist"] ?: ""
+        var durationMs = params["dt"]?.toLongOrNull() ?: params["duration"]?.toLongOrNull() ?: 0L
 
-        if (songName.isBlank() && songId.isNotBlank()) {
+        if ((songName.isBlank() || durationMs <= 0L) && songId.isNotBlank()) {
             val detailRes = ncmClient.dispatch("/song/detail", mapOf("ids" to songId))
             runCatching {
                 val root = JsonParser.parseString(detailRes.body).asJsonObject
                 val songs = root.getAsJsonArray("songs")
                 if (songs != null && songs.size() > 0) {
                     val s = songs[0].asJsonObject
-                    songName = s.get("name")?.asString ?: ""
-                    val arArr = s.getAsJsonArray("ar")
-                    if (arArr != null) {
-                        artists = arArr.mapNotNull { it.asJsonObject.get("name")?.asString }.joinToString(" ")
+                    if (songName.isBlank()) {
+                        songName = s.get("name")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    }
+                    if (artists.isBlank()) {
+                        val arArr = s.getAsJsonArray("ar")
+                        if (arArr != null) {
+                            artists = arArr.mapNotNull { it.asJsonObject.get("name")?.takeIf { n -> !n.isJsonNull }?.asString }.joinToString(" ")
+                        }
+                    }
+                    if (durationMs <= 0L) {
+                        durationMs = s.get("dt")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
                     }
                 }
             }
         }
 
         val sources = params["sources"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
-            ?: listOf("pyncmd", "kuwo", "kugou", "migu", "gdmusic")
+            ?: listOf("pyncmd", "gdmusic", "migu", "kugou", "kuwo")
 
-        val result = unblockEngine.unblock(songId, songName, artists, sources)
+        val result = unblockEngine.unblock(songId, songName, artists, sources, durationMs)
         return if (result != null) {
             val json = gson.toJson(
                 mapOf(

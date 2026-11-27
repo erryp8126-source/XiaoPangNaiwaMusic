@@ -88,8 +88,74 @@ function isPublicIpAddress(ip: string): boolean {
   return false;
 }
 
+export const MIN_VALID_AUDIO_BYTES = 400 * 1024;
+export const MIN_SHORT_TRACK_AUDIO_BYTES = 80 * 1024;
+export const SHORT_TRACK_DURATION_THRESHOLD_MS = 30_000;
+const HEAD_FALLBACK_CODES = new Set([400, 403, 405, 501]);
+const DISALLOWED_AUDIO_CONTENT_TYPES = new Set([
+  "text/html",
+  "application/json",
+  "application/xml",
+  "text/plain",
+  "text/xml",
+]);
+const PUBLIC_MEDIA_BLOCKED_DOMAINS = new Set([
+  "supabase.co",
+  "localhost",
+  "local",
+  "internal",
+]);
+
+export function resolveMinValidAudioBytes(expectedDurationMs: number = 0): number {
+  if (expectedDurationMs > 0 && expectedDurationMs < SHORT_TRACK_DURATION_THRESHOLD_MS) {
+    return MIN_SHORT_TRACK_AUDIO_BYTES;
+  }
+  return MIN_VALID_AUDIO_BYTES;
+}
+
+export function isSuspiciousKuwoPlaceholderUrl(rawUrl: string): boolean {
+  const trimmed = String(rawUrl || "").trim();
+  if (!trimmed) return false;
+  const lower = trimmed.toLowerCase();
+  if (!lower.includes("kuwo") && !lower.includes("kwcdn")) return false;
+  let target = lower;
+  try {
+    const parsed = new URL(trimmed);
+    target = `${parsed.pathname}${parsed.search}`.toLowerCase() || lower;
+  } catch {
+    // keep raw lowercased url
+  }
+  return /(^|[/?&_=-])(audition|shiting|tishi|viptip|vip[_-]?tip|free[_-]?tip|notice|prompt|trylisten|try[_-]?listen|preview)([/?&_=.-]|$)/i.test(
+    target
+  );
+}
+
+export function parseTotalBytesFromHeaders(
+  statusCode: number,
+  headers: Headers
+): number | null {
+  if (statusCode === 206) {
+    const range = (headers.get("content-range") || "").trim();
+    const match = /bytes\s+\d+-\d+\/(\d+)/i.exec(range);
+    if (!match) return null;
+    const total = Number(match[1]);
+    return Number.isFinite(total) && total >= 0 ? total : null;
+  }
+  const cl = (headers.get("content-length") || "").trim();
+  if (!cl) return null;
+  const parsed = Number(cl);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function isDisallowedAudioContentType(contentType: string | null): boolean {
+  const normalized = (contentType || "").split(";")[0]?.trim().toLowerCase() || "";
+  if (!normalized) return false;
+  return DISALLOWED_AUDIO_CONTENT_TYPES.has(normalized);
+}
+
 export interface SafeFetchOptions {
   allowedSuffixes?: Set<string>;
+  allowAnyPublicHost?: boolean;
   maxRedirects?: number;
   dnsLookup?: (hostname: string) => Promise<Array<{ address: string; family: number }>>;
   fetchImpl?: typeof fetch;
@@ -97,7 +163,7 @@ export interface SafeFetchOptions {
 
 export async function validateOutboundUrl(
   rawUrl: string,
-  options: Pick<SafeFetchOptions, "allowedSuffixes" | "dnsLookup"> = {}
+  options: Pick<SafeFetchOptions, "allowedSuffixes" | "allowAnyPublicHost" | "dnsLookup"> = {}
 ): Promise<URL> {
   let parsed: URL;
   try {
@@ -111,18 +177,23 @@ export async function validateOutboundUrl(
 
   const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
   const allowedSuffixes = options.allowedSuffixes ?? OUTBOUND_AUDIO_ALLOWED_DOMAINS;
+  const allowAnyPublicHost = options.allowAnyPublicHost === true;
 
   if (net.isIP(host)) {
     if (!isPublicIpAddress(host)) {
       throw new Error(`SSRF blocked: non-public IP literal "${host}"`);
     }
-    if (!isAllowedOutboundDomain(host, allowedSuffixes)) {
+    if (!allowAnyPublicHost && !isAllowedOutboundDomain(host, allowedSuffixes)) {
       throw new Error(`SSRF blocked: IP literal not in domain allowlist "${host}"`);
     }
     return parsed;
   }
 
-  if (!isAllowedOutboundDomain(host, allowedSuffixes)) {
+  if (allowAnyPublicHost) {
+    if (isAllowedOutboundDomain(host, PUBLIC_MEDIA_BLOCKED_DOMAINS)) {
+      throw new Error(`SSRF blocked: restricted host "${host}"`);
+    }
+  } else if (!isAllowedOutboundDomain(host, allowedSuffixes)) {
     throw new Error(`SSRF blocked: host "${host}" is not in allowlist`);
   }
 
@@ -574,6 +645,86 @@ function upgradeNeteaseUrlsToHttps(body: any): any {
   return body;
 }
 
+export async function checkAudioUrlReachable(
+  rawUrl: string,
+  options: {
+    expectedDurationMs?: number;
+    fetchImpl?: typeof fetch;
+    dnsLookup?: (hostname: string) => Promise<Array<{ address: string; family: number }>>;
+  } = {}
+): Promise<boolean> {
+  if (isSuspiciousKuwoPlaceholderUrl(rawUrl)) return false;
+  const minValidBytes = resolveMinValidAudioBytes(options.expectedDurationMs ?? 0);
+  const fetchOptions: SafeFetchOptions = {
+    allowAnyPublicHost: true,
+    fetchImpl: options.fetchImpl,
+    dnsLookup: options.dnsLookup,
+  };
+  const baseHeaders = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+  };
+
+  try {
+    const headResp = await safeFetchWithRedirects(
+      rawUrl,
+      {
+        method: "HEAD",
+        headers: baseHeaders,
+        signal: AbortSignal.timeout(5000),
+      },
+      fetchOptions
+    );
+    await headResp.body?.cancel?.().catch(() => {});
+
+    if (isDisallowedAudioContentType(headResp.headers.get("content-type"))) {
+      return false;
+    }
+
+    let shouldFallbackToRangeGet = false;
+    if (headResp.ok) {
+      const totalBytes = parseTotalBytesFromHeaders(headResp.status, headResp.headers);
+      if (totalBytes !== null && totalBytes > 0) {
+        return totalBytes >= minValidBytes;
+      }
+      shouldFallbackToRangeGet = true;
+    } else if (HEAD_FALLBACK_CODES.has(headResp.status)) {
+      shouldFallbackToRangeGet = true;
+    } else {
+      return false;
+    }
+
+    if (!shouldFallbackToRangeGet) return false;
+
+    const rangeResp = await safeFetchWithRedirects(
+      rawUrl,
+      {
+        method: "GET",
+        headers: {
+          ...baseHeaders,
+          Range: "bytes=0-1",
+        },
+        signal: AbortSignal.timeout(5000),
+      },
+      fetchOptions
+    );
+    await rangeResp.body?.cancel?.().catch(() => {});
+
+    if (rangeResp.status !== 200 && rangeResp.status !== 206) {
+      return false;
+    }
+    if (isDisallowedAudioContentType(rangeResp.headers.get("content-type"))) {
+      return false;
+    }
+    const totalBytes = parseTotalBytesFromHeaders(rangeResp.status, rangeResp.headers);
+    if (totalBytes !== null) {
+      return totalBytes >= minValidBytes;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function handleMusicUnblock(params: Record<string, any>, corsHeaders: Record<string, string>): Promise<Response> {
   const id = String(params.id || "").trim();
   if (!/^\d{1,16}$/.test(id)) {
@@ -585,8 +736,9 @@ async function handleMusicUnblock(params: Record<string, any>, corsHeaders: Reco
 
   let songName = String(params.name || "").trim().slice(0, 80);
   let artistName = String(params.artist || "").trim().slice(0, 80);
+  let expectedDurationMs = Number(params.dt || params.duration || 0) || 0;
 
-  if (!songName) {
+  if (!songName || expectedDurationMs <= 0) {
     try {
       const anonCookie = await ensureAnonymousCookie();
       const detail = await ncmApi.song_detail({
@@ -596,10 +748,17 @@ async function handleMusicUnblock(params: Record<string, any>, corsHeaders: Reco
       });
       const song = detail?.body?.songs?.[0];
       if (song) {
-        songName = String(song.name || "").slice(0, 80);
-        artistName = Array.isArray(song.ar)
-          ? song.ar.map((a: any) => a.name).join(" ").slice(0, 80)
-          : "";
+        if (!songName) {
+          songName = String(song.name || "").slice(0, 80);
+        }
+        if (!artistName) {
+          artistName = Array.isArray(song.ar)
+            ? song.ar.map((a: any) => a.name).join(" ").slice(0, 80)
+            : "";
+        }
+        if (expectedDurationMs <= 0 && Number(song.dt) > 0) {
+          expectedDurationMs = Number(song.dt);
+        }
       }
     } catch {
       // continue to direct lookup
@@ -619,9 +778,12 @@ async function handleMusicUnblock(params: Record<string, any>, corsHeaders: Reco
       );
       if (!urlResp.ok) return null;
       const json: any = await urlResp.json();
-      const audioUrl = typeof json?.url === "string" ? json.url.trim() : "";
-      if (audioUrl && audioUrl.startsWith("http")) {
-        return audioUrl.replace(/^http:\/\/([^/]*\.126\.net\/)/i, "https://$1");
+      const rawAudioUrl = typeof json?.url === "string" ? json.url.trim() : "";
+      if (rawAudioUrl && rawAudioUrl.startsWith("http")) {
+        const audioUrl = rawAudioUrl.replace(/^http:\/\/([^/]*\.126\.net\/)/i, "https://$1");
+        if (await checkAudioUrlReachable(audioUrl, { expectedDurationMs })) {
+          return audioUrl;
+        }
       }
     } catch {
       // ignore
@@ -640,7 +802,7 @@ async function handleMusicUnblock(params: Record<string, any>, corsHeaders: Reco
 
   if (songName) {
     const keyword = `${songName} ${artistName}`.trim();
-    for (const source of ["kuwo", "joox", "netease"]) {
+    for (const source of ["joox", "netease", "kuwo"]) {
       try {
         const searchResp = await safeFetchWithRedirects(
           `https://music-api.gdstudio.xyz/api.php?types=search&source=${source}&name=${encodeURIComponent(keyword)}&count=3&pages=1`,

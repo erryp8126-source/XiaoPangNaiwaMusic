@@ -310,7 +310,7 @@ import SettingItem from '../SettingItem.vue';
 import SettingSection from '../SettingSection.vue';
 import SSelect from '../SSelect.vue';
 
-const ALL_PLATFORMS: Platform[] = ['pyncmd', 'kuwo', 'kugou', 'migu', 'gdmusic'];
+const ALL_PLATFORMS: Platform[] = ['pyncmd', 'gdmusic', 'migu', 'kugou', 'kuwo'];
 
 const memberLinks = [
   { name: '网易云音乐会员', url: 'https://music.163.com/store/vip' },
@@ -331,10 +331,10 @@ const showEqModal = ref(false);
 
 const advancedSourceOptions: Array<{ key: Platform; label: string }> = [
   { key: 'pyncmd', label: '云端聚合通道' },
-  { key: 'kuwo', label: '酷我通道' },
-  { key: 'kugou', label: '酷狗通道' },
+  { key: 'gdmusic', label: 'GD 聚合通道' },
   { key: 'migu', label: '咪咕通道' },
-  { key: 'gdmusic', label: 'GD 聚合通道' }
+  { key: 'kugou', label: '酷狗通道' },
+  { key: 'kuwo', label: '酷我通道' }
 ];
 
 const toggleSingleSource = (key: Platform, enabled: boolean) => {

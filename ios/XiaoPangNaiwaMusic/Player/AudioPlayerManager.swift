@@ -68,7 +68,7 @@ final class AudioPlayerManager: NSObject {
     private var nativeQueueIndex: Int = 0
     private var nativePlayMode: Int = 0 // 0=顺序, 1=单曲循环, 2=随机, 3=心动
     private var nativeMusicQuality: String = "higher"
-    private var nativeUnblockSources: [String] = ["pyncmd", "kuwo", "kugou", "migu", "gdmusic"]
+    private var nativeUnblockSources: [String] = MusicUnblockEngine.defaultEnabledSources
     private var nativeUserCookie: String = ""
     private var nativeIsFm: Bool = false
     private var nativeIntelligencePlaylistId: String = ""
@@ -1220,7 +1220,13 @@ final class AudioPlayerManager: NSObject {
                     if !isTrial { return url }
                 }
             }
-            if let unblocked = unblockEngine.unblock(songId: item.id, songName: item.name, artists: item.artist, enabledSources: sources),
+            if let unblocked = unblockEngine.unblock(
+                songId: item.id,
+                songName: item.name,
+                artists: item.artist,
+                enabledSources: sources,
+                expectedDurationMs: item.dt
+            ),
                unblocked.url.hasPrefix("http") {
                 return unblocked.url
             }

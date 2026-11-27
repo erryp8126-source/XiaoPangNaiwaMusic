@@ -26,7 +26,7 @@
   "alwaysShowDownloadButton": false,
   "unlimitedDownload": false,
   "enableMusicUnblock": true,
-  "enabledMusicSources": ["pyncmd", "kuwo", "kugou", "migu", "gdmusic"],
+  "enabledMusicSources": ["pyncmd", "gdmusic", "migu", "kugou", "kuwo"],
   "showTopAction": false,
   "contentZoomFactor": 1,
   "autoTheme": false,

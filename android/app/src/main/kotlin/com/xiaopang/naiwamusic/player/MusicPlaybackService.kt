@@ -243,7 +243,7 @@ class MusicPlaybackService : MediaSessionService() {
     private var nativeQueueIndex: Int = 0
     private var nativePlayMode: Int = 0 // 0=顺序/列表循环, 1=单曲循环, 2=随机(已洗牌), 3=心动
     private var nativeMusicQuality: String = "higher"
-    private var nativeUnblockSources: List<String> = listOf("pyncmd", "kuwo", "kugou", "migu", "gdmusic")
+    private var nativeUnblockSources: List<String> = listOf("pyncmd", "gdmusic", "migu", "kugou", "kuwo")
     private var nativeUserCookie: String = ""
     @Volatile
     private var nativeIsFm: Boolean = false
@@ -1509,7 +1509,8 @@ class MusicPlaybackService : MediaSessionService() {
                     item.id,
                     item.name,
                     item.artist,
-                    nativeUnblockSources
+                    nativeUnblockSources,
+                    item.dt
                 )
             }.getOrNull()
             if (unblocked != null && unblocked.url.startsWith("http")) {

@@ -307,7 +307,7 @@ const props = defineProps({
   },
   sources: {
     type: Array as () => Platform[],
-    default: () => ['pyncmd', 'kuwo', 'kugou', 'migu', 'gdmusic'] as Platform[]
+    default: () => ['pyncmd', 'gdmusic', 'migu', 'kugou', 'kuwo'] as Platform[]
   }
 });
 
@@ -653,7 +653,7 @@ const saveScriptName = (apiId: string) => {
  * 确认选择
  */
 const handleConfirm = () => {
-  const defaultPlatforms: Platform[] = ['pyncmd', 'kuwo', 'kugou', 'migu', 'gdmusic'];
+  const defaultPlatforms: Platform[] = ['pyncmd', 'gdmusic', 'migu', 'kugou', 'kuwo'];
   if (lxMusicApis.value.length > 0 && activeLxApiId.value) {
     defaultPlatforms.unshift('lxMusic');
   }

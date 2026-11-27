@@ -403,16 +403,22 @@ final class LocalHttpServer {
         let songId = params["id"] ?? ""
         var songName = params["name"] ?? ""
         var artists = params["artist"] ?? ""
+        var durationMs = Int64(params["dt"] ?? params["duration"] ?? "") ?? 0
 
-        if songName.isEmpty && !songId.isEmpty {
+        if (songName.isEmpty || durationMs <= 0) && !songId.isEmpty {
             let detailRes = ncmClient.dispatch(path: "/song/detail", params: ["ids": songId])
             if let d = detailRes.body.data(using: .utf8),
                let root = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
                let songs = root["songs"] as? [[String: Any]],
                let s = songs.first {
-                songName = (s["name"] as? String) ?? ""
-                if let ar = s["ar"] as? [[String: Any]] {
+                if songName.isEmpty {
+                    songName = (s["name"] as? String) ?? ""
+                }
+                if artists.isEmpty, let ar = s["ar"] as? [[String: Any]] {
                     artists = ar.compactMap { $0["name"] as? String }.joined(separator: " ")
+                }
+                if durationMs <= 0 {
+                    durationMs = (s["dt"] as? NSNumber)?.int64Value ?? 0
                 }
             }
         }
@@ -420,9 +426,15 @@ final class LocalHttpServer {
         let sources = params["sources"]?
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty } ?? ["pyncmd", "kuwo", "kugou", "migu", "gdmusic"]
+            .filter { !$0.isEmpty } ?? MusicUnblockEngine.defaultEnabledSources
 
-        if let res = unblockEngine.unblock(songId: songId, songName: songName, artists: artists, enabledSources: sources) {
+        if let res = unblockEngine.unblock(
+            songId: songId,
+            songName: songName,
+            artists: artists,
+            enabledSources: sources,
+            expectedDurationMs: durationMs
+        ) {
             return jsonResponse(status: 200, obj: [
                 "code": 200,
                 "message": "success",

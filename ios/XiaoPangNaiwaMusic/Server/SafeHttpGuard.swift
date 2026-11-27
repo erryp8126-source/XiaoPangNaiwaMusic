@@ -35,6 +35,14 @@ enum SafeHttpGuard {
         "netlify.app"
     ]
 
+    /// 自定义 LX 音源仅屏蔽云同步域与本地敏感主机，放开公网第三方解析域名（仍全量强制公网 IP + 重定向 SSRF 防护）
+    static let customLxBlockedDomains: Set<String> = [
+        "supabase.co",
+        "localhost",
+        "local",
+        "internal"
+    ]
+
     static func isAllowedDomain(_ host: String, allowedSuffixes: Set<String>) -> Bool {
         let clean = host.lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -43,6 +51,10 @@ enum SafeHttpGuard {
         return allowedSuffixes.contains { suffix in
             clean == suffix || clean.hasSuffix(".\(suffix)")
         }
+    }
+
+    static func isBlockedDomain(_ host: String, blockedSuffixes: Set<String> = customLxBlockedDomains) -> Bool {
+        return isAllowedDomain(host, allowedSuffixes: blockedSuffixes)
     }
 
     static func isPublicIPv4(_ b0: UInt8, _ b1: UInt8, _ b2: UInt8, _ b3: UInt8) -> Bool {
@@ -88,12 +100,24 @@ enum SafeHttpGuard {
         return validateResolvedUrl(url, allowedSuffixes: nil)
     }
 
+    /// 校验用户自主启用的自定义 LX 音源 URL：放开第三方公网域名，屏蔽云同步域与本地主机，并强制全量公网 IP 解析
+    static func validateCustomLxUrlAndResolve(
+        _ url: URL,
+        blockedSuffixes: Set<String> = customLxBlockedDomains
+    ) -> Bool {
+        return validateResolvedUrl(url, allowedSuffixes: nil, blockedSuffixes: blockedSuffixes)
+    }
+
     /// 校验协议、域名白名单，并解析该主机名对应的全部 IPv4/IPv6 地址，拒绝任意私网/回环/链路本地/组播/未指定地址
     static func validateUrlAndResolve(_ url: URL, allowedSuffixes: Set<String>) -> Bool {
         return validateResolvedUrl(url, allowedSuffixes: allowedSuffixes)
     }
 
-    private static func validateResolvedUrl(_ url: URL, allowedSuffixes: Set<String>?) -> Bool {
+    private static func validateResolvedUrl(
+        _ url: URL,
+        allowedSuffixes: Set<String>?,
+        blockedSuffixes: Set<String>? = nil
+    ) -> Bool {
         guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
             return false
         }
@@ -102,6 +126,9 @@ enum SafeHttpGuard {
             return false
         }
         if let allowedSuffixes = allowedSuffixes, !isAllowedDomain(host, allowedSuffixes: allowedSuffixes) {
+            return false
+        }
+        if let blockedSuffixes = blockedSuffixes, isBlockedDomain(host, blockedSuffixes: blockedSuffixes) {
             return false
         }
 
@@ -145,12 +172,18 @@ final class SafeRedirectSessionDelegate: NSObject, URLSessionTaskDelegate {
     private static let allowedRedirectCodes: Set<Int> = [301, 302, 307, 308]
 
     private let allowedSuffixes: Set<String>?
+    private let blockedSuffixes: Set<String>?
     private let maxRedirects: Int
     private let lock = NSLock()
     private var hopCounts: [Int: Int] = [:]
 
-    init(allowedSuffixes: Set<String>?, maxRedirects: Int = SafeHttpGuard.maxRedirects) {
+    init(
+        allowedSuffixes: Set<String>?,
+        blockedSuffixes: Set<String>? = nil,
+        maxRedirects: Int = SafeHttpGuard.maxRedirects
+    ) {
         self.allowedSuffixes = allowedSuffixes
+        self.blockedSuffixes = blockedSuffixes
         self.maxRedirects = maxRedirects
         super.init()
     }
@@ -178,9 +211,14 @@ final class SafeRedirectSessionDelegate: NSObject, URLSessionTaskDelegate {
             return
         }
 
-        let isAllowed = allowedSuffixes.map {
-            SafeHttpGuard.validateUrlAndResolve(nextUrl, allowedSuffixes: $0)
-        } ?? SafeHttpGuard.validatePublicHttpUrlAndResolve(nextUrl)
+        let isAllowed: Bool
+        if let allowedSuffixes = allowedSuffixes {
+            isAllowed = SafeHttpGuard.validateUrlAndResolve(nextUrl, allowedSuffixes: allowedSuffixes)
+        } else if let blockedSuffixes = blockedSuffixes {
+            isAllowed = SafeHttpGuard.validateCustomLxUrlAndResolve(nextUrl, blockedSuffixes: blockedSuffixes)
+        } else {
+            isAllowed = SafeHttpGuard.validatePublicHttpUrlAndResolve(nextUrl)
+        }
         guard isAllowed else {
             completionHandler(nil)
             return
