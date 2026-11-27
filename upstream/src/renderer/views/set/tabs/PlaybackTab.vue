@@ -1,6 +1,6 @@
 <template>
   <div>
-    <setting-section :title="t('settings.sections.playback')">
+    <setting-section v-if="showCommon" :title="t('settings.sections.playback')">
       <setting-item
         :title="t('settings.playback.quality')"
         :description="t('settings.playback.qualityDesc')"
@@ -13,104 +13,20 @@
       </setting-item>
 
       <setting-item
-        v-if="isNative"
-        inline
-        title="自动选择最佳音源"
-        description="当官方音源受限或不可用时，自动匹配并切换至可用备用音源，无需手动干预"
+        v-if="nativeCapabilities.supportsAudioCache"
+        title="音频边听边缓存"
+        :description="`已缓存 ${audioCacheSizeText} / ${audioCacheMaxLabel}（常听歌曲自动秒开、省流量）`"
       >
-        <n-switch v-model:value="setData.enableMusicUnblock">
-          <template #checked>{{ t('common.on') }}</template>
-          <template #unchecked>{{ t('common.off') }}</template>
-        </n-switch>
-      </setting-item>
-
-      <!-- 默认折叠的高级音源设置（收起 migu/kuwo/gdmusic 等技术名、单源开关与测速） -->
-      <div
-        v-if="isNative && setData.enableMusicUnblock"
-        class="mt-2 rounded-2xl border border-slate-200/80 dark:border-slate-700/70 bg-slate-50/70 dark:bg-slate-800/45 overflow-hidden"
-      >
-        <button
-          type="button"
-          class="w-full px-3.5 py-2.5 flex items-center justify-between text-left hover:bg-slate-100/70 dark:hover:bg-slate-800/70 transition-colors"
-          @click="showAdvancedSources = !showAdvancedSources"
-        >
-          <div class="flex items-center gap-2 min-w-0">
-            <i class="ri-equalizer-2-line text-slate-500 dark:text-slate-400 text-sm"></i>
-            <span class="text-xs font-bold text-slate-700 dark:text-slate-200">高级音源设置</span>
-            <span class="text-[11px] text-slate-400">
-              （已启用 {{ musicSources.length }} 个备用通道）
-            </span>
-          </div>
-          <i
-            class="ri-arrow-down-s-line text-base text-slate-400 transition-transform duration-200"
-            :class="{ 'rotate-180': showAdvancedSources }"
-          ></i>
-        </button>
-
-        <div
-          v-if="showAdvancedSources"
-          class="px-3.5 pb-3.5 pt-2 border-t border-slate-200/70 dark:border-slate-700/60 space-y-3"
-        >
-          <div class="flex items-center justify-between gap-2 flex-wrap">
-            <span class="text-[11px] text-slate-500 dark:text-slate-400">
-              可按需开关单个备用解析通道或执行连通性测速
-            </span>
-            <div class="flex items-center gap-2">
-              <s-btn :disabled="speedTesting" @click="runSourceSpeedTest">
-                <i
-                  class="mr-1"
-                  :class="speedTesting ? 'ri-loader-4-line animate-spin' : 'ri-speed-up-line'"
-                ></i>
-                {{ speedTesting ? '测速中...' : '通道测速' }}
-              </s-btn>
-              <s-btn @click="showMusicSourcesModal = true">
-                LX 脚本 / 自定义源
-              </s-btn>
-            </div>
-          </div>
-
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <div
-              v-for="item in advancedSourceOptions"
-              :key="item.key"
-              class="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-white dark:bg-slate-900/60 border border-slate-200/70 dark:border-slate-700/60"
-            >
-              <div class="min-w-0">
-                <div class="flex items-center gap-1.5">
-                  <span class="text-xs font-bold text-slate-800 dark:text-slate-100">
-                    {{ item.label }}
-                  </span>
-                  <span
-                    class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
-                  >
-                    {{ item.key }}
-                  </span>
-                </div>
-                <div
-                  v-if="sourceLatencies[item.key] !== undefined"
-                  class="text-[10px] mt-0.5 font-mono"
-                  :class="
-                    sourceLatencies[item.key] > 0 && sourceLatencies[item.key] < 1500
-                      ? 'text-emerald-600 dark:text-emerald-400'
-                      : 'text-amber-600 dark:text-amber-400'
-                  "
-                >
-                  {{
-                    sourceLatencies[item.key] > 0
-                      ? `响应 ${sourceLatencies[item.key]} ms`
-                      : '连接超时'
-                  }}
-                </div>
-              </div>
-              <n-switch
-                size="small"
-                :value="musicSources.includes(item.key)"
-                @update:value="(val: boolean) => toggleSingleSource(item.key, val)"
-              />
-            </div>
-          </div>
+        <div class="flex items-center gap-2 max-md:w-full">
+          <s-select
+            :model-value="audioCacheMaxMb"
+            :options="audioCacheMaxOptions"
+            width="w-28 max-md:flex-1"
+            @update:model-value="handleSelectAudioCacheMaxMb"
+          />
+          <s-btn @click="handleClearAudioCache">清理缓存</s-btn>
         </div>
-      </div>
+      </setting-item>
 
       <setting-item
         v-if="isAndroid"
@@ -118,7 +34,7 @@
         title="桌面歌词"
         :description="
           nativeCapabilities.supportsFloatingLyric
-            ? '在手机桌面及其他应用上方悬浮显示双行逐字歌词，支持锁定防误触、切歌、翻译、配色与字号调节'
+            ? '在手机桌面及其他应用上方悬浮显示双行逐字歌词，配色与字号可在「高级设置」微调'
             : '仅 Android 支持（iOS 系统不开放全局悬浮窗权限）'
         "
       >
@@ -150,39 +66,6 @@
           <template #checked>{{ t('common.on') }}</template>
           <template #unchecked>{{ t('common.off') }}</template>
         </n-switch>
-      </setting-item>
-
-      <setting-item
-        v-if="isAndroid"
-        inline
-        title="均衡器 (EQ)"
-        :description="
-          nativeCapabilities.supportsEq
-            ? '使用手机原生硬件音效均衡器调节 10 段频响'
-            : '仅 Android 支持（iOS 端 AVPlayer 暂未启用均衡器）'
-        "
-      >
-        <s-btn v-if="nativeCapabilities.supportsEq" @click="showEqModal = true">{{ t('common.configure') }}</s-btn>
-        <div v-else class="flex items-center gap-2 opacity-65">
-          <n-tag size="small" round>仅 Android 支持</n-tag>
-          <s-btn disabled>{{ t('common.configure') }}</s-btn>
-        </div>
-      </setting-item>
-
-      <setting-item
-        v-if="nativeCapabilities.supportsAudioCache"
-        title="音频边听边缓存"
-        :description="`已缓存 ${audioCacheSizeText} / ${audioCacheMaxLabel}（常听歌曲自动秒开、省流量）`"
-      >
-        <div class="flex items-center gap-2 max-md:w-full">
-          <s-select
-            :model-value="audioCacheMaxMb"
-            :options="audioCacheMaxOptions"
-            width="w-28 max-md:flex-1"
-            @update:model-value="handleSelectAudioCacheMaxMb"
-          />
-          <s-btn @click="handleClearAudioCache">清理缓存</s-btn>
-        </div>
       </setting-item>
 
       <setting-item
@@ -266,6 +149,196 @@
           <template #unchecked>{{ t('common.off') }}</template>
         </n-switch>
       </setting-item>
+    </setting-section>
+
+    <setting-section v-if="showAdvanced" title="音源解析、音效与桌面歌词样式">
+      <setting-item
+        v-if="isNative"
+        inline
+        title="自动选择最佳音源"
+        description="当官方音源受限或不可用时，自动匹配并切换至可用备用音源，无需手动干预"
+      >
+        <n-switch v-model:value="setData.enableMusicUnblock">
+          <template #checked>{{ t('common.on') }}</template>
+          <template #unchecked>{{ t('common.off') }}</template>
+        </n-switch>
+      </setting-item>
+
+      <!-- 默认折叠的高级音源设置（收起 migu/kuwo/gdmusic 等技术名、单源开关与测速） -->
+      <div
+        v-if="isNative && setData.enableMusicUnblock"
+        class="mx-3 my-2.5 rounded-2xl border border-slate-200/80 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#1C1C22]/70 overflow-hidden"
+      >
+        <button
+          type="button"
+          class="w-full px-3.5 py-2.5 flex items-center justify-between text-left hover:bg-slate-100/70 dark:hover:bg-[#1C1C22] transition-colors"
+          @click="showAdvancedSources = !showAdvancedSources"
+        >
+          <div class="flex items-center gap-2 min-w-0">
+            <i class="ri-equalizer-2-line text-slate-500 dark:text-zinc-400 text-sm"></i>
+            <span class="text-xs font-bold text-slate-700 dark:text-zinc-200">高级音源设置</span>
+            <span class="text-[11px] text-slate-400 dark:text-zinc-500">
+              （已启用 {{ musicSources.length }} 个备用通道）
+            </span>
+          </div>
+          <i
+            class="ri-arrow-down-s-line text-base text-slate-400 transition-transform duration-200"
+            :class="{ 'rotate-180': showAdvancedSources }"
+          ></i>
+        </button>
+
+        <div
+          v-if="showAdvancedSources"
+          class="px-3.5 pb-3.5 pt-2 border-t border-slate-200/70 dark:border-white/[0.06] space-y-3"
+        >
+          <div class="flex items-center justify-between gap-2 flex-wrap">
+            <span class="text-[11px] text-slate-500 dark:text-zinc-400">
+              可按需开关单个备用解析通道或执行连通性测速
+            </span>
+            <div class="flex items-center gap-2">
+              <s-btn :disabled="speedTesting" @click="runSourceSpeedTest">
+                <i
+                  class="mr-1"
+                  :class="speedTesting ? 'ri-loader-4-line animate-spin' : 'ri-speed-up-line'"
+                ></i>
+                {{ speedTesting ? '测速中...' : '通道测速' }}
+              </s-btn>
+              <s-btn @click="showMusicSourcesModal = true">
+                LX 脚本 / 自定义源
+              </s-btn>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div
+              v-for="item in advancedSourceOptions"
+              :key="item.key"
+              class="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-white dark:bg-[#131316] border border-slate-200/70 dark:border-white/[0.08]"
+            >
+              <div class="min-w-0">
+                <div class="flex items-center gap-1.5">
+                  <span class="text-xs font-bold text-slate-800 dark:text-zinc-100">
+                    {{ item.label }}
+                  </span>
+                  <span
+                    class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-[#1C1C22] text-slate-500 dark:text-zinc-400"
+                  >
+                    {{ item.key }}
+                  </span>
+                </div>
+                <div
+                  v-if="sourceLatencies[item.key] !== undefined"
+                  class="text-[10px] mt-0.5 font-mono"
+                  :class="
+                    sourceLatencies[item.key] > 0 && sourceLatencies[item.key] < 1500
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-amber-600 dark:text-amber-400'
+                  "
+                >
+                  {{
+                    sourceLatencies[item.key] > 0
+                      ? `响应 ${sourceLatencies[item.key]} ms`
+                      : '连接超时'
+                  }}
+                </div>
+              </div>
+              <n-switch
+                size="small"
+                :value="musicSources.includes(item.key)"
+                @update:value="(val: boolean) => toggleSingleSource(item.key, val)"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <setting-item
+        v-if="isAndroid"
+        inline
+        title="均衡器 (EQ)"
+        :description="
+          nativeCapabilities.supportsEq
+            ? '使用手机原生硬件音效均衡器调节 10 段频响'
+            : '仅 Android 支持（iOS 端 AVPlayer 暂未启用均衡器）'
+        "
+      >
+        <s-btn v-if="nativeCapabilities.supportsEq" @click="showEqModal = true">{{ t('common.configure') }}</s-btn>
+        <div v-else class="flex items-center gap-2 opacity-65">
+          <n-tag size="small" round>仅 Android 支持</n-tag>
+          <s-btn disabled>{{ t('common.configure') }}</s-btn>
+        </div>
+      </setting-item>
+
+      <!-- Android 桌面歌词细项样式调节 -->
+      <setting-item
+        v-if="isAndroid && nativeCapabilities.supportsFloatingLyric"
+        title="桌面歌词细项样式"
+        description="自定义悬浮歌词高亮配色、字号（14–26sp）、译文显示与防误触锁定"
+      >
+        <template #action>
+          <div class="flex flex-col items-end gap-2.5 max-md:w-full">
+            <div class="flex items-center gap-2 flex-wrap">
+              <button
+                v-for="preset in floatingColorPresets"
+                :key="preset.hex"
+                type="button"
+                :aria-label="preset.label"
+                class="w-6 h-6 rounded-full border-2 transition-transform active:scale-90"
+                :class="
+                  floatingStyle.color.toUpperCase() === preset.hex
+                    ? 'border-slate-900 dark:border-white scale-110'
+                    : 'border-transparent opacity-80 hover:opacity-100'
+                "
+                :style="{ backgroundColor: preset.hex }"
+                @click="updateFloatingColor(preset.hex)"
+              ></button>
+            </div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <div
+                class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 bg-slate-100 dark:bg-[#1C1C22] border border-slate-200/80 dark:border-white/[0.08]"
+              >
+                <button
+                  type="button"
+                  class="w-6 h-6 rounded-full text-xs font-bold text-slate-700 dark:text-zinc-200"
+                  :disabled="floatingStyle.textSizeSp <= 14"
+                  @click="adjustFloatingTextSize(-2)"
+                >
+                  A-
+                </button>
+                <span class="text-xs font-mono font-bold px-1 text-slate-800 dark:text-zinc-100">
+                  {{ Math.round(floatingStyle.textSizeSp) }}sp
+                </span>
+                <button
+                  type="button"
+                  class="w-6 h-6 rounded-full text-xs font-bold text-slate-700 dark:text-zinc-200"
+                  :disabled="floatingStyle.textSizeSp >= 26"
+                  @click="adjustFloatingTextSize(2)"
+                >
+                  A+
+                </button>
+              </div>
+              <button
+                type="button"
+                class="px-2.5 py-1 rounded-full text-xs font-bold border transition-colors"
+                :class="
+                  floatingStyle.showTranslation
+                    ? 'bg-amber-50 border-amber-300 text-amber-700 dark:bg-amber-500/20 dark:border-amber-400/40 dark:text-amber-300'
+                    : 'bg-slate-100 border-slate-200 text-slate-600 dark:bg-[#1C1C22] dark:border-white/[0.08] dark:text-zinc-400'
+                "
+                @click="toggleFloatingTranslation"
+              >
+                {{ floatingStyle.showTranslation ? '译文：开' : '译文：关' }}
+              </button>
+              <s-btn
+                v-if="floatingLyricEnabled"
+                @click="toggleFloatingLock"
+              >
+                {{ floatingLyricLocked ? '解锁位置' : '锁定位置' }}
+              </s-btn>
+            </div>
+          </div>
+        </template>
+      </setting-item>
 
       <setting-item
         v-if="isElectron"
@@ -277,10 +350,11 @@
     </setting-section>
 
     <div
-      class="mt-5 p-4 rounded-[20px] bg-white dark:bg-[#192231] border border-slate-200/90 dark:border-slate-700/80 shadow-[0_2px_12px_rgba(15,23,42,0.06)] dark:shadow-[0_4px_16px_rgba(0,0,0,0.3)]"
+      v-if="showAdvanced"
+      class="mt-5 p-4 rounded-[20px] bg-white dark:bg-[#131316] border border-slate-200/90 dark:border-white/[0.08] shadow-[0_2px_12px_rgba(15,23,42,0.06)] dark:shadow-[0_4px_16px_rgba(0,0,0,0.35)]"
     >
       <div class="text-xs font-bold uppercase tracking-wider text-amber-700 dark:text-amber-300 mb-1.5">支持正版</div>
-      <div class="text-sm text-slate-700 dark:text-slate-200 leading-relaxed mb-3.5">
+      <div class="text-sm text-slate-700 dark:text-zinc-200 leading-relaxed mb-3.5">
         大家还是需要支持正版，本软件只做开源探讨。各大音乐会员购买链接：
       </div>
       <div class="flex gap-2 flex-wrap">
@@ -297,12 +371,12 @@
     </div>
 
     <music-source-settings
-      v-if="isNative"
+      v-if="isNative && showAdvanced"
       v-model:show="showMusicSourcesModal"
       v-model:sources="musicSources"
     />
 
-    <n-modal v-if="isAndroid && nativeCapabilities.supportsEq" v-model:show="showEqModal" preset="card" :z-index="12000" style="width: 94vw; max-width: 680px" title="均衡器 (EQ)">
+    <n-modal v-if="isAndroid && nativeCapabilities.supportsEq && showAdvanced" v-model:show="showEqModal" preset="card" :z-index="12000" style="width: 94vw; max-width: 680px" title="均衡器 (EQ)">
       <eq-control />
     </n-modal>
   </div>
@@ -319,15 +393,18 @@ import { type Platform } from '@/types/music';
 import { isAndroid, isElectron, isNative, isRealAndroid } from '@/utils';
 import {
   AUDIO_CACHE_MAX_MB_OPTIONS,
+  type FloatingLyricStyleConfig,
   formatAudioCacheLimitMb,
   getAutoResumeOnBluetoothConnect,
   getFloatingLyricHideInLandscape,
+  getFloatingLyricStyle,
   getNativeAudioCacheMaxMb,
   getNativeCapabilities,
   offAndroidEvent,
   onAndroidEvent,
   setAutoResumeOnBluetoothConnect,
   setFloatingLyricHideInLandscape,
+  setFloatingLyricStyle,
   setNativeAudioCacheMaxMb
 } from '@/utils/androidBridge';
 import {
@@ -352,10 +429,56 @@ const memberLinks = [
   { name: '酷狗音乐会员', url: 'https://vip.kugou.com/' }
 ];
 
+const props = withDefaults(
+  defineProps<{
+    mode?: 'common' | 'advanced' | 'all';
+  }>(),
+  { mode: 'all' }
+);
+
+const showCommon = computed(() => props.mode !== 'advanced');
+const showAdvanced = computed(() => props.mode !== 'common');
+
 const { t } = useI18n();
 const setData = inject(SETTINGS_DATA_KEY)!;
 const platform = window.electron ? window.electron.ipcRenderer.sendSync('get-platform') : 'web';
 const nativeCapabilities = getNativeCapabilities();
+
+const floatingColorPresets = [
+  { hex: '#E84C3D', label: '绯红' },
+  { hex: '#56A8E8', label: '晴空蓝' },
+  { hex: '#5CC47A', label: '翡翠绿' },
+  { hex: '#E8A838', label: '奶娃金' },
+  { hex: '#8E5CF6', label: '丁香紫' }
+];
+const floatingStyle = ref<FloatingLyricStyleConfig>(
+  nativeCapabilities.supportsFloatingLyric
+    ? getFloatingLyricStyle()
+    : { color: '#56A8E8', textSizeSp: 18, showTranslation: true, locked: false }
+);
+
+const updateFloatingColor = (hex: string) => {
+  if (!nativeCapabilities.supportsFloatingLyric) return;
+  floatingStyle.value = setFloatingLyricStyle({ color: hex });
+};
+
+const adjustFloatingTextSize = (delta: number) => {
+  if (!nativeCapabilities.supportsFloatingLyric) return;
+  const nextSize = Math.max(14, Math.min(26, Math.round(floatingStyle.value.textSizeSp + delta)));
+  floatingStyle.value = setFloatingLyricStyle({ textSizeSp: nextSize });
+};
+
+const toggleFloatingTranslation = () => {
+  if (!nativeCapabilities.supportsFloatingLyric) return;
+  floatingStyle.value = setFloatingLyricStyle({ showTranslation: !floatingStyle.value.showTranslation });
+};
+
+const toggleFloatingLock = () => {
+  if (!nativeCapabilities.supportsFloatingLyric) return;
+  const nextLocked = !floatingLyricLocked.value;
+  (window as any).AlgerAndroid?.setFloatingLyricLocked?.(nextLocked);
+  floatingLyricLocked.value = nextLocked;
+};
 
 const showMusicSourcesModal = ref(false);
 const showAdvancedSources = ref(false);
@@ -477,6 +600,7 @@ onMounted(() => {
     floatingLyricEnabled.value = Boolean((window as any).AlgerAndroid?.isFloatingLyricEnabled?.());
     floatingLyricLocked.value = Boolean((window as any).AlgerAndroid?.isFloatingLyricLocked?.());
     floatingLyricHideInLandscape.value = getFloatingLyricHideInLandscape();
+    floatingStyle.value = getFloatingLyricStyle();
     onAndroidEvent('floating-lyric-state-changed', handleFloatingLyricStateChanged);
     onAndroidEvent('floating-lyric-closed', handleFloatingLyricClosed);
     onAndroidEvent(

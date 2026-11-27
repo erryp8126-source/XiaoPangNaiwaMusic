@@ -2,7 +2,7 @@
   <div>
     <!-- 小庞奶娃音乐 品牌展示卡片（浅色/深色双模高对比度自适应） -->
     <div
-      class="mb-5 p-5 rounded-[22px] relative overflow-hidden bg-gradient-to-br from-sky-50 via-white to-amber-50 dark:from-[#1B2638] dark:via-[#192231] dark:to-[#221F26] border border-slate-200/90 dark:border-slate-700/80 shadow-[0_2px_12px_rgba(15,23,42,0.06)] dark:shadow-[0_4px_16px_rgba(0,0,0,0.3)]"
+      class="mb-5 p-5 rounded-[22px] relative overflow-hidden bg-gradient-to-br from-sky-50 via-white to-amber-50 dark:from-[#18181D] dark:via-[#131316] dark:to-[#1C1C22] border border-slate-200/90 dark:border-white/[0.08] shadow-[0_2px_12px_rgba(15,23,42,0.06)] dark:shadow-[0_4px_16px_rgba(0,0,0,0.35)]"
     >
       <div class="relative z-10 flex items-center gap-4">
         <img

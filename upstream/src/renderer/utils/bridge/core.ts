@@ -1,6 +1,7 @@
 import type {
   AndroidServerConfig,
   AudioCacheLimitUpdateResult,
+  FloatingLyricStyleConfig,
   HapticStyle,
   NativeCapabilities,
   NativeEventListener
@@ -61,6 +62,53 @@ export function setFloatingLyricHideInLandscape(enabled: boolean): boolean {
     return actual;
   } catch {
     return next;
+  }
+}
+
+const DEFAULT_FLOATING_LYRIC_STYLE: FloatingLyricStyleConfig = {
+  color: '#56A8E8',
+  textSizeSp: 18,
+  showTranslation: true,
+  locked: false
+};
+
+export function getFloatingLyricStyle(): FloatingLyricStyleConfig {
+  if (typeof window === 'undefined') return { ...DEFAULT_FLOATING_LYRIC_STYLE };
+  try {
+    const raw = window.AlgerAndroid?.getFloatingLyricStyle?.();
+    if (!raw) return { ...DEFAULT_FLOATING_LYRIC_STYLE };
+    const parsed = JSON.parse(raw);
+    return {
+      color: typeof parsed?.color === 'string' && parsed.color ? parsed.color : '#56A8E8',
+      textSizeSp: Number(parsed?.textSizeSp) || 18,
+      showTranslation: parsed?.showTranslation !== false,
+      locked: Boolean(parsed?.locked)
+    };
+  } catch {
+    return { ...DEFAULT_FLOATING_LYRIC_STYLE };
+  }
+}
+
+export function setFloatingLyricStyle(
+  patch: Partial<Pick<FloatingLyricStyleConfig, 'color' | 'textSizeSp' | 'showTranslation'>>
+): FloatingLyricStyleConfig {
+  const fallback = getFloatingLyricStyle();
+  if (typeof window === 'undefined') return { ...fallback, ...patch };
+  try {
+    const fn = window.AlgerAndroid?.setFloatingLyricStyle;
+    if (typeof fn !== 'function') return { ...fallback, ...patch };
+    const raw = fn.call(window.AlgerAndroid, JSON.stringify(patch || {}));
+    if (!raw) return { ...fallback, ...patch };
+    const parsed = JSON.parse(raw);
+    return {
+      color: typeof parsed?.color === 'string' && parsed.color ? parsed.color : fallback.color,
+      textSizeSp: Number(parsed?.textSizeSp) || fallback.textSizeSp,
+      showTranslation:
+        parsed?.showTranslation !== undefined ? Boolean(parsed.showTranslation) : fallback.showTranslation,
+      locked: Boolean(parsed?.locked)
+    };
+  } catch {
+    return { ...fallback, ...patch };
   }
 }
 

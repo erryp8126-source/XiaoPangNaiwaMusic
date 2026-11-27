@@ -464,6 +464,25 @@ class AndroidJsBridge(
     }
 
     @JavascriptInterface
+    fun getFloatingLyricStyle(): String {
+        return floatingLyricManager.getStyleConfigJson()
+    }
+
+    @JavascriptInterface
+    fun setFloatingLyricStyle(configJson: String): String {
+        return runCatching {
+            val obj = JsonParser.parseString(configJson).asJsonObject
+            val color = obj.get("color")?.takeIf { !it.isJsonNull }?.asString
+            val textSizeSp = obj.get("textSizeSp")?.takeIf { !it.isJsonNull }?.asFloat
+            val showTranslation = obj.get("showTranslation")?.takeIf { !it.isJsonNull }?.asBoolean
+            floatingLyricManager.updateStyleFromJs(color, textSizeSp, showTranslation)
+        }.getOrElse {
+            Log.w(TAG, "setFloatingLyricStyle invalid json: ${it.message}")
+            floatingLyricManager.getStyleConfigJson()
+        }
+    }
+
+    @JavascriptInterface
     fun isAutoResumeOnBluetoothConnect(): Boolean {
         return app.prefs.autoResumeOnBluetoothConnect
     }

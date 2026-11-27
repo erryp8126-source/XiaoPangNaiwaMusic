@@ -29,8 +29,8 @@
           :style="{ backgroundImage: `url(${getImgUrl(coverRawUrl, '300y300')})` }"
         ></div>
         <div class="aurora-base-glow"></div>
-        <div class="aurora-warm-orb"></div>
-        <div class="aurora-sky-orb"></div>
+        <div v-if="!settingsStore.effectiveReducedMotion" class="aurora-warm-orb"></div>
+        <div v-if="!settingsStore.effectiveReducedMotion" class="aurora-sky-orb"></div>
         <div class="aurora-scrim"></div>
       </div>
 
@@ -139,7 +139,7 @@
               'record-style': config.mobileCoverStyle === 'record',
               'square-style': config.mobileCoverStyle === 'square',
               'full-style': config.mobileCoverStyle === 'full',
-              paused: !play
+              paused: !play || settingsStore.effectiveReducedMotion
             }"
             :style="coverSwipeStyle"
             @touchstart="handleCoverTouchStart"
@@ -237,7 +237,7 @@
               'record-style': config.mobileCoverStyle === 'record',
               'square-style': config.mobileCoverStyle === 'square',
               'full-style': config.mobileCoverStyle === 'full',
-              paused: !play
+              paused: !play || settingsStore.effectiveReducedMotion
             }"
             @click="cycleCoverStyle"
           >
@@ -553,10 +553,8 @@ const handleCoverError = () => {
   isCoverError.value = true;
 };
 
-// 封面动态弥散背景（默认开启，24x24 离屏 Canvas 主/次色采样 + URL 缓存 + 对比度兜底）
-const dynamicBackgroundEnabled = computed(
-  () => settingsStore.setData?.enableDynamicBackground !== false
-);
+// 封面动态弥散背景（省电/减少动效模式下自动关闭）
+const dynamicBackgroundEnabled = computed(() => settingsStore.effectiveDynamicBackground);
 const dynamicPalette = ref<DynamicCoverPalette>(DEFAULT_DYNAMIC_PALETTE);
 let paletteReqSeq = 0;
 

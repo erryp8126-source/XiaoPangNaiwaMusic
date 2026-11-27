@@ -21,6 +21,7 @@ import {
 import {
   type CloudSyncSnapshot,
   computeSyncConflictDiff,
+  computeSyncMergePreview,
   computeSyncSnapshotDigest,
   detectSyncConflict,
   type LocalBackupReason,
@@ -28,7 +29,8 @@ import {
   pruneBackupSnapshots,
   smartMergeCloudSnapshots,
   type SyncConflictDiffPreview,
-  type SyncCustomPlaylist
+  type SyncCustomPlaylist,
+  type SyncMergePreview
 } from '@/utils/cloudSyncMerge';
 import {
   decryptSyncPayload,
@@ -98,11 +100,39 @@ export interface CloudSyncResult {
   ok: boolean;
   message: string;
   conflict?: boolean;
+  previewPending?: boolean;
   needsPassphrase?: boolean;
   syncCode?: string;
   songsCount?: number;
   favoritesCount?: number;
   totalSeconds?: number;
+}
+
+export interface PendingSyncPreview {
+  provider: SyncProvider;
+  hasConflict: boolean;
+  conflictReason: string;
+  localSnapshot: CloudSyncSnapshot;
+  remoteSnapshot: CloudSyncSnapshot | null;
+  remoteUpdatedAt: number;
+  localSummary: {
+    revision: number;
+    updatedAt: number;
+    deviceName: string;
+    songsCount: number;
+    favoritesCount: number;
+    playlistsCount: number;
+  };
+  remoteSummary: {
+    revision: number;
+    updatedAt: number;
+    deviceName: string;
+    songsCount: number;
+    favoritesCount: number;
+    playlistsCount: number;
+  };
+  preview: SyncMergePreview;
+  diffPreview: SyncConflictDiffPreview;
 }
 
 const CONFIG_STORAGE_KEY = 'xiaopang_cloud_sync_config_v1';
@@ -124,6 +154,7 @@ const SYNCABLE_PREF_KEYS = [
   'autoPlay',
   'autoTheme',
   'manualTheme',
+  'powerSavingMode',
   'language'
 ] as const;
 
@@ -403,7 +434,9 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
   const lastSyncedLocalDigest = ref<string>(meta.lastSyncedLocalDigest || '');
   const localBackups = ref<LocalSyncBackupRecord[]>(loadLocalBackups());
   const pendingConflict = ref<PendingSyncConflict | null>(null);
+  const pendingSyncPreview = ref<PendingSyncPreview | null>(null);
   const syncing = ref(false);
+  const previewing = ref(false);
   const testing = ref(false);
 
   const effectiveDeviceName = computed(() => {
@@ -1392,7 +1425,297 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
     return { ok: true, message: msg, ...decision.counts };
   };
 
-  // ==================== 统一同步入口 & 本地备份 ====================
+  // ==================== 统一同步入口 & 同步前预览 ====================
+
+  interface RemoteSnapshotReadResult {
+    ok: boolean;
+    message?: string;
+    remoteSnapshot: CloudSyncSnapshot | null;
+    remoteUpdatedAt: number;
+  }
+
+  const fetchRemoteSnapshotReadOnly = async (): Promise<RemoteSnapshotReadResult> => {
+    const provider = config.value.provider;
+
+    if (provider === 'quick') {
+      if (!hasQuickSyncEndpoint.value) {
+        return {
+          ok: false,
+          message: '同步口令服务尚未初始化，请先完成 Supabase 配置或使用离线迁移 / WebDAV',
+          remoteSnapshot: null,
+          remoteUpdatedAt: 0
+        };
+      }
+      const check = validateSyncCode(config.value.quick.syncCode);
+      if (!check.valid) {
+        return {
+          ok: false,
+          message: check.reason || '同步口令格式不正确',
+          remoteSnapshot: null,
+          remoteUpdatedAt: 0
+        };
+      }
+      const normalizedCode = normalizeSyncCode(config.value.quick.syncCode);
+      const syncId = await deriveSyncId(normalizedCode);
+      const headers = getSupabaseHeaders();
+      const baseUrl = effectiveSupabaseUrl.value;
+
+      const getRes = await nativeAwareRequest({
+        url: `${baseUrl}/rest/v1/rpc/get_sync_blob`,
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ p_sync_id: syncId }),
+        timeout: 20000
+      });
+
+      if (getRes.statusCode < 200 || getRes.statusCode >= 300) {
+        if (getRes.statusCode === 401 || getRes.statusCode === 403) {
+          return { ok: false, message: '云同步鉴权失败，请检查 Supabase Key 配置', remoteSnapshot: null, remoteUpdatedAt: 0 };
+        }
+        return { ok: false, message: `读取云端记录失败（HTTP ${getRes.statusCode}）`, remoteSnapshot: null, remoteUpdatedAt: 0 };
+      }
+
+      const getBody = parseJsonBody(getRes.body);
+      let remoteSnapshot: CloudSyncSnapshot | null = null;
+      if (getBody?.found && typeof getBody.payload === 'string' && getBody.payload.trim()) {
+        try {
+          const plainJson = await decryptSyncPayload(getBody.payload, normalizedCode);
+          const parsed = JSON.parse(plainJson);
+          if (parsed && typeof parsed === 'object') {
+            remoteSnapshot = parsed as CloudSyncSnapshot;
+          }
+        } catch (err: any) {
+          return {
+            ok: false,
+            message: `云端数据解密失败：${err?.message || '请确认同步口令是否完整准确'}`,
+            remoteSnapshot: null,
+            remoteUpdatedAt: 0
+          };
+        }
+      }
+      const remoteUpdatedAt =
+        Number(getBody?.updated_at) ||
+        Number(remoteSnapshot?.clientUpdatedAt) ||
+        Number(remoteSnapshot?.updatedAt) ||
+        0;
+      return { ok: true, remoteSnapshot, remoteUpdatedAt };
+    }
+
+    if (provider === 'webdav') {
+      if (!isWebdavConfigured.value) {
+        return { ok: false, message: '请先填写完整的 WebDAV 配置', remoteSnapshot: null, remoteUpdatedAt: 0 };
+      }
+      const authHeaders = getWebdavAuthHeaders();
+      const { fileUrl } = normalizeWebdavUrls(config.value.webdav);
+      const getRes = await nativeAwareRequest({
+        url: fileUrl,
+        method: 'GET',
+        headers: {
+          ...authHeaders,
+          Accept: 'application/json'
+        },
+        timeout: 20000
+      });
+      let remoteSnapshot: CloudSyncSnapshot | null = null;
+      if (getRes.statusCode === 200) {
+        const parsed = parseJsonBody(getRes.body);
+        if (parsed && typeof parsed === 'object') {
+          remoteSnapshot = parsed as CloudSyncSnapshot;
+        }
+      } else if (getRes.statusCode === 401 || getRes.statusCode === 403) {
+        return { ok: false, message: 'WebDAV 认证失败（401/403），请检查账号与应用密码', remoteSnapshot: null, remoteUpdatedAt: 0 };
+      } else if (getRes.statusCode !== 404) {
+        return { ok: false, message: `读取云端文件失败（HTTP ${getRes.statusCode}）`, remoteSnapshot: null, remoteUpdatedAt: 0 };
+      }
+      const parsedLastMod = Date.parse(getRes.headers['last-modified'] || '');
+      const remoteUpdatedAt =
+        (Number.isFinite(parsedLastMod) ? parsedLastMod : 0) ||
+        Number(remoteSnapshot?.clientUpdatedAt) ||
+        Number(remoteSnapshot?.updatedAt) ||
+        0;
+      return { ok: true, remoteSnapshot, remoteUpdatedAt };
+    }
+
+    // GitHub Gist 只读拉取
+    if (!isGithubConfigured.value) {
+      return { ok: false, message: '请先填写 GitHub Token', remoteSnapshot: null, remoteUpdatedAt: 0 };
+    }
+    const headers = getGithubHeaders();
+    let gistId = config.value.github.gistId.trim();
+    let gistObj: any = null;
+    if (gistId) {
+      const res = await nativeAwareRequest({
+        url: `https://api.github.com/gists/${encodeURIComponent(gistId)}`,
+        method: 'GET',
+        headers,
+        timeout: 20000
+      });
+      if (res.statusCode === 200) {
+        gistObj = parseJsonBody(res.body);
+      } else if (res.statusCode === 401 || res.statusCode === 403) {
+        return { ok: false, message: 'GitHub Token 认证失败或缺少 gist 权限', remoteSnapshot: null, remoteUpdatedAt: 0 };
+      } else if (res.statusCode === 404) {
+        gistId = '';
+      } else {
+        return { ok: false, message: `读取 Gist 失败（HTTP ${res.statusCode}）`, remoteSnapshot: null, remoteUpdatedAt: 0 };
+      }
+    }
+    if (!gistObj) {
+      const listRes = await nativeAwareRequest({
+        url: 'https://api.github.com/gists?per_page=30',
+        method: 'GET',
+        headers,
+        timeout: 20000
+      });
+      if (listRes.statusCode === 401 || listRes.statusCode === 403) {
+        return { ok: false, message: 'GitHub Token 认证失败或缺少 gist 权限', remoteSnapshot: null, remoteUpdatedAt: 0 };
+      }
+      if (listRes.statusCode === 200) {
+        const list = parseJsonBody(listRes.body);
+        if (Array.isArray(list)) {
+          const matched = list.find((g: any) => g?.files && g.files[GIST_FILENAME]);
+          if (matched?.id) {
+            const detailRes = await nativeAwareRequest({
+              url: `https://api.github.com/gists/${encodeURIComponent(String(matched.id))}`,
+              method: 'GET',
+              headers,
+              timeout: 20000
+            });
+            if (detailRes.statusCode === 200) {
+              gistObj = parseJsonBody(detailRes.body);
+            }
+          }
+        }
+      }
+    }
+    let remoteSnapshot: CloudSyncSnapshot | null = null;
+    const remoteFile = gistObj?.files?.[GIST_FILENAME];
+    if (remoteFile) {
+      if (remoteFile.truncated && remoteFile.raw_url) {
+        const rawRes = await nativeAwareRequest({
+          url: remoteFile.raw_url,
+          method: 'GET',
+          headers,
+          timeout: 25000
+        });
+        if (rawRes.statusCode === 200) {
+          remoteSnapshot = parseJsonBody(rawRes.body);
+        }
+      } else if (typeof remoteFile.content === 'string') {
+        remoteSnapshot = parseJsonBody(remoteFile.content);
+      }
+    }
+    const parsedGistUpdatedAt = Date.parse(gistObj?.updated_at || '');
+    const remoteUpdatedAt =
+      (Number.isFinite(parsedGistUpdatedAt) ? parsedGistUpdatedAt : 0) ||
+      Number(remoteSnapshot?.clientUpdatedAt) ||
+      Number(remoteSnapshot?.updatedAt) ||
+      0;
+    return { ok: true, remoteSnapshot, remoteUpdatedAt };
+  };
+
+  /**
+   * 同步前非破坏性预检：计算本地与云端合并摘要与差异列表，检测到变化时弹出确认预览
+   */
+  const prepareSyncPreview = async (): Promise<CloudSyncResult> => {
+    if (syncing.value || previewing.value) {
+      return { ok: false, message: '正在同步中，请稍候...' };
+    }
+    if (!isConfigured.value) {
+      return { ok: false, message: '尚未开启云同步，点一下即可生成专属同步口令' };
+    }
+
+    previewing.value = true;
+    try {
+      const remoteRes = await fetchRemoteSnapshotReadOnly();
+      if (!remoteRes.ok) {
+        return { ok: false, message: remoteRes.message || '读取云端状态失败' };
+      }
+
+      const localSnapshot = await buildLocalSnapshot();
+      const preview = computeSyncMergePreview(localSnapshot, remoteRes.remoteSnapshot);
+
+      if (!preview.hasChanges) {
+        if (remoteRes.remoteSnapshot) {
+          const digest = computeSyncSnapshotDigest(localSnapshot);
+          saveMeta('本地与云端已一致，无需合并', providerDisplayName.value, {
+            revision: Math.max(Number(remoteRes.remoteSnapshot.revision) || 0, lastSyncedRevision.value),
+            remoteUpdatedAt:
+              remoteRes.remoteUpdatedAt ||
+              remoteRes.remoteSnapshot.clientUpdatedAt ||
+              remoteRes.remoteSnapshot.updatedAt ||
+              Date.now(),
+            localDigest: digest
+          });
+          return { ok: true, message: '本地与云端数据已一致，无需合并' };
+        }
+        return await syncNow(false, 'smart-merge');
+      }
+
+      const detection = detectSyncConflict({
+        localSnapshot,
+        remoteSnapshot: remoteRes.remoteSnapshot,
+        remoteUpdatedAt: remoteRes.remoteUpdatedAt,
+        lastRemoteUpdatedAt: lastRemoteUpdatedAt.value,
+        lastSyncedRevision: lastSyncedRevision.value,
+        lastSyncedLocalDigest: lastSyncedLocalDigest.value,
+        currentDeviceId
+      });
+
+      pendingSyncPreview.value = {
+        provider: config.value.provider,
+        hasConflict: detection.hasConflict,
+        conflictReason: detection.reason,
+        localSnapshot,
+        remoteSnapshot: remoteRes.remoteSnapshot,
+        remoteUpdatedAt: remoteRes.remoteUpdatedAt,
+        localSummary: buildSnapshotSummary(localSnapshot, localSnapshot.clientUpdatedAt),
+        remoteSummary: buildSnapshotSummary(
+          remoteRes.remoteSnapshot || { deviceName: '云端尚无备份' },
+          remoteRes.remoteUpdatedAt
+        ),
+        preview,
+        diffPreview: computeSyncConflictDiff(localSnapshot, remoteRes.remoteSnapshot)
+      };
+
+      return {
+        ok: true,
+        previewPending: true,
+        message: preview.summaryText
+      };
+    } catch (err: any) {
+      const errMsg = String(err?.message || err || '同步预览失败');
+      if (
+        !isAndroid() &&
+        config.value.provider === 'webdav' &&
+        /Failed to fetch|NetworkError|CORS|Load failed/i.test(errMsg)
+      ) {
+        return {
+          ok: false,
+          message: '浏览器跨域限制拦截了 WebDAV，建议使用顶部的「一键同步口令」'
+        };
+      }
+      return { ok: false, message: `检查云端变更失败：${errMsg}` };
+    } finally {
+      previewing.value = false;
+    }
+  };
+
+  const confirmPendingSyncPreview = async (
+    strategy: ConflictResolutionStrategy = 'smart-merge'
+  ): Promise<CloudSyncResult> => {
+    const previewState = pendingSyncPreview.value;
+    pendingSyncPreview.value = null;
+    if (previewState && previewState.provider !== config.value.provider) {
+      config.value.provider = previewState.provider;
+      saveConfig();
+    }
+    return syncNow(false, strategy);
+  };
+
+  const dismissPendingSyncPreview = () => {
+    pendingSyncPreview.value = null;
+  };
 
   const syncNow = async (
     silent = false,
@@ -1599,7 +1922,9 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
     effectiveDeviceName,
     localBackups,
     pendingConflict,
+    pendingSyncPreview,
     syncing,
+    previewing,
     testing,
     hasQuickSyncEndpoint,
     isBuiltinQuickSyncReady,
@@ -1614,6 +1939,9 @@ export const useCloudSyncStore = defineStore('cloudSync', () => {
     testQuickSyncConnection,
     enableQuickSyncWithCode,
     disconnectQuickSync,
+    prepareSyncPreview,
+    confirmPendingSyncPreview,
+    dismissPendingSyncPreview,
     syncNow,
     resolvePendingConflict,
     dismissPendingConflict,

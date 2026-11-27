@@ -37,9 +37,9 @@ const variantClass = computed(() => {
     case 'danger':
       return 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 dark:bg-rose-950/60 dark:text-rose-200 dark:border-rose-800/70';
     case 'ghost':
-      return 'bg-transparent text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800';
+      return 'bg-transparent text-slate-700 hover:bg-slate-100 dark:text-zinc-200 dark:hover:bg-[#1C1C22]';
     default:
-      return 'bg-slate-100 text-slate-800 border border-slate-200/90 hover:bg-slate-200/80 dark:bg-slate-700 dark:text-slate-100 dark:border-slate-600';
+      return 'bg-slate-100 text-slate-800 border border-slate-200/90 hover:bg-slate-200/80 dark:bg-[#1C1C22] dark:text-zinc-100 dark:border-white/[0.08]';
   }
 });
 </script>

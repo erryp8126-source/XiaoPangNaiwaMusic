@@ -2,6 +2,7 @@
   <div class="space-y-4">
     <!-- ==================== 1. 主推小白入口：一键专属同步口令 ==================== -->
     <div
+      v-if="showCommonSections"
       class="relative overflow-hidden rounded-[22px] p-5 bg-gradient-to-br from-sky-500 via-blue-600 to-indigo-600 text-white shadow-lg shadow-sky-600/20"
     >
       <div class="relative z-10 flex flex-col gap-4">
@@ -71,8 +72,8 @@
               </button>
             </template>
           </div>
-          <div class="text-[11px] text-white/85 flex-shrink-0">
-            上次同步：{{ cloudSyncStore.lastSyncAt ? formatTime(cloudSyncStore.lastSyncAt) : '尚未同步' }}
+          <div class="text-[11px] text-white/90 flex-shrink-0 font-medium">
+            {{ relativeLastSyncLabel }}
           </div>
         </div>
 
@@ -137,17 +138,15 @@
           </div>
 
           <div class="flex items-center justify-between gap-2 flex-wrap">
-            <div class="text-xs text-white/85 truncate max-w-full">
-              <template v-if="cloudSyncStore.lastSyncAt">
-                上次同步：{{ formatTime(cloudSyncStore.lastSyncAt) }}
-                <span
-                  v-if="cloudSyncStore.lastSyncedRevision > 0"
-                  class="ml-1 px-1.5 py-0.5 rounded bg-white/15 font-mono text-[10px]"
-                >
-                  v{{ cloudSyncStore.lastSyncedRevision }}
-                </span>
-              </template>
-              <template v-else>已就绪，点击右侧立即同步</template>
+            <div class="text-xs text-white/90 truncate max-w-full flex items-center gap-1.5">
+              <i class="ri-time-line text-amber-200"></i>
+              <span>{{ relativeLastSyncLabel }}</span>
+              <span
+                v-if="cloudSyncStore.lastSyncAt && cloudSyncStore.lastSyncedRevision > 0"
+                class="px-1.5 py-0.5 rounded bg-white/15 font-mono text-[10px]"
+              >
+                v{{ cloudSyncStore.lastSyncedRevision }}
+              </span>
             </div>
             <div class="flex items-center gap-2">
               <button
@@ -159,17 +158,25 @@
               </button>
               <button
                 type="button"
-                :disabled="cloudSyncStore.syncing"
+                :disabled="cloudSyncStore.syncing || cloudSyncStore.previewing"
                 class="px-4 py-2 rounded-full text-xs font-extrabold bg-white text-blue-700 hover:bg-sky-50 transition-all active:scale-95 flex items-center gap-1.5 shadow-md"
                 @click="handleSyncNow"
               >
                 <i
                   class="text-sm"
                   :class="
-                    cloudSyncStore.syncing ? 'ri-loader-4-line animate-spin' : 'ri-refresh-line'
+                    cloudSyncStore.syncing || cloudSyncStore.previewing
+                      ? 'ri-loader-4-line animate-spin'
+                      : 'ri-refresh-line'
                   "
                 ></i>
-                {{ cloudSyncStore.syncing ? '同步中...' : '立即同步' }}
+                {{
+                  cloudSyncStore.previewing
+                    ? '检查差异中...'
+                    : cloudSyncStore.syncing
+                      ? '同步中...'
+                      : '立即同步'
+                }}
               </button>
             </div>
           </div>
@@ -239,7 +246,8 @@
 
     <!-- ==================== 2. 网易云扫码同步（免抓 Cookie） ==================== -->
     <div
-      class="rounded-[20px] p-4 bg-white dark:bg-[#192231] border border-slate-200/90 dark:border-slate-700/80 shadow-[0_2px_12px_rgba(15,23,42,0.05)] flex items-center justify-between gap-3 flex-wrap"
+      v-if="showCommonSections"
+      class="rounded-[20px] p-4 bg-white dark:bg-[#131316] border border-slate-200/90 dark:border-white/[0.08] shadow-[0_2px_12px_rgba(15,23,42,0.05)] flex items-center justify-between gap-3 flex-wrap"
     >
       <div class="flex items-center gap-3 min-w-0 flex-1">
         <div
@@ -277,7 +285,8 @@
 
     <!-- ==================== 3. 发给微信 / 本地一键备份 ==================== -->
     <div
-      class="rounded-[20px] p-4 bg-white dark:bg-[#192231] border border-slate-200/90 dark:border-slate-700/80 shadow-[0_2px_12px_rgba(15,23,42,0.05)] space-y-3"
+      v-if="showAdvancedSections"
+      class="rounded-[20px] p-4 bg-white dark:bg-[#131316] border border-slate-200/90 dark:border-white/[0.08] shadow-[0_2px_12px_rgba(15,23,42,0.05)] space-y-3"
     >
       <div>
         <div class="text-sm font-extrabold text-slate-900 dark:text-white">
@@ -404,7 +413,7 @@
     </div>
 
     <!-- ==================== 4. 自动同步与同步内容开关 ==================== -->
-    <setting-section title="同步内容与自动策略">
+    <setting-section v-if="showCommonSections" title="同步内容与自动策略">
       <setting-item
         inline
         title="打开 App 自动双向同步"
@@ -455,7 +464,8 @@
 
     <!-- ==================== 5. 默认折叠：极客高级同步（WebDAV / GitHub / 自定义节点） ==================== -->
     <div
-      class="rounded-[20px] bg-white dark:bg-[#192231] border border-slate-200/90 dark:border-slate-700/80 shadow-[0_2px_12px_rgba(15,23,42,0.04)] overflow-hidden"
+      v-if="showAdvancedSections"
+      class="rounded-[20px] bg-white dark:bg-[#131316] border border-slate-200/90 dark:border-white/[0.08] shadow-[0_2px_12px_rgba(15,23,42,0.04)] overflow-hidden"
     >
       <button
         type="button"
@@ -622,6 +632,252 @@
       </div>
     </div>
 
+    <!-- ==================== 5.5 同步前变更预览与确认弹窗 ==================== -->
+    <n-modal
+      :show="Boolean(cloudSyncStore.pendingSyncPreview)"
+      preset="card"
+      :z-index="12000"
+      :bordered="false"
+      :mask-closable="true"
+      class="max-w-[480px] w-[92vw] rounded-3xl"
+      title="同步前变更预览"
+      @close="cloudSyncStore.dismissPendingSyncPreview"
+      @update:show="(val: boolean) => { if (!val) cloudSyncStore.dismissPendingSyncPreview(); }"
+    >
+      <div v-if="cloudSyncStore.pendingSyncPreview" class="space-y-3.5">
+        <div
+          class="rounded-2xl p-3.5 bg-sky-50/90 dark:bg-sky-500/10 border border-sky-200/80 dark:border-sky-400/25 space-y-1.5"
+        >
+          <div class="flex items-center justify-between gap-2 flex-wrap">
+            <span class="text-sm font-extrabold text-sky-900 dark:text-sky-200">
+              {{ cloudSyncStore.pendingSyncPreview.preview.summaryText }}
+            </span>
+            <span
+              v-if="cloudSyncStore.pendingSyncPreview.hasConflict"
+              class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300"
+            >
+              检测到双端修改
+            </span>
+          </div>
+          <div class="text-[11px] text-slate-600 dark:text-zinc-400 flex items-center gap-3 flex-wrap">
+            <span>
+              本机：喜欢 {{ cloudSyncStore.pendingSyncPreview.localSummary.favoritesCount }} · 历史
+              {{ cloudSyncStore.pendingSyncPreview.localSummary.songsCount }} · 歌单
+              {{ cloudSyncStore.pendingSyncPreview.localSummary.playlistsCount }}
+            </span>
+            <span v-if="cloudSyncStore.pendingSyncPreview.preview.hasRemote">
+              云端：喜欢 {{ cloudSyncStore.pendingSyncPreview.remoteSummary.favoritesCount }} · 历史
+              {{ cloudSyncStore.pendingSyncPreview.remoteSummary.songsCount }} · 歌单
+              {{ cloudSyncStore.pendingSyncPreview.remoteSummary.playlistsCount }}
+            </span>
+          </div>
+        </div>
+
+        <!-- 可展开差异列表 -->
+        <div
+          class="rounded-2xl border border-slate-200/80 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#1C1C22]/70 overflow-hidden"
+        >
+          <button
+            type="button"
+            class="w-full px-3.5 py-2.5 flex items-center justify-between text-xs font-bold text-slate-700 dark:text-zinc-200"
+            @click="showPreviewDiff = !showPreviewDiff"
+          >
+            <span class="flex items-center gap-1.5">
+              <i class="ri-git-commit-line text-amber-500"></i>
+              <span>查看差异明细</span>
+              <span class="text-[11px] font-normal text-slate-500 dark:text-zinc-400">
+                （{{ totalPreviewDiffCount }} 项可见变化）
+              </span>
+            </span>
+            <i
+              class="ri-arrow-down-s-line text-base text-slate-400 transition-transform duration-200"
+              :class="{ 'rotate-180': showPreviewDiff }"
+            ></i>
+          </button>
+
+          <div
+            v-if="showPreviewDiff"
+            class="px-3.5 pb-3 pt-2 border-t border-slate-200/70 dark:border-white/[0.06] max-h-56 overflow-y-auto space-y-2.5 text-xs"
+          >
+            <div v-if="cloudSyncStore.pendingSyncPreview.preview.diffItems.favorites.length > 0" class="space-y-1">
+              <div class="text-[11px] font-bold text-rose-600 dark:text-rose-400">
+                红心收藏（+{{ cloudSyncStore.pendingSyncPreview.preview.addedFavorites }}）
+              </div>
+              <div
+                v-for="item in cloudSyncStore.pendingSyncPreview.preview.diffItems.favorites"
+                :key="`fav_${item.source}_${item.id}`"
+                class="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-white dark:bg-[#131316]"
+              >
+                <div class="min-w-0">
+                  <div class="font-semibold text-slate-800 dark:text-zinc-100 truncate">{{ item.title }}</div>
+                  <div class="text-[10px] text-slate-500 dark:text-zinc-400 truncate">{{ item.subtitle }}</div>
+                </div>
+                <span
+                  class="px-2 py-0.5 rounded-full text-[10px] font-bold flex-shrink-0"
+                  :class="
+                    item.source === 'remote'
+                      ? 'bg-sky-100 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300'
+                      : 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300'
+                  "
+                >
+                  {{ item.source === 'remote' ? '云端' : '本机' }}
+                </span>
+              </div>
+            </div>
+
+            <div v-if="cloudSyncStore.pendingSyncPreview.preview.diffItems.history.length > 0" class="space-y-1">
+              <div class="text-[11px] font-bold text-amber-600 dark:text-amber-400">
+                播放历史（+{{ cloudSyncStore.pendingSyncPreview.preview.addedHistory }}）
+              </div>
+              <div
+                v-for="item in cloudSyncStore.pendingSyncPreview.preview.diffItems.history"
+                :key="`hist_${item.source}_${item.id}`"
+                class="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-white dark:bg-[#131316]"
+              >
+                <div class="min-w-0">
+                  <div class="font-semibold text-slate-800 dark:text-zinc-100 truncate">{{ item.title }}</div>
+                  <div class="text-[10px] text-slate-500 dark:text-zinc-400 truncate">{{ item.subtitle }}</div>
+                </div>
+                <span
+                  class="px-2 py-0.5 rounded-full text-[10px] font-bold flex-shrink-0"
+                  :class="
+                    item.source === 'remote'
+                      ? 'bg-sky-100 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300'
+                      : 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300'
+                  "
+                >
+                  {{ item.source === 'remote' ? '云端' : '本机' }}
+                </span>
+              </div>
+            </div>
+
+            <div v-if="cloudSyncStore.pendingSyncPreview.preview.diffItems.playlists.length > 0" class="space-y-1">
+              <div class="text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                自建歌单（+{{ cloudSyncStore.pendingSyncPreview.preview.addedPlaylists }}）
+              </div>
+              <div
+                v-for="item in cloudSyncStore.pendingSyncPreview.preview.diffItems.playlists"
+                :key="`pl_${item.source}_${item.id}`"
+                class="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-white dark:bg-[#131316]"
+              >
+                <div class="min-w-0">
+                  <div class="font-semibold text-slate-800 dark:text-zinc-100 truncate">{{ item.title }}</div>
+                  <div class="text-[10px] text-slate-500 dark:text-zinc-400 truncate">{{ item.subtitle }}</div>
+                </div>
+                <span
+                  class="px-2 py-0.5 rounded-full text-[10px] font-bold flex-shrink-0"
+                  :class="
+                    item.source === 'remote'
+                      ? 'bg-sky-100 text-sky-700 dark:bg-sky-500/20 dark:text-sky-300'
+                      : item.source === 'both'
+                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
+                        : 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300'
+                  "
+                >
+                  {{ item.source === 'remote' ? '云端' : item.source === 'both' ? '合并' : '本机' }}
+                </span>
+              </div>
+            </div>
+
+            <div
+              v-if="totalPreviewDiffCount === 0"
+              class="text-center py-2 text-[11px] text-slate-500 dark:text-zinc-400"
+            >
+              仅听歌统计或偏好配置有增量更新，同步后将自动保留较新版本
+            </div>
+          </div>
+        </div>
+
+        <!-- 合并策略选择（默认选中推荐智能合并） -->
+        <div class="space-y-1.5">
+          <button
+            type="button"
+            class="w-full px-3.5 py-2.5 rounded-2xl border text-left transition-all flex items-center gap-2.5"
+            :class="
+              selectedPreviewStrategy === 'smart-merge'
+                ? 'border-amber-500 bg-amber-50/90 dark:bg-amber-500/15'
+                : 'border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#1C1C22]'
+            "
+            @click="selectedPreviewStrategy = 'smart-merge'"
+          >
+            <i
+              class="text-base"
+              :class="
+                selectedPreviewStrategy === 'smart-merge'
+                  ? 'ri-checkbox-circle-fill text-amber-500'
+                  : 'ri-checkbox-blank-circle-line text-slate-400'
+              "
+            ></i>
+            <div class="min-w-0 flex-1">
+              <div class="text-xs font-extrabold text-slate-900 dark:text-white">
+                智能合并（推荐）
+              </div>
+              <div class="text-[11px] text-slate-500 dark:text-zinc-400">
+                保留双方全部喜欢、历史与歌单并去重，同时自动留存本机回滚快照
+              </div>
+            </div>
+          </button>
+
+          <div
+            v-if="cloudSyncStore.pendingSyncPreview.preview.hasRemote"
+            class="grid grid-cols-2 gap-2"
+          >
+            <button
+              type="button"
+              class="px-3 py-2 rounded-2xl border text-left transition-all flex items-center gap-2"
+              :class="
+                selectedPreviewStrategy === 'use-remote'
+                  ? 'border-sky-500 bg-sky-50/90 dark:bg-sky-500/15'
+                  : 'border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#1C1C22]'
+              "
+              @click="selectedPreviewStrategy = 'use-remote'"
+            >
+              <i
+                class="text-sm"
+                :class="
+                  selectedPreviewStrategy === 'use-remote'
+                    ? 'ri-checkbox-circle-fill text-sky-500'
+                    : 'ri-checkbox-blank-circle-line text-slate-400'
+                "
+              ></i>
+              <span class="text-xs font-bold text-slate-800 dark:text-zinc-100">以云端为准</span>
+            </button>
+            <button
+              type="button"
+              class="px-3 py-2 rounded-2xl border text-left transition-all flex items-center gap-2"
+              :class="
+                selectedPreviewStrategy === 'overwrite-remote'
+                  ? 'border-rose-500 bg-rose-50/90 dark:bg-rose-500/15'
+                  : 'border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#1C1C22]'
+              "
+              @click="selectedPreviewStrategy = 'overwrite-remote'"
+            >
+              <i
+                class="text-sm"
+                :class="
+                  selectedPreviewStrategy === 'overwrite-remote'
+                    ? 'ri-checkbox-circle-fill text-rose-500'
+                    : 'ri-checkbox-blank-circle-line text-slate-400'
+                "
+              ></i>
+              <span class="text-xs font-bold text-slate-800 dark:text-zinc-100">以本机覆盖云端</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-end gap-2 pt-1">
+          <s-btn @click="cloudSyncStore.dismissPendingSyncPreview">取消</s-btn>
+          <s-btn
+            variant="primary"
+            :loading="cloudSyncStore.syncing"
+            @click="handleConfirmPreviewSync"
+          >
+            确认同步
+          </s-btn>
+        </div>
+      </div>
+    </n-modal>
+
     <!-- ==================== 6. 多端并发更新冲突三选一弹窗 ==================== -->
     <n-modal
       :show="Boolean(cloudSyncStore.pendingConflict)"
@@ -734,7 +990,7 @@
 
 <script setup lang="ts">
 import { useMessage } from 'naive-ui';
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
 import {
@@ -750,10 +1006,21 @@ import {
 import { usePlayHistoryStore } from '@/store/modules/playHistory';
 import { useUserStore } from '@/store/modules/user';
 import { invokeAndroidAsync, isAndroid } from '@/utils/androidBridge';
+import { formatRelativeSyncTime } from '@/utils/cloudSyncMerge';
 
 import SBtn from '../SBtn.vue';
 import SettingItem from '../SettingItem.vue';
 import SettingSection from '../SettingSection.vue';
+
+const props = withDefaults(
+  defineProps<{
+    mode?: 'common' | 'advanced' | 'all';
+  }>(),
+  { mode: 'all' }
+);
+
+const showCommonSections = computed(() => props.mode !== 'advanced');
+const showAdvancedSections = computed(() => props.mode !== 'common');
 
 const message = useMessage();
 const router = useRouter();
@@ -770,12 +1037,27 @@ const showSyncCode = ref(true);
 const editingDeviceName = ref(false);
 const deviceNameDraft = ref('');
 const backupPassphrase = ref('');
-const showAdvanced = ref(false);
+const showAdvanced = ref(props.mode === 'advanced');
 const activeAdvancedTab = ref<'supabase' | 'webdav' | 'github'>('supabase');
 const importMode = ref<'merge' | 'replace'>('merge');
 const showPasteBox = ref(false);
 const pastedJson = ref('');
 const fileInputRef = ref<HTMLInputElement | null>(null);
+const selectedPreviewStrategy = ref<ConflictResolutionStrategy>('smart-merge');
+const showPreviewDiff = ref(false);
+const nowTick = ref(Date.now());
+let tickTimer: number | null = null;
+
+const relativeLastSyncLabel = computed(() => {
+  if (!cloudSyncStore.lastSyncAt) return '尚未同步';
+  return `上次成功同步：${formatRelativeSyncTime(cloudSyncStore.lastSyncAt, nowTick.value)}`;
+});
+
+const totalPreviewDiffCount = computed(() => {
+  const d = cloudSyncStore.pendingSyncPreview?.preview?.diffItems;
+  if (!d) return 0;
+  return (d.favorites?.length || 0) + (d.history?.length || 0) + (d.playlists?.length || 0);
+});
 
 const startEditDeviceName = () => {
   deviceNameDraft.value = cloudSyncStore.effectiveDeviceName;
@@ -910,7 +1192,19 @@ const handleSaveAndSync = async (provider: SyncProvider) => {
 };
 
 const handleSyncNow = async () => {
-  const res = await cloudSyncStore.syncNow(false);
+  selectedPreviewStrategy.value = 'smart-merge';
+  showPreviewDiff.value = false;
+  const res = await cloudSyncStore.prepareSyncPreview();
+  if (res.previewPending) {
+    return;
+  }
+  if (res.ok) message.success(res.message);
+  else if (res.conflict) message.warning(res.message);
+  else message.error(res.message);
+};
+
+const handleConfirmPreviewSync = async () => {
+  const res = await cloudSyncStore.confirmPendingSyncPreview(selectedPreviewStrategy.value);
   if (res.ok) message.success(res.message);
   else if (res.conflict) message.warning(res.message);
   else message.error(res.message);
@@ -1066,17 +1360,17 @@ const handleImportPasted = async () => {
   }
 };
 
-const formatTime = (ts: number): string => {
-  if (!ts) return '';
-  const diffSec = Math.floor((Date.now() - ts) / 1000);
-  if (diffSec < 60) return '刚刚';
-  if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`;
-  const d = new Date(ts);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getMonth() + 1}-${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-};
-
 onMounted(() => {
   listeningStatsStore.refreshStats();
+  tickTimer = window.setInterval(() => {
+    nowTick.value = Date.now();
+  }, 30000);
+});
+
+onUnmounted(() => {
+  if (tickTimer !== null) {
+    window.clearInterval(tickTimer);
+    tickTimer = null;
+  }
 });
 </script>

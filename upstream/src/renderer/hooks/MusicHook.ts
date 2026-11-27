@@ -944,6 +944,29 @@ const setupAudioListeners = () => {
     clearInterval();
     localStorage.removeItem('playProgress');
 
+    // 检查「播完当前停止」/「列表播完停止」定时规则（优先于单曲循环/FM/下一首续播）
+    try {
+      const { useSleepTimerStore } = await import('@/store/modules/sleepTimer');
+      const sleepTimerStore = useSleepTimerStore();
+      const st = sleepTimerStore.sleepTimer;
+      const store = getPlayerStore();
+      const listLen = store.playList?.length || 0;
+      const curIdx = store.playListIndex ?? 0;
+      const shouldStopAfterThisTrack = Boolean(
+        (st?.type === 'end' && listLen > 0 && curIdx >= listLen - 1) ||
+          (st?.type === 'songs' && (st?.remainingSongs ?? 0) <= 1)
+      );
+      if (shouldStopAfterThisTrack) {
+        await sleepTimerStore.stopPlayback();
+        return;
+      }
+      if (st?.type === 'songs' && (st?.remainingSongs ?? 0) > 1) {
+        await sleepTimerStore.handleSongChange();
+      }
+    } catch (err) {
+      console.warn('[MusicHook] 检查定时停止状态失败:', err);
+    }
+
     if (getPlayerStore().playMode === 1) {
       // 单曲循环模式
       replayMusic();

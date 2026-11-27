@@ -63,6 +63,28 @@
         <button type="button" class="save-cancel-btn" @click="showSavePlaylistInput = false">取消</button>
       </div>
 
+      <!-- 队列顶部快捷操作条：播完当前停止 + 仅清空后续 -->
+      <div v-if="playList.length > 0" class="queue-quick-bar">
+        <button
+          type="button"
+          class="queue-quick-pill"
+          :class="{ 'is-active': stopAfterCurrentActive }"
+          @click="toggleStopAfterCurrent"
+        >
+          <i class="ri-timer-flash-line"></i>
+          <span>播完当前停止</span>
+        </button>
+        <button
+          type="button"
+          class="queue-quick-pill"
+          :disabled="playList.length <= 1"
+          @click="handleClearUpcoming"
+        >
+          <i class="ri-delete-back-2-line"></i>
+          <span>仅清空后续</span>
+        </button>
+      </div>
+
       <!-- 下一首播放预览与音源来源 -->
       <div v-if="nextSongPreview" class="next-up-bar">
         <span class="next-up-label">下一首</span>
@@ -146,7 +168,7 @@ import { useI18n } from 'vue-i18n';
 import SongItem from '@/components/common/SongItem.vue';
 import TrackOriginTag from '@/components/common/TrackOriginTag.vue';
 import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';
-import { usePlayerStore } from '@/store/modules/player';
+import { SleepTimerType, usePlayerStore } from '@/store/modules/player';
 import type { SongResult } from '@/types/music';
 import { isMobile } from '@/utils';
 import { triggerHaptic } from '@/utils/androidBridge';
@@ -215,6 +237,37 @@ const nextSongPreview = computed(() => {
     song: next
   };
 });
+
+// 播完当前停止 & 仅清空后续
+const stopAfterCurrentActive = computed(
+  () =>
+    playerStore.sleepTimer?.type === SleepTimerType.SONGS &&
+    Number(playerStore.sleepTimer?.remainingSongs ?? 0) === 1
+);
+
+const toggleStopAfterCurrent = async () => {
+  if (stopAfterCurrentActive.value) {
+    playerStore.clearSleepTimer();
+    triggerHaptic('light');
+    message.info('已取消播完当前停止');
+  } else {
+    await playerStore.setSleepTimerBySongs(1);
+    triggerHaptic('selection');
+    message.success('播完当前曲目后将自动停止');
+  }
+};
+
+const handleClearUpcoming = () => {
+  if (playList.value.length <= 1) {
+    message.info('当前队列中已无后续曲目');
+    return;
+  }
+  const res = playerStore.clearUpcomingQueue();
+  if (res.removedCount > 0) {
+    triggerHaptic('medium');
+    message.success(`已清空后续 ${res.removedCount} 首，保留当前播放`);
+  }
+};
 
 // 一键保存队列为自建歌单
 const showSavePlaylistInput = ref(false);
@@ -621,6 +674,35 @@ html.dark .playlist-panel {
 
   .save-cancel-btn {
     @apply h-8 px-2.5 rounded-xl text-xs text-slate-500 dark:text-slate-400;
+  }
+}
+
+.queue-quick-bar {
+  @apply mt-2.5 flex items-center gap-2;
+}
+
+.queue-quick-pill {
+  @apply flex-1 h-8 px-2.5 rounded-xl text-[11.5px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-all active:scale-95 disabled:opacity-45 disabled:cursor-not-allowed;
+  background: rgba(255, 255, 255, 0.85);
+  color: #475569;
+  border: 1px solid rgba(186, 218, 238, 0.55);
+
+  &.is-active {
+    background: rgba(245, 158, 11, 0.16);
+    color: #d97706;
+    border-color: rgba(245, 158, 11, 0.45);
+  }
+}
+
+html.dark .queue-quick-pill {
+  background: #1c1c22;
+  color: #a1a1aa;
+  border-color: rgba(255, 255, 255, 0.08);
+
+  &.is-active {
+    background: rgba(255, 197, 51, 0.16);
+    color: #ffc533;
+    border-color: rgba(255, 197, 51, 0.45);
   }
 }
 

@@ -3571,3 +3571,267 @@ test("iteration 1 UX: unified playback feedback throttling, offline quiet mode, 
   );
   assert.match(playBarSrc, /:key="`?\$\{playMusic\?\.id/);
 });
+
+test("iteration 2 runtime: cloud sync relative time & pre-sync merge preview helpers", async () => {
+  const mergeMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/cloudSyncMerge.ts")).href
+  );
+
+  // 1. Relative sync time copy
+  const now = new Date(2026, 4, 20, 12, 0, 0).getTime();
+  assert.equal(mergeMod.formatRelativeSyncTime(0, now), "尚未同步");
+  assert.equal(mergeMod.formatRelativeSyncTime(null, now), "尚未同步");
+  assert.equal(mergeMod.formatRelativeSyncTime(now - 25 * 1000, now), "刚刚");
+  assert.equal(mergeMod.formatRelativeSyncTime(now - 15 * 60 * 1000, now), "15 分钟前");
+  assert.equal(mergeMod.formatRelativeSyncTime(now - 2 * 3600 * 1000, now), "2 小时前");
+  assert.equal(mergeMod.formatRelativeSyncTime(now - 3 * 86400 * 1000, now), "3 天前");
+
+  // 2. Identical snapshots -> hasChanges false
+  const baseSnap = {
+    schema: "xiaopang-music-sync-v1",
+    revision: 2,
+    clientUpdatedAt: now - 1000,
+    updatedAt: now - 1000,
+    deviceName: "Phone",
+    favoriteList: [101, 102],
+    dislikeList: [],
+    playHistory: {
+      musicHistory: [
+        { id: 101, name: "晴天", ar: [{ name: "周杰伦" }], count: 2 },
+        { id: 102, name: "七里香", ar: [{ name: "周杰伦" }], count: 1 },
+      ],
+    },
+    customPlaylists: [{ id: "pl1", name: "通勤", tracks: [{ id: 101, name: "晴天" }] }],
+  };
+  const samePreview = mergeMod.computeSyncMergePreview(baseSnap, structuredClone(baseSnap));
+  assert.equal(samePreview.hasChanges, false);
+  assert.equal(samePreview.summaryText, "本地与云端数据一致，暂无新增变更");
+
+  // 3. Diverged snapshots -> summary counts + resolved song titles + first-time backup
+  const remoteSnap = {
+    ...structuredClone(baseSnap),
+    favoriteList: [101, 102, 201, 202],
+    playHistory: {
+      musicHistory: [
+        ...baseSnap.playHistory.musicHistory,
+        { id: 201, name: "稻香", ar: [{ name: "周杰伦" }], count: 1 },
+        { id: 202, name: "夜曲", ar: [{ name: "周杰伦" }], count: 1 },
+      ],
+    },
+    customPlaylists: [
+      ...baseSnap.customPlaylists,
+      { id: "pl2", name: "跑步热歌", tracks: [{ id: 201, name: "稻香" }] },
+    ],
+  };
+  const localAheadSnap = {
+    ...structuredClone(baseSnap),
+    favoriteList: [101, 102, 301],
+    playHistory: {
+      musicHistory: [
+        ...baseSnap.playHistory.musicHistory,
+        { id: 301, name: "简单爱", ar: [{ name: "周杰伦" }], count: 3 },
+      ],
+    },
+  };
+
+  const diffPreview = mergeMod.computeSyncMergePreview(localAheadSnap, remoteSnap);
+  assert.equal(diffPreview.hasChanges, true);
+  assert.equal(diffPreview.hasRemote, true);
+  assert.equal(diffPreview.addedFavorites, 3); // 201, 202 (remote) + 301 (local)
+  assert.equal(diffPreview.addedHistory, 3);
+  assert.equal(diffPreview.addedPlaylists, 1); // pl2
+  assert.match(diffPreview.summaryText, /预计合并：/);
+  assert.match(diffPreview.summaryText, /\+3 首收藏/);
+  assert.match(diffPreview.summaryText, /\+3 条历史/);
+  assert.match(diffPreview.summaryText, /\+1 个歌单/);
+  assert.ok(diffPreview.diffItems.favorites.some((entry) => entry.title === "稻香" && entry.source === "remote"));
+  assert.ok(diffPreview.diffItems.favorites.some((entry) => entry.title === "简单爱" && entry.source === "local"));
+  assert.ok(diffPreview.diffItems.playlists.some((entry) => entry.title === "跑步热歌"));
+
+  const initialBackupPreview = mergeMod.computeSyncMergePreview(localAheadSnap, null);
+  assert.equal(initialBackupPreview.hasChanges, true);
+  assert.equal(initialBackupPreview.hasRemote, false);
+  assert.match(initialBackupPreview.summaryText, /首次备份到云端：/);
+});
+
+test("iteration 2 runtime: minimalist onboarding eligibility skips existing users without false-triggering on defaults", async () => {
+  const onboardingMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/onboardingPolicy.ts")).href
+  );
+  const defaultSetJson = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/main/set.json"),
+    "utf-8"
+  );
+
+  // 1. Factory-default appSettings must NOT count as existing custom configuration
+  assert.equal(
+    onboardingMod.detectExistingUserCustomConfig({
+      rawToken: "",
+      rawCloudSyncConfigJson: "",
+      rawCustomPlaylistsJson: "[]",
+      rawPwaApiUrl: "",
+      rawDownloadedTracksJson: "[]",
+      rawAppSettingsJson: defaultSetJson,
+    }),
+    false
+  );
+
+  // 2. Truly customized settings / syncCode / token MUST count
+  assert.equal(
+    onboardingMod.detectExistingUserCustomConfig({
+      rawAppSettingsJson: JSON.stringify({ manualTheme: "dark" }),
+    }),
+    true
+  );
+  assert.equal(
+    onboardingMod.detectExistingUserCustomConfig({
+      rawAppSettingsJson: JSON.stringify({ powerSavingMode: true }),
+    }),
+    true
+  );
+  assert.equal(
+    onboardingMod.detectExistingUserCustomConfig({
+      rawCloudSyncConfigJson: JSON.stringify({ quick: { syncCode: "NAIWA-7392-K8M4" } }),
+    }),
+    true
+  );
+  assert.equal(
+    onboardingMod.detectExistingUserCustomConfig({
+      rawToken: "MUSIC_U=abc123;",
+    }),
+    true
+  );
+
+  // 3. Eligibility decisions
+  const freshDecision = onboardingMod.evaluateOnboardingEligibility({
+    isLyricWindow: false,
+    alreadyCompleted: false,
+    disclaimerAgreed: true,
+    favoritesCount: 0,
+    playHistoryCount: 0,
+    customPlaylistsCount: 0,
+    hasCustomConfig: false,
+  });
+  assert.equal(freshDecision.shouldShow, true);
+  assert.equal(freshDecision.shouldAutoMarkCompleted, false);
+
+  const returningFavDecision = onboardingMod.evaluateOnboardingEligibility({
+    isLyricWindow: false,
+    alreadyCompleted: false,
+    disclaimerAgreed: true,
+    favoritesCount: 5,
+    playHistoryCount: 0,
+    customPlaylistsCount: 0,
+    hasCustomConfig: false,
+  });
+  assert.equal(returningFavDecision.shouldShow, false);
+  assert.equal(returningFavDecision.shouldAutoMarkCompleted, true);
+  assert.equal(returningFavDecision.reason, "existing-user-data");
+
+  const alreadyDoneDecision = onboardingMod.evaluateOnboardingEligibility({
+    isLyricWindow: false,
+    alreadyCompleted: true,
+    disclaimerAgreed: true,
+    favoritesCount: 0,
+    playHistoryCount: 0,
+    customPlaylistsCount: 0,
+    hasCustomConfig: false,
+  });
+  assert.equal(alreadyDoneDecision.shouldShow, false);
+  assert.equal(alreadyDoneDecision.shouldAutoMarkCompleted, false);
+});
+
+test("iteration 2 invariants: common/advanced settings split, sync preview UI, 3-question onboarding, queue quick bar, power-saving mode & Android DisplayListener", () => {
+  // 1. Settings split Common / Advanced
+  const setIndex = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/set/index.vue"),
+    "utf-8"
+  );
+  assert.match(setIndex, /常用设置/);
+  assert.match(setIndex, /高级设置/);
+  assert.match(setIndex, /v-if="activeTier === 'common'"/);
+  assert.match(setIndex, /dark:bg-\[#09090B\]/);
+
+  const playbackTab = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/set/tabs/PlaybackTab.vue"),
+    "utf-8"
+  );
+  assert.match(playbackTab, /mode\?:\s*'common'\s*\|\s*'advanced'\s*\|\s*'all'/);
+  assert.match(playbackTab, /桌面歌词细项样式/);
+  assert.match(playbackTab, /getFloatingLyricStyle/);
+  assert.match(playbackTab, /setFloatingLyricStyle/);
+
+  const cloudSyncTab = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/set/tabs/CloudSyncTab.vue"),
+    "utf-8"
+  );
+  assert.match(cloudSyncTab, /formatRelativeSyncTime/);
+  assert.match(cloudSyncTab, /prepareSyncPreview/);
+  assert.match(cloudSyncTab, /pendingSyncPreview/);
+  assert.match(cloudSyncTab, /查看差异明细/);
+  assert.match(cloudSyncTab, /dark:bg-\[#131316\]/);
+
+  // 2. Onboarding 3-question streamlined flow
+  const onboardingVue = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/common/OnboardingGuideModal.vue"),
+    "utf-8"
+  );
+  assert.match(onboardingVue, /选择偏好的外观主题/);
+  assert.match(onboardingVue, /是否开启云同步/);
+  assert.match(onboardingVue, /v-else[\s\S]*是否导入本地音乐/);
+  assert.match(onboardingVue, /evaluateOnboardingEligibility/);
+  assert.doesNotMatch(onboardingVue, /跟随系统/);
+
+  // 3. Queue drawer: 播完当前停止 + 仅清空后续 & clean MusicHook end-of-track stop
+  const queueDrawer = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/player/PlayingListDrawer.vue"),
+    "utf-8"
+  );
+  assert.match(queueDrawer, /播完当前停止/);
+  assert.match(queueDrawer, /仅清空后续/);
+  assert.match(queueDrawer, /setSleepTimerBySongs\(1\)/);
+  assert.match(queueDrawer, /clearUpcomingQueue/);
+
+  const musicHook = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/hooks/MusicHook.ts"),
+    "utf-8"
+  );
+  assert.match(musicHook, /shouldStopAfterThisTrack/);
+
+  // 4. Power saving / reduced motion + menu.ts fix
+  const settingsStore = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/settings.ts"),
+    "utf-8"
+  );
+  assert.match(settingsStore, /effectiveReducedMotion/);
+  assert.match(settingsStore, /prefers-reduced-motion: reduce/);
+  assert.doesNotMatch(settingsStore, /menuStore\.setMenus\(/);
+
+  const indexCss = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/index.css"),
+    "utf-8"
+  );
+  assert.match(indexCss, /html\.reduced-motion/);
+  assert.match(indexCss, /prefers-reduced-motion:\s*reduce/);
+
+  // 5. Android background landscape DisplayListener + default false + service release cleanup
+  const floatingMgr = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/lyric/FloatingLyricManager.kt"),
+    "utf-8"
+  );
+  assert.match(floatingMgr, /registerDisplayListener/);
+  assert.match(floatingMgr, /unregisterDisplayListener/);
+  assert.match(floatingMgr, /resolveIsLandscape/);
+
+  const appPrefs = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/config/AppPrefs.kt"),
+    "utf-8"
+  );
+  assert.match(appPrefs, /DEFAULT_FLOATING_LYRIC_HIDE_IN_LANDSCAPE:\s*Boolean\s*=\s*false/);
+
+  const serviceKt = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/player/MusicPlaybackService.kt"),
+    "utf-8"
+  );
+  assert.match(serviceKt, /FloatingLyricManager\.activeInstance\?\.release\(\)/);
+});

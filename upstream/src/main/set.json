@@ -37,6 +37,7 @@
   "lxMusicScripts": [],
   "activeLxMusicApiId": null,
   "enableGpuAcceleration": true,
+  "powerSavingMode": false,
   "enableDiskCache": true,
   "enableDynamicBackground": true,
   "crossfadeEnabled": false,

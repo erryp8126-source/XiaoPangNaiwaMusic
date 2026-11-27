@@ -29,7 +29,7 @@
 
       <!-- 歌曲信息（点击展开全屏播放器） -->
       <div class="mini-song-info" @click="setMusicFull">
-        <div class="mini-cover-ring" :class="{ 'is-playing': play }">
+        <div class="mini-cover-ring" :class="{ 'is-playing': play && !settingsStore.effectiveReducedMotion }">
           <span class="mini-cover-placeholder" aria-hidden="true"></span>
           <img
             v-if="miniCoverSrc && !isMiniCoverError"
@@ -147,9 +147,7 @@ const handleMiniCoverError = () => {
 
 const background = ref('#131926');
 
-const dynamicBackgroundEnabled = computed(
-  () => settingsStore.setData?.enableDynamicBackground !== false
-);
+const dynamicBackgroundEnabled = computed(() => settingsStore.effectiveDynamicBackground);
 const dynamicPalette = ref<DynamicCoverPalette>(DEFAULT_DYNAMIC_PALETTE);
 let miniPaletteSeq = 0;
 

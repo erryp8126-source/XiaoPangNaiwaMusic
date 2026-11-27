@@ -26,6 +26,13 @@ export interface AudioCacheLimitUpdateResult {
   requiresRestart: boolean;
 }
 
+export interface FloatingLyricStyleConfig {
+  color: string;
+  textSizeSp: number;
+  showTranslation: boolean;
+  locked: boolean;
+}
+
 export interface AndroidBridgeInterface {
   getCapabilities?(): string;
   getServerConfig(): string;
@@ -58,6 +65,8 @@ export interface AndroidBridgeInterface {
   setFloatingLyricHideInLandscape?(enabled: boolean): boolean;
   updateFloatingLyric(text: string, translation: string, songTitle: string, isPlaying: boolean): void;
   syncFloatingLyricLines?(songId: string, songTitle: string, linesJson: string): void;
+  getFloatingLyricStyle?(): string;
+  setFloatingLyricStyle?(configJson: string): string;
   // Bluetooth Auto-Resume & Diagnostics (Android only)
   isAutoResumeOnBluetoothConnect?(): boolean;
   setAutoResumeOnBluetoothConnect?(enabled: boolean): boolean;

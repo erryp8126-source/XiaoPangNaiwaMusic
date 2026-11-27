@@ -1,11 +1,9 @@
 import { cloneDeep, isArray, mergeWith } from 'lodash';
 import { defineStore } from 'pinia';
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 
 import setDataDefault from '@/../main/set.json';
-import homeRouter from '@/router/home';
 import { applyBuiltinMusicSourceDefaults } from '@/services/builtinLxSources';
-import { useMenuStore } from '@/store/modules/menu';
 import { isElectron } from '@/utils';
 import { isAndroid } from '@/utils/androidBridge';
 import {
@@ -256,17 +254,9 @@ export const useSettingsStore = defineStore('settings', () => {
     return isMobileDevice && !tabletMode;
   };
 
-  // 更新移动端状态和DOM类
+  // 更新移动端状态和DOM类（menuStore.menus 会响应 isMobile 自动过滤，避免覆盖 /library 等扩展菜单）
   const updateMobileStatus = () => {
-    const menuStore = useMenuStore();
     const shouldUseMobileStyle = calculateMobileStatus();
-
-    // 更新store状态
-    if (shouldUseMobileStyle) {
-      menuStore.setMenus(homeRouter.filter((item) => item.meta.isMobile));
-    } else {
-      menuStore.setMenus(homeRouter);
-    }
 
     // 更新DOM类
     if (shouldUseMobileStyle) {
@@ -279,6 +269,41 @@ export const useSettingsStore = defineStore('settings', () => {
 
     isMobile.value = shouldUseMobileStyle;
   };
+
+  // 省电模式与系统减少动态效果感知
+  const reducedMotionMediaQuery =
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-reduced-motion: reduce)')
+      : null;
+  const systemPrefersReducedMotion = ref<boolean>(Boolean(reducedMotionMediaQuery?.matches));
+  if (reducedMotionMediaQuery) {
+    const onReducedMotionChange = (e: MediaQueryListEvent) => {
+      systemPrefersReducedMotion.value = e.matches;
+    };
+    if (typeof reducedMotionMediaQuery.addEventListener === 'function') {
+      reducedMotionMediaQuery.addEventListener('change', onReducedMotionChange);
+    } else if (typeof (reducedMotionMediaQuery as any).addListener === 'function') {
+      (reducedMotionMediaQuery as any).addListener(onReducedMotionChange);
+    }
+  }
+
+  const isPowerSavingMode = computed(() => Boolean(setData.value?.powerSavingMode));
+  const effectiveReducedMotion = computed(
+    () => isPowerSavingMode.value || systemPrefersReducedMotion.value
+  );
+  const effectiveDynamicBackground = computed(
+    () => setData.value?.enableDynamicBackground !== false && !effectiveReducedMotion.value
+  );
+
+  watch(
+    [effectiveReducedMotion, isPowerSavingMode],
+    ([reduced, powerSaving]) => {
+      if (typeof document === 'undefined') return;
+      document.documentElement.classList.toggle('reduced-motion', Boolean(reduced));
+      document.documentElement.classList.toggle('power-saving', Boolean(powerSaving));
+    },
+    { immediate: true }
+  );
 
   // 监听平板模式变化
   watch(
@@ -327,6 +352,10 @@ export const useSettingsStore = defineStore('settings', () => {
     systemFonts,
     showDownloadDrawer,
     homeDisplayMode,
+    isPowerSavingMode,
+    systemPrefersReducedMotion,
+    effectiveReducedMotion,
+    effectiveDynamicBackground,
     setSetData,
     setHomeDisplayMode,
     toggleTheme,

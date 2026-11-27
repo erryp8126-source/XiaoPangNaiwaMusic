@@ -11,14 +11,18 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
+import android.hardware.display.DisplayManager
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.util.DisplayMetrics
 import android.util.Log
+import android.view.Display
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.Surface
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
@@ -36,6 +40,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import org.json.JSONObject
+import java.util.Locale
 import kotlin.math.abs
 
 /**
@@ -67,6 +73,24 @@ class FloatingLyricManager(
 
         @Volatile
         var activeInstance: FloatingLyricManager? = null
+
+        /**
+         * 综合窗口实际像素尺寸、配置方向与显示屏旋转角度判断当前是否处于横屏态，
+         * 避免切到其他全屏横屏视频/游戏 App（甚至关闭了系统自动旋转）时遗漏暂隐。
+         */
+        internal fun resolveIsLandscape(
+            configOrientation: Int,
+            displayWidthPx: Int,
+            displayHeightPx: Int,
+            displayRotation: Int?
+        ): Boolean {
+            if (displayWidthPx > 0 && displayHeightPx > 0 && displayWidthPx != displayHeightPx) {
+                return displayWidthPx > displayHeightPx
+            }
+            return configOrientation == Configuration.ORIENTATION_LANDSCAPE ||
+                displayRotation == Surface.ROTATION_90 ||
+                displayRotation == Surface.ROTATION_270
+        }
     }
 
     internal enum class OverlayAction {
@@ -337,6 +361,7 @@ class FloatingLyricManager(
 
     private val appContext = context.applicationContext
     private val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private val displayManager = appContext.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
     private val mainHandler = Handler(Looper.getMainLooper())
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -370,10 +395,20 @@ class FloatingLyricManager(
     private var isConfigCallbackRegistered = false
     private val configCallbacks = object : ComponentCallbacks {
         override fun onConfigurationChanged(newConfig: Configuration) {
-            onOrientationChanged(newConfig.orientation)
+            onLandscapeStateChanged(isCurrentlyLandscape(newConfig.orientation))
         }
 
         override fun onLowMemory() = Unit
+    }
+    private var isDisplayListenerRegistered = false
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) = Unit
+        override fun onDisplayRemoved(displayId: Int) = Unit
+        override fun onDisplayChanged(displayId: Int) {
+            if (displayId == Display.DEFAULT_DISPLAY) {
+                onLandscapeStateChanged(isCurrentlyLandscape())
+            }
+        }
     }
 
     private var highlightColor: Int = prefs.floatingLyricColor
@@ -414,8 +449,46 @@ class FloatingLyricManager(
         ensureConfigCallbacksRegistered()
     }
 
-    private fun isCurrentlyLandscape(): Boolean {
-        return appContext.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    private fun isCurrentlyLandscape(
+        overrideOrientation: Int = appContext.resources.configuration.orientation
+    ): Boolean {
+        var widthPx = 0
+        var heightPx = 0
+        var rotation: Int? = null
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val bounds = wm.maximumWindowMetrics.bounds
+                widthPx = bounds.width()
+                heightPx = bounds.height()
+            } else {
+                @Suppress("DEPRECATION")
+                val display = displayManager?.getDisplay(Display.DEFAULT_DISPLAY) ?: wm.defaultDisplay
+                if (display != null) {
+                    val metrics = DisplayMetrics()
+                    @Suppress("DEPRECATION")
+                    display.getRealMetrics(metrics)
+                    widthPx = metrics.widthPixels
+                    heightPx = metrics.heightPixels
+                }
+            }
+            val defaultDisplay = displayManager?.getDisplay(Display.DEFAULT_DISPLAY)
+                ?: run {
+                    @Suppress("DEPRECATION")
+                    wm.defaultDisplay
+                }
+            rotation = defaultDisplay?.rotation
+        }
+        if (widthPx <= 0 || heightPx <= 0) {
+            val dm = appContext.resources.displayMetrics
+            widthPx = dm.widthPixels
+            heightPx = dm.heightPixels
+        }
+        return resolveIsLandscape(
+            configOrientation = overrideOrientation,
+            displayWidthPx = widthPx,
+            displayHeightPx = heightPx,
+            displayRotation = rotation
+        )
     }
 
     private fun ensureConfigCallbacksRegistered() {
@@ -426,6 +499,16 @@ class FloatingLyricManager(
                     isConfigCallbackRegistered = true
                 }.onFailure {
                     Log.w(TAG, "registerComponentCallbacks failed: ${it.message}")
+                }
+            }
+            if (!isDisplayListenerRegistered) {
+                runCatching {
+                    displayManager?.registerDisplayListener(displayListener, mainHandler)
+                    if (displayManager != null) {
+                        isDisplayListenerRegistered = true
+                    }
+                }.onFailure {
+                    Log.w(TAG, "registerDisplayListener failed: ${it.message}")
                 }
             }
         }
@@ -543,6 +626,10 @@ class FloatingLyricManager(
     }
 
     fun onOrientationChanged(orientation: Int) {
+        onLandscapeStateChanged(isCurrentlyLandscape(orientation))
+    }
+
+    private fun onLandscapeStateChanged(landscape: Boolean) {
         runOnMain {
             if (!prefs.floatingLyricEnabled) {
                 synchronized(landscapeLock) {
@@ -551,7 +638,6 @@ class FloatingLyricManager(
                 isHiddenForLandscape = false
                 return@runOnMain
             }
-            val landscape = orientation == Configuration.ORIENTATION_LANDSCAPE
             val transition = synchronized(landscapeLock) {
                 landscapeController.syncHideInLandscape(prefs.floatingLyricHideInLandscape)
                 landscapeController.onConfigurationOrientationChanged(
@@ -566,6 +652,57 @@ class FloatingLyricManager(
                 else -> Unit
             }
         }
+    }
+
+    fun getStyleConfigJson(): String {
+        val hex = String.format(Locale.US, "#%06X", 0xFFFFFF and prefs.floatingLyricColor)
+        return JSONObject().apply {
+            put("color", hex)
+            put("textSizeSp", prefs.floatingLyricTextSize.toDouble())
+            put("showTranslation", prefs.floatingLyricShowTranslation)
+            put("locked", isLocked)
+        }.toString()
+    }
+
+    fun updateStyleFromJs(
+        colorHex: String?,
+        textSizeSp: Float?,
+        showTranslationFlag: Boolean?
+    ): String {
+        val parsedColor = colorHex?.trim()?.takeIf { it.isNotEmpty() }?.let { raw ->
+            runCatching { Color.parseColor(raw) }.getOrNull()
+        }
+        if (parsedColor != null) {
+            prefs.floatingLyricColor = parsedColor
+            highlightColor = parsedColor
+        }
+        val clampedSize = textSizeSp?.takeIf { !it.isNaN() }?.coerceIn(14f, 26f)
+        if (clampedSize != null) {
+            prefs.floatingLyricTextSize = clampedSize
+            lyricTextSizeSp = clampedSize
+        }
+        if (showTranslationFlag != null) {
+            prefs.floatingLyricShowTranslation = showTranslationFlag
+            showTranslation = showTranslationFlag
+        }
+        runOnMain {
+            if (parsedColor != null) {
+                topLineView?.setHighlightColor(parsedColor)
+                bottomLineView?.setHighlightColor(parsedColor)
+                colorDotViews.forEach { it.isActiveDot = (it.dotColor == parsedColor) }
+            }
+            if (clampedSize != null) {
+                topLineView?.setTextSizeSp(clampedSize)
+                bottomLineView?.setTextSizeSp(clampedSize)
+            }
+            transToggleBtn?.setTextColor(
+                if (showTranslation) highlightColor else 0x88FFFFFF.toInt()
+            )
+            if (isShowing) {
+                renderFromNativePosition()
+            }
+        }
+        return getStyleConfigJson()
     }
 
     fun onHideInLandscapeSettingChanged(enabled: Boolean) {
@@ -597,6 +734,10 @@ class FloatingLyricManager(
             if (isConfigCallbackRegistered) {
                 runCatching { appContext.unregisterComponentCallbacks(configCallbacks) }
                 isConfigCallbackRegistered = false
+            }
+            if (isDisplayListenerRegistered) {
+                runCatching { displayManager?.unregisterDisplayListener(displayListener) }
+                isDisplayListenerRegistered = false
             }
         }
         hide()

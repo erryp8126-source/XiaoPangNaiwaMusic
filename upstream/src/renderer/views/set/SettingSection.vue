@@ -8,7 +8,7 @@
 
     <!-- 设置项列表容器（高对比度实底圆角卡片，不裁剪下拉菜单） -->
     <div
-      class="bg-white dark:bg-[#192231] rounded-[20px] border border-slate-200/90 dark:border-slate-700/80 shadow-[0_2px_12px_rgba(15,23,42,0.06)] dark:shadow-[0_4px_16px_rgba(0,0,0,0.3)] [&>*:first-child]:rounded-t-[20px] [&>*:last-child]:rounded-b-[20px]"
+      class="bg-white dark:bg-[#131316] rounded-[20px] border border-slate-200/90 dark:border-white/[0.08] shadow-[0_2px_12px_rgba(15,23,42,0.06)] dark:shadow-[0_4px_16px_rgba(0,0,0,0.35)] [&>*:first-child]:rounded-t-[20px] [&>*:last-child]:rounded-b-[20px]"
     >
       <slot></slot>
     </div>

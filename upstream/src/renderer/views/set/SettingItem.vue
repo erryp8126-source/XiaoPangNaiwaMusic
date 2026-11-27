@@ -1,12 +1,12 @@
 <template>
   <div
-    class="setting-item flex items-center justify-between px-4 py-3.5 transition-colors bg-transparent text-slate-900 dark:text-slate-100 border-b border-slate-100 dark:border-slate-700/70 last:border-b-0"
+    class="setting-item flex items-center justify-between px-4 py-3.5 transition-colors bg-transparent text-slate-900 dark:text-zinc-100 border-b border-slate-100 dark:border-white/[0.06] last:border-b-0"
     :class="[
       // 移动端垂直布局
       { 'max-md:flex-col max-md:items-stretch max-md:gap-3': !inline },
       // 可点击样式
       {
-        'cursor-pointer active:bg-slate-100 active:dark:bg-slate-800/80': clickable
+        'cursor-pointer active:bg-slate-100 active:dark:bg-[#1C1C22]': clickable
       },
       customClass
     ]"

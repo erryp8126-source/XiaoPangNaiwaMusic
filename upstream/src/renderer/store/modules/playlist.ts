@@ -503,6 +503,27 @@ export const usePlaylistStore = defineStore(
     };
 
     /**
+     * 仅清空后续队列（保留当前正在播放的曲目）
+     */
+    const clearUpcomingQueue = (): { removedCount: number; keptSong: SongResult | null } => {
+      if (playList.value.length <= 1) {
+        return { removedCount: 0, keptSong: playList.value[0] || null };
+      }
+      const playerCore = usePlayerCoreStore();
+      const byIndex = playList.value[playListIndex.value];
+      const byCurrentId =
+        playerCore.playMusic?.id !== undefined && playerCore.playMusic?.id !== null
+          ? playList.value.find((s) => String(s.id) === String(playerCore.playMusic.id))
+          : undefined;
+      const kept = byCurrentId || byIndex || playList.value[0];
+      const removedCount = Math.max(0, playList.value.length - 1);
+      playList.value = kept ? [kept] : [];
+      playListIndex.value = 0;
+      originalPlayList.value = playMode.value === 2 && kept ? [kept] : [];
+      return { removedCount, keptSong: kept || null };
+    };
+
+    /**
      * 切换播放模式
      */
     const togglePlayMode = async () => {
@@ -653,7 +674,6 @@ export const usePlaylistStore = defineStore(
             '[nextPlay] New current song in list:',
             playList.value[playListIndex.value]?.name
           );
-          sleepTimerStore.handleSongChange();
         } else {
           console.error(`[nextPlay] 播放失败: ${nextSong.name}`);
           const failureCode = (playerCore.lastFailureCode || 'source-unavailable') as PlaybackFailureCode;
@@ -981,6 +1001,7 @@ export const usePlaylistStore = defineStore(
       saveCurrentQueueAsCustomPlaylist,
       removeFromPlayList,
       clearPlayAll,
+      clearUpcomingQueue,
       togglePlayMode,
       shufflePlayList,
       restoreOriginalOrder,

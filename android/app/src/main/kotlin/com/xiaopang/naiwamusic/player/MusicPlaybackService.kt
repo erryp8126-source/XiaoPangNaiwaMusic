@@ -501,6 +501,9 @@ class MusicPlaybackService : MediaSessionService() {
         if (::exoPlayer.isInitialized) {
             exoPlayer.release()
         }
+        if (!isAppInForeground) {
+            FloatingLyricManager.activeInstance?.release()
+        }
         serviceScope.cancel()
         instance = null
         super.onDestroy()

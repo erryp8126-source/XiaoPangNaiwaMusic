@@ -542,3 +542,340 @@ export function pruneBackupSnapshots(
     .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))
     .slice(0, limit);
 }
+
+/**
+ * 格式化上次同步的轻量相对时间文案（如「刚刚 / 15 分钟前 / 2 小时前」，从未同步返回「尚未同步」）
+ */
+export function formatRelativeSyncTime(
+  ts: number | null | undefined,
+  nowMs: number = Date.now()
+): string {
+  const numericTs = Number(ts);
+  if (!Number.isFinite(numericTs) || numericTs <= 0) {
+    return '尚未同步';
+  }
+  const safeNow = Number.isFinite(nowMs) && nowMs > 0 ? nowMs : Date.now();
+  const diffSec = Math.max(0, Math.floor((safeNow - numericTs) / 1000));
+  if (diffSec < 60) {
+    return '刚刚';
+  }
+  if (diffSec < 3600) {
+    return `${Math.floor(diffSec / 60)} 分钟前`;
+  }
+  if (diffSec < 86400) {
+    return `${Math.floor(diffSec / 3600)} 小时前`;
+  }
+  if (diffSec < 86400 * 30) {
+    return `${Math.floor(diffSec / 86400)} 天前`;
+  }
+  const date = new Date(numericTs);
+  const nowDate = new Date(safeNow);
+  if (date.getFullYear() === nowDate.getFullYear()) {
+    return `${date.getMonth() + 1}月${date.getDate()}日`;
+  }
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+export interface SyncMergeDiffEntry {
+  id: string;
+  title: string;
+  subtitle: string;
+  source: 'local' | 'remote' | 'both';
+  kind: 'favorite' | 'history' | 'playlist';
+}
+
+export interface SyncMergePreview {
+  hasRemote: boolean;
+  hasChanges: boolean;
+  localOnlyFavorites: number;
+  remoteOnlyFavorites: number;
+  addedFavorites: number;
+  localOnlyHistory: number;
+  remoteOnlyHistory: number;
+  addedHistory: number;
+  localOnlyPlaylists: number;
+  remoteOnlyPlaylists: number;
+  updatedPlaylists: number;
+  addedPlaylists: number;
+  summaryText: string;
+  diffItems: {
+    favorites: SyncMergeDiffEntry[];
+    history: SyncMergeDiffEntry[];
+    playlists: SyncMergeDiffEntry[];
+  };
+}
+
+function formatSongArtistLabel(song: any): string {
+  if (!song || typeof song !== 'object') return '';
+  if (Array.isArray(song.ar) && song.ar.length > 0) {
+    return song.ar
+      .map((a: any) => a?.name)
+      .filter(Boolean)
+      .join(' / ');
+  }
+  if (typeof song.artist === 'string') return song.artist;
+  return '';
+}
+
+function buildSongTitleLookup(
+  local?: Partial<CloudSyncSnapshot> | null,
+  remote?: Partial<CloudSyncSnapshot> | null
+): Map<string, { name: string; artist: string }> {
+  const map = new Map<string, { name: string; artist: string }>();
+  const registerSong = (song: any) => {
+    if (!song || song.id === undefined || song.id === null || song.id === '') return;
+    const id = String(song.id);
+    const name = String(song.name || '').trim();
+    if (!name || map.has(id)) return;
+    map.set(id, { name, artist: formatSongArtistLabel(song) });
+  };
+  for (const snap of [local, remote]) {
+    if (!snap) continue;
+    for (const s of snap.playHistory?.musicHistory || []) registerSong(s);
+    for (const pl of snap.customPlaylists || []) {
+      for (const t of pl?.tracks || []) registerSong(t);
+    }
+    if (snap.listeningStats?.songs) {
+      for (const [key, stat] of Object.entries(snap.listeningStats.songs)) {
+        const id = String(stat?.id || key || '').trim();
+        const name = String(stat?.name || '').trim();
+        if (id && name && !map.has(id)) {
+          map.set(id, { name, artist: String(stat?.artist || '') });
+        }
+      }
+    }
+  }
+  return map;
+}
+
+/**
+ * 同步前计算本地与云端变更预览：
+ * 返回预计合并的收藏/历史/歌单数量、人类可读摘要以及可展开差异列表
+ */
+export function computeSyncMergePreview(
+  local: Partial<CloudSyncSnapshot> | null | undefined,
+  remote: Partial<CloudSyncSnapshot> | null | undefined
+): SyncMergePreview {
+  const hasRemote = Boolean(remote && typeof remote === 'object');
+  const songLookup = buildSongTitleLookup(local, remote);
+
+  const normalizeIds = (arr?: Array<number | string>): string[] => {
+    if (!Array.isArray(arr)) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const raw of arr) {
+      if (raw === null || raw === undefined || raw === '') continue;
+      const id = String(raw);
+      if (!seen.has(id)) {
+        seen.add(id);
+        out.push(id);
+      }
+    }
+    return out;
+  };
+
+  const localFavIds = normalizeIds(local?.favoriteList);
+  const remoteFavIds = normalizeIds(remote?.favoriteList);
+  const localFavSet = new Set(localFavIds);
+  const remoteFavSet = new Set(remoteFavIds);
+
+  const favoriteDiffs: SyncMergeDiffEntry[] = [];
+  let localOnlyFavorites = 0;
+  let remoteOnlyFavorites = 0;
+
+  for (const id of remoteFavIds) {
+    if (!localFavSet.has(id)) {
+      remoteOnlyFavorites++;
+      if (favoriteDiffs.length < 30) {
+        const meta = songLookup.get(id);
+        favoriteDiffs.push({
+          id,
+          title: meta?.name || `歌曲 #${id}`,
+          subtitle: meta?.artist ? `${meta.artist} · 云端新增收藏` : '云端新增收藏',
+          source: 'remote',
+          kind: 'favorite'
+        });
+      }
+    }
+  }
+  for (const id of localFavIds) {
+    if (!remoteFavSet.has(id)) {
+      localOnlyFavorites++;
+      if (favoriteDiffs.length < 30) {
+        const meta = songLookup.get(id);
+        favoriteDiffs.push({
+          id,
+          title: meta?.name || `歌曲 #${id}`,
+          subtitle: meta?.artist ? `${meta.artist} · 本机新增收藏` : '本机新增收藏',
+          source: 'local',
+          kind: 'favorite'
+        });
+      }
+    }
+  }
+
+  const indexSongs = (list: any[] = []): Map<string, any> => {
+    const m = new Map<string, any>();
+    if (!Array.isArray(list)) return m;
+    for (const s of list) {
+      if (!s || s.id === undefined || s.id === null || s.id === '') continue;
+      const id = String(s.id);
+      if (!m.has(id)) m.set(id, s);
+    }
+    return m;
+  };
+
+  const localHistMap = indexSongs(local?.playHistory?.musicHistory || []);
+  const remoteHistMap = indexSongs(remote?.playHistory?.musicHistory || []);
+  const historyDiffs: SyncMergeDiffEntry[] = [];
+  let localOnlyHistory = 0;
+  let remoteOnlyHistory = 0;
+
+  for (const [id, song] of remoteHistMap.entries()) {
+    if (!localHistMap.has(id)) {
+      remoteOnlyHistory++;
+      if (historyDiffs.length < 30) {
+        const artist = formatSongArtistLabel(song);
+        historyDiffs.push({
+          id,
+          title: String(song?.name || `歌曲 #${id}`),
+          subtitle: artist ? `${artist} · 云端新增历史` : '云端新增历史',
+          source: 'remote',
+          kind: 'history'
+        });
+      }
+    }
+  }
+  for (const [id, song] of localHistMap.entries()) {
+    if (!remoteHistMap.has(id)) {
+      localOnlyHistory++;
+      if (historyDiffs.length < 30) {
+        const artist = formatSongArtistLabel(song);
+        historyDiffs.push({
+          id,
+          title: String(song?.name || `歌曲 #${id}`),
+          subtitle: artist ? `${artist} · 本机新增历史` : '本机新增历史',
+          source: 'local',
+          kind: 'history'
+        });
+      }
+    }
+  }
+
+  const indexPlaylists = (list: SyncCustomPlaylist[] = []): Map<string, SyncCustomPlaylist> => {
+    const m = new Map<string, SyncCustomPlaylist>();
+    if (!Array.isArray(list)) return m;
+    for (const pl of list) {
+      if (!pl || pl.id === undefined || pl.id === null || pl.id === '') continue;
+      const id = String(pl.id);
+      if (!m.has(id)) m.set(id, pl);
+    }
+    return m;
+  };
+
+  const localPlaylistMap = indexPlaylists(local?.customPlaylists || []);
+  const remotePlaylistMap = indexPlaylists(remote?.customPlaylists || []);
+  const playlistDiffs: SyncMergeDiffEntry[] = [];
+  let localOnlyPlaylists = 0;
+  let remoteOnlyPlaylists = 0;
+  let updatedPlaylists = 0;
+
+  for (const [id, remotePl] of remotePlaylistMap.entries()) {
+    const localPl = localPlaylistMap.get(id);
+    const remoteTracks = Array.isArray(remotePl.tracks) ? remotePl.tracks : [];
+    if (!localPl) {
+      remoteOnlyPlaylists++;
+      if (playlistDiffs.length < 20) {
+        playlistDiffs.push({
+          id,
+          title: String(remotePl.name || '未命名歌单'),
+          subtitle: `${remoteTracks.length} 首曲目 · 云端新建歌单`,
+          source: 'remote',
+          kind: 'playlist'
+        });
+      }
+    } else {
+      const localTracks = Array.isArray(localPl.tracks) ? localPl.tracks : [];
+      const localTrackSig = [...new Set(localTracks.map((t: any) => String(t?.id || '')).filter(Boolean))]
+        .sort()
+        .join(',');
+      const remoteTrackSig = [...new Set(remoteTracks.map((t: any) => String(t?.id || '')).filter(Boolean))]
+        .sort()
+        .join(',');
+      if (String(localPl.name || '') !== String(remotePl.name || '') || localTrackSig !== remoteTrackSig) {
+        updatedPlaylists++;
+        if (playlistDiffs.length < 20) {
+          playlistDiffs.push({
+            id,
+            title: String(localPl.name || remotePl.name || '未命名歌单'),
+            subtitle: `本机 ${localTracks.length} 首 · 云端 ${remoteTracks.length} 首`,
+            source: 'both',
+            kind: 'playlist'
+          });
+        }
+      }
+    }
+  }
+  for (const [id, localPl] of localPlaylistMap.entries()) {
+    if (!remotePlaylistMap.has(id)) {
+      localOnlyPlaylists++;
+      if (playlistDiffs.length < 20) {
+        const localTracks = Array.isArray(localPl.tracks) ? localPl.tracks : [];
+        playlistDiffs.push({
+          id,
+          title: String(localPl.name || '未命名歌单'),
+          subtitle: `${localTracks.length} 首曲目 · 本机新建歌单`,
+          source: 'local',
+          kind: 'playlist'
+        });
+      }
+    }
+  }
+
+  const addedFavorites = localOnlyFavorites + remoteOnlyFavorites;
+  const addedHistory = localOnlyHistory + remoteOnlyHistory;
+  const addedPlaylists = localOnlyPlaylists + remoteOnlyPlaylists + updatedPlaylists;
+
+  const hasChanges = hasRemote
+    ? addedFavorites > 0 ||
+      addedHistory > 0 ||
+      addedPlaylists > 0 ||
+      computeSyncSnapshotDigest(local) !== computeSyncSnapshotDigest(remote)
+    : addedFavorites > 0 || addedHistory > 0 || addedPlaylists > 0 || hasMeaningfulData(local);
+
+  let summaryText = '本地与云端数据一致，暂无新增变更';
+  if (hasChanges) {
+    const parts: string[] = [];
+    if (addedFavorites > 0) parts.push(`+${addedFavorites} 首收藏`);
+    if (addedHistory > 0) parts.push(`+${addedHistory} 条历史`);
+    if (addedPlaylists > 0) parts.push(`+${addedPlaylists} 个歌单`);
+    if (parts.length > 0) {
+      summaryText = `${hasRemote ? '预计合并：' : '首次备份到云端：'}${parts.join('、')}`;
+    } else {
+      summaryText = hasRemote ? '预计合并：听歌统计与偏好设置' : '首次备份到云端：听歌统计与偏好设置';
+    }
+  }
+
+  return {
+    hasRemote,
+    hasChanges,
+    localOnlyFavorites,
+    remoteOnlyFavorites,
+    addedFavorites,
+    localOnlyHistory,
+    remoteOnlyHistory,
+    addedHistory,
+    localOnlyPlaylists,
+    remoteOnlyPlaylists,
+    updatedPlaylists,
+    addedPlaylists,
+    summaryText,
+    diffItems: {
+      favorites: favoriteDiffs,
+      history: historyDiffs,
+      playlists: playlistDiffs
+    }
+  };
+}

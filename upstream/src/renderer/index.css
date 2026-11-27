@@ -254,3 +254,82 @@
   width: 0px;
   height: 0px;
 }
+
+/* 省电模式 / 系统减少动态效果：关闭持续旋转、流光球与重高斯模糊 */
+html.reduced-motion .vinyl-platter,
+html.reduced-motion .vinyl-disc-shell,
+html.reduced-motion .record-disc,
+html.reduced-motion .mini-cover-ring,
+html.reduced-motion .mini-eq i,
+html.reduced-motion .skeleton-shimmer::after,
+html.reduced-motion .animate__animated {
+  animation: none !important;
+  animation-play-state: paused !important;
+  transition-duration: 0.01ms !important;
+}
+
+html.reduced-motion .backdrop-cover-blur,
+html.reduced-motion .backdrop-orb-primary,
+html.reduced-motion .backdrop-orb-secondary,
+html.reduced-motion .aurora-cover-layer,
+html.reduced-motion .aurora-warm-orb,
+html.reduced-motion .aurora-sky-orb,
+html.reduced-motion .mini-dynamic-bg {
+  display: none !important;
+}
+
+html.reduced-motion .naiwa-glass-card,
+html.reduced-motion .playlist-panel,
+html.reduced-motion .fixed-overlay,
+html.reduced-motion .mobile .n-message,
+html.reduced-motion .mobile-mini-controls,
+html.reduced-motion .immersive-vinyl-home .top-search-btn,
+html.reduced-motion .immersive-vinyl-home .back-vinyl-pill,
+html.reduced-motion .settings-header-bar {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html.reduced-motion .mobile-mini-controls {
+  background-color: rgba(255, 255, 255, 0.96) !important;
+}
+
+:root.dark.reduced-motion .mobile-mini-controls {
+  background-color: #131316 !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vinyl-platter,
+  .vinyl-disc-shell,
+  .record-disc,
+  .mini-cover-ring,
+  .mini-eq i,
+  .skeleton-shimmer::after,
+  .animate__animated {
+    animation: none !important;
+    animation-play-state: paused !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .backdrop-cover-blur,
+  .backdrop-orb-primary,
+  .backdrop-orb-secondary,
+  .aurora-cover-layer,
+  .aurora-warm-orb,
+  .aurora-sky-orb,
+  .mini-dynamic-bg {
+    display: none !important;
+  }
+
+  .naiwa-glass-card,
+  .playlist-panel,
+  .fixed-overlay,
+  .mobile .n-message,
+  .mobile-mini-controls,
+  .immersive-vinyl-home .top-search-btn,
+  .immersive-vinyl-home .back-vinyl-pill,
+  .settings-header-bar {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}

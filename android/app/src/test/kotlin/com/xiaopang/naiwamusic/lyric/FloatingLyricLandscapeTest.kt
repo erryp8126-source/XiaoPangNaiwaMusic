@@ -1,5 +1,7 @@
 package com.xiaopang.naiwamusic.lyric
 
+import android.content.res.Configuration
+import android.view.Surface
 import com.xiaopang.naiwamusic.config.AppPrefs
 import com.xiaopang.naiwamusic.lyric.FloatingLyricManager.LandscapeVisibilityController
 import com.xiaopang.naiwamusic.lyric.FloatingLyricManager.OverlayAction
@@ -190,5 +192,56 @@ class FloatingLyricLandscapeTest {
         assertEquals(OverlayAction.SHOW, disableAutoHide.action)
         assertFalse(controller.isHiddenForLandscape)
         assertTrue(disableAutoHide.shouldShowOverlay)
+    }
+
+    @Test
+    fun resolveIsLandscapeUsesDisplayGeometryAndRotationWhenBackgroundConfigLags() {
+        // 竖屏手机正常尺寸
+        assertFalse(
+            FloatingLyricManager.resolveIsLandscape(
+                configOrientation = Configuration.ORIENTATION_PORTRAIT,
+                displayWidthPx = 1080,
+                displayHeightPx = 2400,
+                displayRotation = Surface.ROTATION_0
+            )
+        )
+
+        // 切到其他全屏横屏视频/游戏 App 时，即使后台 Configuration 仍报 ORIENTATION_PORTRAIT，也应识别为横屏
+        assertTrue(
+            FloatingLyricManager.resolveIsLandscape(
+                configOrientation = Configuration.ORIENTATION_PORTRAIT,
+                displayWidthPx = 2400,
+                displayHeightPx = 1080,
+                displayRotation = Surface.ROTATION_90
+            )
+        )
+
+        // 平板天然横屏（宽 > 高）
+        assertTrue(
+            FloatingLyricManager.resolveIsLandscape(
+                configOrientation = Configuration.ORIENTATION_LANDSCAPE,
+                displayWidthPx = 2560,
+                displayHeightPx = 1600,
+                displayRotation = Surface.ROTATION_0
+            )
+        )
+
+        // 尺寸不可用时退回 Configuration 与 Surface rotation
+        assertTrue(
+            FloatingLyricManager.resolveIsLandscape(
+                configOrientation = Configuration.ORIENTATION_PORTRAIT,
+                displayWidthPx = 0,
+                displayHeightPx = 0,
+                displayRotation = Surface.ROTATION_270
+            )
+        )
+        assertFalse(
+            FloatingLyricManager.resolveIsLandscape(
+                configOrientation = Configuration.ORIENTATION_PORTRAIT,
+                displayWidthPx = 0,
+                displayHeightPx = 0,
+                displayRotation = Surface.ROTATION_0
+            )
+        )
     }
 }

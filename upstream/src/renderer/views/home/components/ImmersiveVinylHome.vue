@@ -12,8 +12,8 @@
         :style="{ backgroundImage: `url(${getImgUrl(coverUrl, '300y300')})` }"
       ></div>
       <div class="backdrop-base-glow"></div>
-      <div class="backdrop-orb-primary"></div>
-      <div class="backdrop-orb-secondary"></div>
+      <div v-if="!settingsStore.effectiveReducedMotion" class="backdrop-orb-primary"></div>
+      <div v-if="!settingsStore.effectiveReducedMotion" class="backdrop-orb-secondary"></div>
       <div class="backdrop-scrim"></div>
     </div>
 
@@ -117,7 +117,7 @@
           <!-- 大尺寸黑胶唱片与封面圆盘 -->
           <div class="vinyl-disc-shell" :class="{ 'is-loading': isSeeding && !hasSong }">
             <div class="vinyl-outer-halo"></div>
-            <div class="vinyl-platter" :class="{ 'is-paused': !isPlaying }">
+            <div class="vinyl-platter" :class="{ 'is-paused': !isPlaying || settingsStore.effectiveReducedMotion }">
               <div class="vinyl-grooves"></div>
               <div class="vinyl-glint"></div>
               <div class="vinyl-cover-wrap">
@@ -446,10 +446,8 @@ const handleCoverError = () => {
   isCoverError.value = true;
 };
 
-// 封面动态弥散深色背景
-const dynamicBackgroundEnabled = computed(
-  () => settingsStore.setData?.enableDynamicBackground !== false
-);
+// 封面动态弥散深色背景（省电/减少动效模式下自动关闭）
+const dynamicBackgroundEnabled = computed(() => settingsStore.effectiveDynamicBackground);
 const dynamicPalette = ref<DynamicCoverPalette>(DEFAULT_DYNAMIC_PALETTE);
 let paletteSeq = 0;
 

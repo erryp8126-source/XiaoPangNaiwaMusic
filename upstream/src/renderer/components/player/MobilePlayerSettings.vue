@@ -11,7 +11,7 @@
 
         <!-- 弹窗内容 - 高对比度暗夜实底磨砂面板 -->
         <div
-          class="relative w-full max-w-lg bg-[#111827]/[0.97] backdrop-blur-2xl rounded-t-[28px] overflow-hidden max-h-[85vh] flex flex-col border-t border-slate-700/80 shadow-2xl"
+          class="relative w-full max-w-lg bg-[#131316]/[0.97] backdrop-blur-2xl rounded-t-[28px] overflow-hidden max-h-[85vh] flex flex-col border-t border-white/[0.08] shadow-2xl"
         >
           <!-- 顶部拖拽条 -->
           <div class="flex justify-center pt-3 pb-2 flex-shrink-0">
@@ -149,20 +149,35 @@
               </div>
             </div>
 
-            <!-- 封面动态弥散背景开关 -->
-            <div class="mb-5">
+            <!-- 封面动态弥散背景 & 省电模式开关 -->
+            <div class="mb-5 space-y-2.5">
               <div
-                class="flex items-center justify-between px-4 py-3 rounded-2xl bg-slate-800/90 border border-slate-700/80"
+                class="flex items-center justify-between px-4 py-3 rounded-2xl bg-[#1C1C22]/90 border border-white/[0.08]"
               >
                 <div class="pr-3">
                   <div class="text-sm font-semibold text-white">动态背景</div>
-                  <div class="text-xs text-slate-400 mt-0.5">
+                  <div class="text-xs text-zinc-400 mt-0.5">
                     随专辑封面主色调平滑渐变播放页与迷你播放条背景
                   </div>
                 </div>
                 <n-switch
                   :value="dynamicBackgroundEnabled"
                   @update:value="toggleDynamicBackground"
+                />
+              </div>
+
+              <div
+                class="flex items-center justify-between px-4 py-3 rounded-2xl bg-[#1C1C22]/90 border border-white/[0.08]"
+              >
+                <div class="pr-3">
+                  <div class="text-sm font-semibold text-white">省电模式（减少动态效果）</div>
+                  <div class="text-xs text-zinc-400 mt-0.5">
+                    停止黑胶持续旋转并关闭弥散流光与高斯模糊
+                  </div>
+                </div>
+                <n-switch
+                  :value="powerSavingModeEnabled"
+                  @update:value="togglePowerSavingMode"
                 />
               </div>
             </div>
@@ -397,6 +412,15 @@ const toggleDynamicBackground = (val: boolean) => {
   settingsStore.setSetData({ enableDynamicBackground: val });
 };
 
+const powerSavingModeEnabled = computed(
+  () => Boolean(settingsStore.setData?.powerSavingMode)
+);
+
+const togglePowerSavingMode = (val: boolean) => {
+  triggerHaptic('selection');
+  settingsStore.setSetData({ powerSavingMode: val });
+};
+
 const handleOpenLibrary = () => {
   close();
   playerStore.setMusicFull(false);
@@ -406,7 +430,7 @@ const handleOpenLibrary = () => {
 const handleOpenSourceSettings = () => {
   close();
   playerStore.setMusicFull(false);
-  router.push('/set?section=playback');
+  router.push('/set?section=sources');
 };
 
 const currentMetaSummary = computed(() => {

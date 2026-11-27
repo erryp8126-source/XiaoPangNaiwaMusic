@@ -6,8 +6,8 @@
       class="flex w-full items-center justify-between gap-2 rounded-xl border px-3.5 py-2 text-sm font-medium transition-all duration-200 select-none disabled:opacity-50 disabled:cursor-not-allowed"
       :class="
         isOpen
-          ? 'border-amber-500 bg-white dark:bg-slate-800 ring-2 ring-amber-500/20'
-          : 'border-slate-300 bg-slate-50 hover:border-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:hover:border-slate-500'
+          ? 'border-amber-500 bg-white dark:bg-[#1C1C22] ring-2 ring-amber-500/20'
+          : 'border-slate-300 bg-slate-50 hover:border-slate-400 dark:border-white/[0.08] dark:bg-[#1C1C22] dark:hover:border-white/20'
       "
       @click="toggle"
     >
@@ -41,7 +41,7 @@
           v-if="isOpen"
           ref="dropdownRef"
           :style="dropdownStyle"
-          class="fixed z-[99999] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-600 dark:bg-[#1E293B]"
+          class="fixed z-[99999] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-white/[0.08] dark:bg-[#1C1C22]"
         >
           <div class="max-h-[260px] overflow-y-auto py-1.5">
             <div
