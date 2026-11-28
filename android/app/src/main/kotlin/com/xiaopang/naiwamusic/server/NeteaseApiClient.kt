@@ -106,6 +106,16 @@ class NeteaseApiClient(private val prefs: AppPrefs) {
             "/login/qr/create" -> loginQrCreate(params)
             "/login/qr/check" -> loginQrCheck(params)
             "/login/status" -> loginStatus(params)
+            "/captcha/sent" -> ncmRequest(
+                "/api/sms/captcha/sent",
+                mapOf(
+                    "ctcode" to (params["ctcode"]?.takeIf { it.isNotBlank() } ?: "86"),
+                    "cellphone" to (params["phone"] ?: ""),
+                    "secrete" to "music_middleuser_pclogin"
+                ),
+                params,
+                "weapi"
+            )
             "/login/cellphone" -> loginCellphone(params)
             "/logout" -> ncmRequest("/api/logout", emptyMap(), params, "eapi")
 

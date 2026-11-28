@@ -98,6 +98,8 @@
           </div>
         </template>
       </setting-item>
+
+      <multi-platform-accounts-card hide-primary class="mt-3" />
     </setting-section>
 
     <setting-section v-if="showAdvanced" title="界面与认证高级设置">
@@ -266,13 +268,19 @@ import { computed, h, inject, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import { getUserDetail } from '@/api/login';
+import MultiPlatformAccountsCard from '@/components/account/MultiPlatformAccountsCard.vue';
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue';
 import CookieSettingsModal from '@/components/settings/CookieSettingsModal.vue';
 import { useSettingsStore } from '@/store/modules/settings';
 import { useUserStore } from '@/store/modules/user';
 import { isElectron, isMobile } from '@/utils';
 import { clearNativeNeteaseCookies, triggerHaptic } from '@/utils/androidBridge';
-import { clearLoginStatus, confirmAccountLogout, getLoginTypeLabel } from '@/utils/auth';
+import {
+  clearLoginStatus,
+  confirmAccountLogout,
+  getLoginTypeLabel,
+  persistNeteaseAuthToken
+} from '@/utils/auth';
 
 import { SETTINGS_DATA_KEY, SETTINGS_DIALOG_KEY, SETTINGS_MESSAGE_KEY } from '../keys';
 import SBtn from '../SBtn.vue';
@@ -397,6 +405,7 @@ const handleTokenSave = async (token: string) => {
 
     const user = await getUserDetail();
     if (user.data && user.data.profile) {
+      persistNeteaseAuthToken(token);
       userStore.setUser(user.data.profile);
       currentToken.value = token;
       message.success(t('settings.cookie.message.saveSuccess'));

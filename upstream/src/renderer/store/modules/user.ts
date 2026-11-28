@@ -26,12 +26,18 @@ function getLocalStorageItem<T>(key: string, defaultValue: T): T {
   }
 }
 
-function getRawLoginType(): 'token' | 'cookie' | 'qr' | 'uid' | null {
+function getRawLoginType(): 'token' | 'cookie' | 'qr' | 'phone' | 'uid' | null {
   try {
     const raw = localStorage.getItem('loginType');
     if (!raw) return null;
     const cleaned = raw.replace(/^"+|"+$/g, '').trim();
-    if (cleaned === 'token' || cleaned === 'cookie' || cleaned === 'qr' || cleaned === 'uid') {
+    if (
+      cleaned === 'token' ||
+      cleaned === 'cookie' ||
+      cleaned === 'qr' ||
+      cleaned === 'phone' ||
+      cleaned === 'uid'
+    ) {
       return cleaned;
     }
     return null;
@@ -45,7 +51,7 @@ export const useUserStore = defineStore('user', () => {
   const user = ref<UserData | null>(getLocalStorageItem('user', null));
   const userDetail = ref<IUserDetail | null>(null);
   const recordList = ref<any[]>([]);
-  const loginType = ref<'token' | 'cookie' | 'qr' | 'uid' | null>(getRawLoginType());
+  const loginType = ref<'token' | 'cookie' | 'qr' | 'phone' | 'uid' | null>(getRawLoginType());
   const hasNeteaseAuth = computed(() => {
     if (!user.value?.userId) return false;
     if (loginType.value === 'uid') return false;
@@ -53,6 +59,7 @@ export const useUserStore = defineStore('user', () => {
       localStorage.getItem('token') ||
         loginType.value === 'cookie' ||
         loginType.value === 'qr' ||
+        loginType.value === 'phone' ||
         loginType.value === 'token'
     );
   });

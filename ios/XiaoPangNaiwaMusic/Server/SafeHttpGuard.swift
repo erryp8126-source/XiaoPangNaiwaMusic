@@ -9,6 +9,29 @@ enum SafeHttpGuard {
         "126.net"
     ]
 
+    static let platformAuthAllowedDomains: Set<String> = [
+        "passport.bilibili.com",
+        "api.bilibili.com",
+        "ssl.ptlogin2.qq.com",
+        "ptlogin2.qq.com",
+        "u.y.qq.com",
+        "c.y.qq.com",
+        "y.qq.com",
+        "graph.qq.com"
+    ]
+
+    static let externalPlaylistAllowedDomains: Set<String> = [
+        "qishui.douyin.com",
+        "music.douyin.com",
+        "y.qq.com",
+        "c.y.qq.com",
+        "i.y.qq.com",
+        "kugou.com",
+        "kuwo.cn",
+        "music.163.com",
+        "163cn.tv"
+    ]
+
     static let audioAndProxyAllowedDomains: Set<String> = [
         // 网易云与主流音乐解灰/音频 CDN 域名
         "163.com",

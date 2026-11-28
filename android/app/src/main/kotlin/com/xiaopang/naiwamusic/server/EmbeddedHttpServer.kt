@@ -47,6 +47,8 @@ class EmbeddedHttpServer(
     }
 
     private val gson = Gson()
+    private val platformAuthProxy = PlatformAuthProxy()
+    private val externalPlaylistParser = ExternalPlaylistParser(ncmClient)
 
     override fun serve(session: IHTTPSession): Response {
         val origin = session.headers["origin"]
@@ -77,6 +79,8 @@ class EmbeddedHttpServer(
                 uri == "/local-file" -> return handleLocalFile(session) // 本地音频流不开放 CORS
                 uri == "/local-cover" -> handleLocalCover(session)
                 uri == "/music" || uri == "/unblock" -> handleMusicUnblock(session)
+                uri == "/playlist/import/external" -> handleExternalPlaylistImport(session)
+                uri.startsWith("/bind/") -> handlePlatformBind(session, uri)
                 else -> handleNeteaseApi(session, uri)
             }
             addCorsHeaders(response, origin)
@@ -151,6 +155,22 @@ class EmbeddedHttpServer(
             )
         )
         return newFixedLengthResponse(Response.Status.OK, "application/json; charset=utf-8", json)
+    }
+
+    private fun handlePlatformBind(session: IHTTPSession, uri: String): Response {
+        val params = collectParams(session)
+        params.remove("token")
+        val (statusCode, body) = platformAuthProxy.handle(uri, params)
+        val status = Response.Status.lookup(statusCode) ?: Response.Status.OK
+        return newFixedLengthResponse(status, "application/json; charset=utf-8", body)
+    }
+
+    private fun handleExternalPlaylistImport(session: IHTTPSession): Response {
+        val params = collectParams(session)
+        params.remove("token")
+        val (statusCode, body) = externalPlaylistParser.handle(params)
+        val status = Response.Status.lookup(statusCode) ?: Response.Status.OK
+        return newFixedLengthResponse(status, "application/json; charset=utf-8", body)
     }
 
     private fun handleNeteaseApi(session: IHTTPSession, uri: String): Response {

@@ -103,6 +103,51 @@ export const getSongUrl = async (
       return await resolveCachedPlaybackUrl(songData.playMusicUrl, songData);
     }
 
+    // 已绑定/来自 B 站的音频直接走 B 站音频源解析（附带安全托管的 B 站凭据）
+    const idStr = String(id || '');
+    const isBiliTrack =
+      songData.source === 'bilibili' ||
+      Boolean((songData as any)?.bvid) ||
+      /^BV[0-9A-Za-z]+/.test(idStr);
+    if (isBiliTrack) {
+      const bvid =
+        String((songData as any)?.bvid || '').trim() ||
+        (idStr.includes('--') ? idStr.split('--')[0] : idStr);
+      const cidRaw =
+        (songData as any)?.cid ||
+        (songData as any)?.bilibiliData?.cid ||
+        (idStr.includes('--') ? idStr.split('--')[2] || idStr.split('--')[1] : '');
+      if (bvid) {
+        const [{ resolveBilibiliAudioUrl }, { usePlatformAccountsStore }] = await Promise.all([
+          import('@/api/platformBind'),
+          import('@/store/modules/platformAccounts')
+        ]);
+        const platformAccountsStore = usePlatformAccountsStore();
+        const biliRes = await resolveBilibiliAudioUrl({
+          bvid,
+          cid: cidRaw ? Number(cidRaw) : undefined,
+          cookie: platformAccountsStore.getBilibiliCookie()
+        });
+        if (requestId && !playbackRequestManager.isRequestValid(requestId)) {
+          throw new Error('Request cancelled');
+        }
+        const resolved = biliRes?.data?.data;
+        if (resolved?.url) {
+          songData.playbackMeta = buildPlaybackMeta({
+            url: resolved.url,
+            br: resolved.br || 192000,
+            quality: 'higher',
+            strategy: 'bilibili',
+            rawSource: 'bilibili',
+            platform: 'bilibili'
+          });
+          if (isDownloaded) return resolved as any;
+          return resolved.url;
+        }
+      }
+      throw new Error('未能解析该 B 站音频播放地址');
+    }
+
     const applyParsedMeta = (parsedData: any, fallbackFrom?: string) => {
       if (!parsedData?.url) return;
       songData.playbackMeta = buildPlaybackMeta({
@@ -320,7 +365,15 @@ const parseLyrics = (lyricsString: string): { lyrics: ILyricText[]; times: numbe
  */
 export const loadLrc = async (id: string | number): Promise<ILyric> => {
   try {
+    const idStr = String(id || '');
     const numericId = typeof id === 'string' ? parseInt(id, 10) : id;
+    if (!Number.isFinite(numericId) || numericId <= 0 || idStr.startsWith('BV')) {
+      return {
+        lrcTimeArray: [],
+        lrcArray: [],
+        hasWordByWord: false
+      };
+    }
     let lyricData: any;
 
     if (isElectron) {

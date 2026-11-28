@@ -36,6 +36,67 @@
               <qr-login @login-success="handleLoginSuccess" @login-error="handleLoginError" />
             </div>
 
+            <!-- 手机号 + 短信验证码快捷登录 -->
+            <div
+              v-else-if="activeMode === LoginMode.CAPTCHA && !isTransitioning"
+              key="captcha"
+              class="phone"
+            >
+              <div class="login-title">验证码快捷登录</div>
+              <div class="phone-page">
+                <div class="captcha-phone-row">
+                  <input
+                    v-model="captchaCtcode"
+                    class="ctcode-input"
+                    type="tel"
+                    maxlength="5"
+                    aria-label="国际区号"
+                  />
+                  <input
+                    v-model="captchaPhone"
+                    class="phone-input flex-1 border-b-0"
+                    type="tel"
+                    inputmode="numeric"
+                    maxlength="15"
+                    placeholder="请输入网易云绑定手机号"
+                  />
+                </div>
+                <div class="captcha-code-row">
+                  <input
+                    v-model="captchaCode"
+                    class="phone-input flex-1 border-b-0"
+                    type="tel"
+                    inputmode="numeric"
+                    maxlength="6"
+                    placeholder="请输入短信验证码"
+                    @keyup.enter="loginWithCaptcha"
+                  />
+                  <button
+                    type="button"
+                    class="captcha-send-btn"
+                    :disabled="sendingCaptcha || captchaCooldown > 0"
+                    @click="sendSmsCaptcha"
+                  >
+                    {{
+                      sendingCaptcha
+                        ? '发送中...'
+                        : captchaCooldown > 0
+                          ? `${captchaCooldown}s 后重发`
+                          : '获取验证码'
+                    }}
+                  </button>
+                </div>
+              </div>
+              <div class="text">免记密码 · 10 秒完成网易云主账号登录</div>
+              <n-button
+                class="btn-login"
+                :loading="loggingInCaptcha"
+                @click="loginWithCaptcha"
+              >
+                验证码登录
+              </n-button>
+            </div>
+
             <!-- 手机号登录 -->
             <div
               v-else-if="activeMode === LoginMode.PHONE && !isTransitioning"
@@ -89,24 +150,40 @@
 
 <script lang="ts" setup>
 import { useMessage } from 'naive-ui';
+import { onBeforeUnmount } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 
-import { loginByCellphone } from '@/api/login';
+import { loginByCaptcha, loginByCellphone, sendCaptcha } from '@/api/login';
 import mascotIcon from '@/assets/icon.png';
 import CookieLogin from '@/components/login/CookieLogin.vue';
 import QrLogin from '@/components/login/QrLogin.vue';
 import UidLogin from '@/components/login/UidLogin.vue';
 import { useUserStore } from '@/store/modules/user';
 import { setAnimationClass } from '@/utils';
+import { persistNeteaseAuthToken } from '@/utils/auth';
+import {
+  CAPTCHA_COOLDOWN_SECONDS,
+  computeCaptchaCooldownRemaining,
+  validateCaptchaLoginInput,
+  validateCaptchaSendInput
+} from '@/utils/platformAuth';
 
 defineOptions({
   name: 'Login'
 });
 
+interface Emits {
+  (e: 'loginSuccess', userProfile: any, loginType: string): void;
+  (e: 'loginError', error: string): void;
+}
+
+const emit = defineEmits<Emits>();
+
 // 登录模式枚举
 enum LoginMode {
   QR = 'qr',
+  CAPTCHA = 'captcha',
   PHONE = 'phone',
   UID = 'uid',
   COOKIE = 'cookie'
@@ -125,9 +202,116 @@ const isTransitioning = ref(false);
 // 登录选项配置
 const loginTabs = computed(() => [
   { key: LoginMode.QR, label: t('login.title.qr') },
+  { key: LoginMode.CAPTCHA, label: '验证码登录' },
   { key: LoginMode.COOKIE, label: t('login.title.cookie') },
   { key: LoginMode.UID, label: t('login.title.uid') }
 ]);
+
+// 手机号 + 短信验证码登录
+const captchaCtcode = ref('86');
+const captchaPhone = ref('');
+const captchaCode = ref('');
+const sendingCaptcha = ref(false);
+const loggingInCaptcha = ref(false);
+const captchaCooldown = ref(0);
+let captchaCooldownUntilMs = 0;
+let captchaTicker: ReturnType<typeof setInterval> | null = null;
+
+const stopCaptchaTicker = () => {
+  if (captchaTicker !== null) {
+    clearInterval(captchaTicker);
+    captchaTicker = null;
+  }
+};
+
+const syncCaptchaCooldown = () => {
+  const remaining = computeCaptchaCooldownRemaining(captchaCooldownUntilMs);
+  captchaCooldown.value = remaining;
+  if (remaining <= 0) {
+    stopCaptchaTicker();
+  }
+};
+
+const startCaptchaCooldown = (seconds: number = CAPTCHA_COOLDOWN_SECONDS) => {
+  stopCaptchaTicker();
+  captchaCooldownUntilMs = Date.now() + seconds * 1000;
+  syncCaptchaCooldown();
+  captchaTicker = setInterval(syncCaptchaCooldown, 1000);
+};
+
+const sendSmsCaptcha = async () => {
+  if (sendingCaptcha.value || captchaCooldown.value > 0) return;
+  const check = validateCaptchaSendInput(captchaPhone.value, captchaCtcode.value);
+  if (!check.ok) {
+    message.warning(check.error || '请输入正确的手机号');
+    return;
+  }
+  captchaPhone.value = check.normalizedPhone;
+  captchaCtcode.value = check.normalizedCtcode;
+  sendingCaptcha.value = true;
+  try {
+    const res: any = await sendCaptcha(check.normalizedPhone, check.normalizedCtcode);
+    const body = res?.data;
+    if (body?.code === 200 || body?.data === true) {
+      startCaptchaCooldown(CAPTCHA_COOLDOWN_SECONDS);
+      message.success('验证码已发送，请注意查收短信');
+    } else {
+      message.error(body?.message || body?.msg || '发送验证码失败，请稍后重试');
+    }
+  } catch (err: any) {
+    const errMsg = err?.response?.data?.message || err?.response?.data?.msg || '发送验证码失败，请稍后重试';
+    message.error(errMsg);
+  } finally {
+    sendingCaptcha.value = false;
+  }
+};
+
+const loginWithCaptcha = async () => {
+  if (loggingInCaptcha.value) return;
+  const check = validateCaptchaLoginInput(
+    captchaPhone.value,
+    captchaCode.value,
+    captchaCtcode.value
+  );
+  if (!check.ok) {
+    message.warning(check.error || '请检查手机号与验证码');
+    return;
+  }
+  loggingInCaptcha.value = true;
+  try {
+    const { data } = await loginByCaptcha(
+      check.normalizedPhone,
+      check.normalizedCaptcha,
+      check.normalizedCtcode
+    );
+    if (data?.code === 200 && data?.profile) {
+      if (data.cookie) {
+        persistNeteaseAuthToken(data.cookie);
+      }
+      userStore.setUser(data.profile);
+      userStore.setLoginType('phone');
+      message.success(t('login.message.loginSuccess'));
+      emit('loginSuccess', data.profile, 'phone');
+      if (router.currentRoute.value.path !== '/user') {
+        setTimeout(() => {
+          router.push('/user');
+        }, 600);
+      }
+    } else {
+      message.error(data?.message || data?.msg || '验证码登录失败，请核对后重试');
+    }
+  } catch (err: any) {
+    const errMsg = err?.response?.data?.message || err?.response?.data?.msg || '验证码错误或已过期';
+    message.error(errMsg);
+    emit('loginError', errMsg);
+  } finally {
+    loggingInCaptcha.value = false;
+  }
+};
+
+onBeforeUnmount(() => {
+  stopCaptchaTicker();
+});
 
 // 手机号登录
 const phone = ref('');
@@ -147,7 +331,7 @@ const loginPhone = async () => {
     if (data.code === 200) {
       message.success(t('login.message.loginSuccess'));
       userStore.setUser(data.profile);
-      localStorage.setItem('token', data.cookie);
+      persistNeteaseAuthToken(data.cookie);
       setTimeout(() => {
         router.push('/user');
       }, 1000);
@@ -185,7 +369,7 @@ const handleLoginSuccess = (userProfile: any, loginType: string) => {
   const token = loginType !== 'uid' ? localStorage.getItem('token') : undefined;
 
   if (token) {
-    localStorage.setItem('token', token);
+    persistNeteaseAuthToken(token);
   }
 
   if (loginType === 'uid') {
@@ -301,6 +485,26 @@ const handleLoginError = (error: string) => {
           @apply border-amber-500;
         }
       }
+    }
+
+    .captcha-phone-row,
+    .captcha-code-row {
+      @apply flex items-center;
+    }
+
+    .captcha-phone-row {
+      @apply border-b border-slate-200 dark:border-slate-700;
+    }
+
+    .ctcode-input {
+      width: 52px;
+      height: 44px;
+      @apply text-center text-sm font-bold text-slate-700 dark:text-zinc-200 bg-slate-100/70 dark:bg-slate-700/50 border-r border-slate-200 dark:border-slate-700 outline-none flex-shrink-0;
+    }
+
+    .captcha-send-btn {
+      height: 30px;
+      @apply mr-2 px-3 rounded-full text-[11px] font-extrabold text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-500/20 hover:bg-amber-200 dark:hover:bg-amber-500/30 transition-colors whitespace-nowrap flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed;
     }
 
     .btn-login {

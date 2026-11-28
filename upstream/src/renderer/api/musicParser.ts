@@ -3,6 +3,7 @@ import { cloneDeep } from 'lodash';
 import { musicDB } from '@/hooks/MusicHook';
 import { SongSourceConfigManager } from '@/services/SongSourceConfigManager';
 import { useSettingsStore } from '@/store';
+import { usePlatformAccountsStore } from '@/store/modules/platformAccounts';
 import type { SongResult } from '@/types/music';
 import { isNative } from '@/utils';
 import requestMusic from '@/utils/request_music';
@@ -11,6 +12,7 @@ import type { ParsedMusicResult } from './gdmusic';
 import { parseFromGDMusic } from './gdmusic';
 import { LxMusicStrategy } from './lxMusicStrategy';
 import { parseFromCustomApi } from './parseFromCustomApi';
+import { resolveQqBoundUnblockUrl } from './platformBind';
 
 const { saveData, getData, deleteData } = musicDB;
 
@@ -432,12 +434,73 @@ class UnblockMusicStrategy implements MusicSourceStrategy {
 }
 
 /**
+ * 已绑定 QQ 音乐账号优先解析策略（仅使用 SecureCredentialStore/Keychain 或会话内存托管凭据）
+ */
+class BoundQqMusicStrategy implements MusicSourceStrategy {
+  name = 'qq-bound';
+  priority = 1.5;
+
+  canHandle(): boolean {
+    try {
+      const store = usePlatformAccountsStore();
+      return Boolean(store.isQqBound && store.getQqCookie());
+    } catch {
+      return false;
+    }
+  }
+
+  async parse(id: number, data: SongResult): Promise<MusicParseResult | null> {
+    if (CacheManager.isInFailedCache(id, this.name)) {
+      return null;
+    }
+    try {
+      const store = usePlatformAccountsStore();
+      const cookie = store.getQqCookie();
+      if (!cookie || !data?.name) return null;
+
+      const artist = Array.isArray((data as any)?.ar)
+        ? (data as any).ar.map((a: any) => a?.name || '').filter(Boolean).join(' ')
+        : Array.isArray((data as any)?.song?.artists)
+          ? (data as any).song.artists.map((a: any) => a?.name || '').filter(Boolean).join(' ')
+          : '';
+      const resp = await resolveQqBoundUnblockUrl({
+        name: String(data.name),
+        artist,
+        dt: Number((data as any)?.dt || (data as any)?.duration || 0),
+        cookie
+      });
+      const resolvedUrl = resp?.data?.data?.url;
+      if (resolvedUrl) {
+        return {
+          data: {
+            code: 200,
+            message: 'success',
+            data: {
+              ...resp.data.data,
+              url: resolvedUrl,
+              platform: 'qq-bound',
+              _strategy: 'qq-bound'
+            }
+          }
+        };
+      }
+      CacheManager.addFailedCache(id, this.name);
+      return null;
+    } catch {
+      CacheManager.addFailedCache(id, this.name);
+      return null;
+    }
+  }
+}
+
+/**
  * 音源策略工厂
  */
 class MusicSourceStrategyFactory {
   private static strategies: MusicSourceStrategy[] = [
     new LxMusicStrategy(),
     new CustomApiStrategy(),
+    new BoundQqMusicStrategy(),
     new GDMusicStrategy(),
     new UnblockMusicStrategy()
   ];
@@ -503,8 +566,15 @@ export class MusicParser {
     const startTime = performance.now();
 
     try {
-      // 非桌面/原生安卓环境直接使用云端音源解析接口（附带歌名和歌手加速跨平台匹配）
+      // 非桌面/原生安卓环境：若已绑定 QQ 音乐则优先尝试授权解析，否则使用云端音源解析接口
       if (!isNative) {
+        const boundStrategy = new BoundQqMusicStrategy();
+        if (boundStrategy.canHandle()) {
+          const boundRes = await boundStrategy.parse(id, data);
+          if (boundRes?.data?.data?.url) {
+            return boundRes;
+          }
+        }
         const artistName = Array.isArray((data as any)?.ar)
           ? (data as any).ar.map((a: any) => a.name).join(' ')
           : Array.isArray((data as any)?.song?.artists)

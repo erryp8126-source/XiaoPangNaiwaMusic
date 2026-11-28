@@ -95,6 +95,13 @@ final class NeteaseApiClient {
         case "/login/qr/create": return loginQrCreate(params)
         case "/login/qr/check": return loginQrCheck(params)
         case "/login/status": return loginStatus(params)
+        case "/captcha/sent":
+            let ctcode = (params["ctcode"]?.isEmpty == false ? params["ctcode"]! : "86")
+            return ncmRequest("/api/sms/captcha/sent", rawData: [
+                "ctcode": ctcode,
+                "cellphone": params["phone"] ?? "",
+                "secrete": "music_middleuser_pclogin"
+            ], queryParams: params, defaultCrypto: "weapi")
         case "/login/cellphone": return loginCellphone(params)
         case "/logout": return ncmRequest("/api/logout", rawData: [:], queryParams: params, defaultCrypto: "eapi")
 

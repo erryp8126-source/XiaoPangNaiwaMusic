@@ -48,6 +48,18 @@ class AndroidJsBridge(
 ) {
     companion object {
         private const val TAG = "AndroidJsBridge"
+        internal const val NETEASE_AUTH_COOKIE_SECRET_KEY = "netease_auth_cookie"
+        private val MUSIC_U_REGEX = Regex("(?:^|;\\s*)MUSIC_U=([^;\\s]+)")
+
+        internal fun pickNeteaseUserCookie(candidates: List<String?>): String {
+            for (raw in candidates) {
+                val trimmed = raw?.trim().orEmpty()
+                if (trimmed.isNotEmpty() && MUSIC_U_REGEX.containsMatchIn(trimmed)) {
+                    return trimmed
+                }
+            }
+            return ""
+        }
 
         internal fun isExternalAudioDeviceType(type: Int): Boolean {
             return when (type) {
@@ -527,9 +539,40 @@ class AndroidJsBridge(
 
     @JavascriptInterface
     fun openExternalUrl(url: String) {
+        val raw = url.trim()
+        if (raw.isEmpty()) return
+        val parsed = runCatching { Uri.parse(raw) }.getOrNull() ?: return
+        val scheme = parsed.scheme?.lowercase()?.trim() ?: return
+        val allowedSchemes = setOf("https", "http", "orpheus", "bilibili", "mqqapi", "qqmusic")
+        if (!allowedSchemes.contains(scheme)) return
+
         mainHandler.post {
-            runCatching {
-                activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            val launched = runCatching {
+                activity.startActivity(Intent(Intent.ACTION_VIEW, parsed))
+                true
+            }.getOrDefault(false)
+            if (!launched && scheme != "http" && scheme != "https") {
+                val fallbackPackage = when (scheme) {
+                    "orpheus" -> "com.netease.cloudmusic"
+                    "bilibili" -> "tv.danmaku.bili"
+                    "mqqapi" -> "com.tencent.mobileqq"
+                    "qqmusic" -> "com.tencent.qqmusic"
+                    else -> null
+                }
+                val pkgLaunched = fallbackPackage?.let { pkg ->
+                    runCatching {
+                        val launchIntent = activity.packageManager.getLaunchIntentForPackage(pkg)
+                        if (launchIntent != null) {
+                            activity.startActivity(launchIntent)
+                            true
+                        } else {
+                            false
+                        }
+                    }.getOrDefault(false)
+                } ?: false
+                if (!pkgLaunched) {
+                    Toast.makeText(activity, "未检测到对应 App，可先保存二维码后打开扫一扫", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
@@ -665,8 +708,28 @@ class AndroidJsBridge(
         return secureStore.removeSecret(key)
     }
 
+    @JavascriptInterface
+    fun getNeteaseCookieFromStore(): String {
+        val secureCookie = secureStore.getSecret(NETEASE_AUTH_COOKIE_SECRET_KEY).trim()
+        if (secureCookie.isNotEmpty()) {
+            return secureCookie
+        }
+        return runCatching {
+            val cookieManager = CookieManager.getInstance()
+            val candidates = listOf(
+                cookieManager.getCookie("https://music.163.com"),
+                cookieManager.getCookie("https://interface.music.163.com"),
+                cookieManager.getCookie("http://127.0.0.1:${app.localServerPort}")
+            )
+            pickNeteaseUserCookie(candidates)
+        }.onFailure { err ->
+            Log.w(TAG, "getNeteaseCookieFromStore CookieManager read failed: ${err.message}")
+        }.getOrDefault("")
+    }
+
     private fun clearNeteaseCookiesInternal(onDone: (() -> Unit)? = null) {
         MusicPlaybackService.instance?.clearNativeUserCookie()
+        secureStore.removeSecret(NETEASE_AUTH_COOKIE_SECRET_KEY)
         mainHandler.post {
             runCatching {
                 val cookieManager = CookieManager.getInstance()

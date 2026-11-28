@@ -26,7 +26,7 @@ object CrashLogManager {
         """(?i)\b(Cookie|Set-Cookie)["']?\s*[:=]\s*["']?[^\r\n"']+"""
     )
     private val COOKIE_KV_REGEX = Regex(
-        """(?i)\b(MUSIC_U|MUSIC_A|MUSIC_R_T|MUSIC_A_T|__csrf|NMTID)["']?\s*[:=]\s*["']?[^\s;,&"'\r\n]+"""
+        """(?i)\b(MUSIC_U|MUSIC_A|MUSIC_R_T|MUSIC_A_T|__csrf|NMTID|SESSDATA|bili_jct|DedeUserID__ckMd5|DedeUserID|qm_keyst|qqmusic_key|p_skey|skey|pt4_token|qrsig|ptsigx|p_uin|uin)["']?\s*[:=]\s*["']?[^\s;,&"'\r\n]+"""
     )
     private val AUTH_HEADER_REGEX = Regex(
         """(?i)\b(Authorization|X-Alger-Token|X-App-Api-Key|X-App-Signature)["']?\s*[:=]\s*(?:Bearer\s+|Basic\s+)?["']?[^\s,&;"'\r\n]+"""

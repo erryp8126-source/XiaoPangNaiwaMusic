@@ -16,6 +16,7 @@ final class LocalHttpServer {
 
     private let ncmClient: NeteaseApiClient
     private let unblockEngine: MusicUnblockEngine
+    private let externalPlaylistParser: ExternalPlaylistParser
     private let queue = DispatchQueue(label: "com.xiaopang.naiwamusic.httpserver", attributes: .concurrent)
 
     let authToken: String
@@ -26,6 +27,7 @@ final class LocalHttpServer {
     init(ncmClient: NeteaseApiClient, unblockEngine: MusicUnblockEngine) {
         self.ncmClient = ncmClient
         self.unblockEngine = unblockEngine
+        self.externalPlaylistParser = ExternalPlaylistParser(ncmClient: ncmClient)
         self.authToken = Self.generateSessionToken()
     }
 
@@ -332,6 +334,9 @@ final class LocalHttpServer {
         if path == "/music" || path == "/unblock" {
             return handleMusicUnblock(req)
         }
+        if path == "/playlist/import/external" {
+            return handleExternalPlaylistImport(req)
+        }
         return handleNeteaseApi(req)
     }
 
@@ -448,6 +453,18 @@ final class LocalHttpServer {
             ])
         }
         return jsonResponse(status: 200, obj: ["code": 404, "message": "未能解析到可用音源"])
+    }
+
+    private func handleExternalPlaylistImport(_ req: HttpRequest) -> HttpResponse {
+        var params = collectParams(req)
+        params.removeValue(forKey: "token")
+        let res = externalPlaylistParser.handle(params: params)
+        return HttpResponse(
+            status: res.status,
+            statusText: httpStatusText(res.status),
+            contentType: "application/json; charset=utf-8",
+            body: Data(res.body.utf8)
+        )
     }
 
     private func handleLocalFile(_ req: HttpRequest) -> HttpResponse {

@@ -5,6 +5,19 @@
  * 在组件内部，建议直接使用 userStore 中的状态。
  */
 
+import {
+  getNativeNeteaseCookieFromStore,
+  isAndroid,
+  nativeSecureGetSecret,
+  nativeSecureRemoveSecret,
+  nativeSecureSetSecret
+} from '@/utils/androidBridge';
+import {
+  hydrateAuthTokenSync,
+  type HydrateAuthTokenResult,
+  NATIVE_NETEASE_COOKIE_SECRET_KEY
+} from '@/utils/authSession';
+
 export interface LoginInfo {
   isLoggedIn: boolean;
   loginType: 'token' | 'cookie' | 'qr' | 'uid' | null;
@@ -76,10 +89,62 @@ export function hasPermission(requireAuth: boolean = false): boolean {
 }
 
 /**
+ * 持久化保存网易云登录 Cookie：写入 localStorage，并在 Android 原生端同步写入硬件 Keystore
+ */
+export function persistNeteaseAuthToken(token: string): void {
+  const clean = typeof token === 'string' ? token.trim() : '';
+  if (!clean) return;
+  try {
+    localStorage.setItem('token', clean);
+  } catch {
+    // ignore storage errors
+  }
+  if (isAndroid()) {
+    nativeSecureSetSecret(NATIVE_NETEASE_COOKIE_SECRET_KEY, clean);
+  }
+}
+
+/**
+ * 清理前端及 Android Keystore 中保存的登录 Token
+ */
+export function removeNeteaseAuthToken(): void {
+  try {
+    localStorage.removeItem('token');
+  } catch {
+    // ignore
+  }
+  if (isAndroid()) {
+    nativeSecureRemoveSecret(NATIVE_NETEASE_COOKIE_SECRET_KEY);
+  }
+}
+
+/**
+ * 同步恢复 Android 原生凭据仓库 / CookieManager 中的登录态至 localStorage，
+ * 确保覆盖安装或冷启动时首屏鉴权请求之前已完成会话就绪。
+ */
+export function ensureAndroidAuthRestoredSync(): HydrateAuthTokenResult {
+  if (typeof localStorage === 'undefined') {
+    return { restored: false, syncedToNative: false, token: '', source: 'none' };
+  }
+  try {
+    return hydrateAuthTokenSync({
+      storage: localStorage,
+      isNativeAndroid: isAndroid(),
+      readSecureCookie: () => nativeSecureGetSecret(NATIVE_NETEASE_COOKIE_SECRET_KEY),
+      writeSecureCookie: (value: string) =>
+        nativeSecureSetSecret(NATIVE_NETEASE_COOKIE_SECRET_KEY, value),
+      readCookieManagerCookie: () => getNativeNeteaseCookieFromStore()
+    });
+  } catch {
+    return { restored: false, syncedToNative: false, token: '', source: 'none' };
+  }
+}
+
+/**
  * 清除登录状态
  */
 export function clearLoginStatus(): void {
-  localStorage.removeItem('token');
+  removeNeteaseAuthToken();
   localStorage.removeItem('user');
   localStorage.removeItem('loginType');
   localStorage.removeItem('uidLogin');
@@ -94,7 +159,7 @@ export function setLoginStatus(loginType: LoginInfo['loginType'], token?: string
   localStorage.setItem('loginType', loginType || '');
 
   if (token) {
-    localStorage.setItem('token', token);
+    persistNeteaseAuthToken(token);
   }
 
   if (loginType === 'uid') {

@@ -45,6 +45,24 @@ export function loginByCellphone(phone: string, password: string) {
   });
 }
 
+// 发送手机短信验证码
+// /captcha/sent
+export function sendCaptcha(phone: string, ctcode: string = '86') {
+  return request.get('/captcha/sent', {
+    params: { phone, ctcode: ctcode || '86', noLogin: true }
+  });
+}
+
+// 手机号 + 短信验证码登录
+// /login/cellphone (with captcha)
+export function loginByCaptcha(phone: string, captcha: string, ctcode: string = '86') {
+  return request.post('/login/cellphone', {
+    phone,
+    captcha,
+    countrycode: ctcode || '86'
+  });
+}
+
 // UID登录 - 通过用户ID获取用户信息
 // /user/detail
 export function loginByUid(uid: string | number) {

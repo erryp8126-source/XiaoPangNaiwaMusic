@@ -4203,3 +4203,735 @@ test("release announcements: structured changelog, independent ID gating, anti-s
   assert.match(aboutSrc, /查看更新公告/);
   assert.match(aboutSrc, /dispatchOpenReleaseAnnouncement/);
 });
+
+test("HTTP 301 auto-logout hardening & Android cold-start auth restoration", async () => {
+  const authSessionMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/authSession.ts")).href
+  );
+
+  // 1. /login/status payload classification
+  assert.equal(
+    authSessionMod.evaluateLoginStatusResponse({
+      data: { code: 200, account: { id: 123, anonimousUser: false }, profile: { userId: 123 } },
+    }).status,
+    "valid"
+  );
+  assert.equal(
+    authSessionMod.evaluateLoginStatusResponse({
+      data: { code: 200, account: { id: 456, anonimousUser: false }, profile: null },
+    }).status,
+    "valid"
+  );
+  assert.equal(
+    authSessionMod.evaluateLoginStatusResponse({
+      data: { code: 200, account: { id: 999, anonimousUser: true }, profile: null },
+    }).status,
+    "expired"
+  );
+  assert.equal(
+    authSessionMod.evaluateLoginStatusResponse({
+      data: { code: 200, account: null, profile: null },
+    }).status,
+    "expired"
+  );
+  assert.equal(authSessionMod.evaluateLoginStatusResponse({ code: 301 }).status, "expired");
+  assert.equal(authSessionMod.evaluateLoginStatusResponse({ code: 502 }).status, "inconclusive");
+  assert.equal(authSessionMod.evaluateLoginStatusResponse(null).status, "inconclusive");
+
+  // 2. Verification error classification (offline/timeout/5xx must NOT log out)
+  assert.equal(authSessionMod.classifySessionVerifyError(new Error("timeout"), false).status, "inconclusive");
+  assert.equal(authSessionMod.classifySessionVerifyError({ isOfflineError: true }, false).status, "inconclusive");
+  assert.equal(authSessionMod.classifySessionVerifyError({ response: { status: 503 } }, true).status, "inconclusive");
+  assert.equal(authSessionMod.classifySessionVerifyError({ response: { status: 502 } }, false).status, "inconclusive");
+  assert.equal(authSessionMod.classifySessionVerifyError({ response: { status: 429 } }, false).status, "inconclusive");
+  assert.equal(authSessionMod.classifySessionVerifyError({ response: { status: 301 } }, false).status, "expired");
+  assert.equal(authSessionMod.classifySessionVerifyError({ response: { status: 401 } }, false).status, "expired");
+
+  // 3. Concurrency-locked 301 guard scenarios
+  let nowMs = 10_000;
+  let verifyCalls = 0;
+  let logoutCalls = 0;
+  let offlineFlag = false;
+  let activeSessionFlag = true;
+  let verifyImpl = async () => ({
+    data: { data: { code: 200, account: { id: 888, anonimousUser: false }, profile: { userId: 888 } } },
+  });
+
+  const guard = authSessionMod.createHttp301SessionGuard({
+    verifySession: async () => {
+      verifyCalls += 1;
+      return verifyImpl();
+    },
+    hasActiveAuthSession: () => activeSessionFlag,
+    isOffline: () => offlineFlag,
+    onConfirmedExpired: async () => {
+      logoutCalls += 1;
+      activeSessionFlag = false;
+    },
+    now: () => nowMs,
+  });
+
+  // Case A: Single 301 with valid /login/status keeps login state intact
+  const keepRes = await guard.handle301({ url: "/recommend/songs" });
+  assert.equal(keepRes.action, "kept-valid");
+  assert.equal(verifyCalls, 1);
+  assert.equal(logoutCalls, 0);
+
+  // Case B: Cooldown avoids hammering /login/status immediately after valid check
+  nowMs += 1000;
+  const cachedKeep = await guard.handle301({ url: "/likelist" });
+  assert.equal(cachedKeep.action, "kept-valid");
+  assert.equal(cachedKeep.reason, "recent-valid-cache");
+  assert.equal(verifyCalls, 1);
+  assert.equal(logoutCalls, 0);
+
+  // Case C: Concurrent burst of 5 HTTP 301 errors only triggers ONE /login/status & ONE logout on confirmed expiry
+  nowMs += 20_000;
+  verifyCalls = 0;
+  logoutCalls = 0;
+  activeSessionFlag = true;
+  verifyImpl = async () => {
+    await new Promise((r) => setTimeout(r, 25));
+    return { data: { data: { code: 200, account: null, profile: null } } };
+  };
+  const concurrentResults = await Promise.all([
+    guard.handle301({ url: "/recommend/songs" }),
+    guard.handle301({ url: "/personal_fm" }),
+    guard.handle301({ url: "/user/playlist" }),
+    guard.handle301({ url: "/likelist" }),
+    guard.handle301({ url: "/user/record" }),
+  ]);
+  assert.equal(verifyCalls, 1, "5 concurrent 301s must deduplicate to a single /login/status request");
+  assert.equal(logoutCalls, 1, "confirmed expiry must invoke onConfirmedExpired exactly once");
+  assert.ok(concurrentResults.every((r) => r.action === "logged-out"));
+
+  // Case D: Offline or network timeout never clears login
+  guard.reset();
+  nowMs += 20_000;
+  verifyCalls = 0;
+  logoutCalls = 0;
+  activeSessionFlag = true;
+  offlineFlag = true;
+  const offlineRes = await guard.handle301({ url: "/recommend/songs" });
+  assert.equal(offlineRes.action, "ignored");
+  assert.equal(offlineRes.reason, "offline");
+  assert.equal(verifyCalls, 0);
+  assert.equal(logoutCalls, 0);
+
+  offlineFlag = false;
+  verifyImpl = async () => {
+    throw new Error("ETIMEDOUT");
+  };
+  const timeoutRes = await guard.handle301({ url: "/recommend/songs" });
+  assert.equal(timeoutRes.action, "ignored");
+  assert.equal(timeoutRes.reason, "network-or-timeout");
+  assert.equal(verifyCalls, 1);
+  assert.equal(logoutCalls, 0);
+
+  // Case E: noLogin / /login/status / unauthenticated guest or UID-only skip check entirely
+  const noLoginRes = await guard.handle301({ url: "/likelist", noLogin: true });
+  assert.equal(noLoginRes.action, "ignored");
+  const statusUrlRes = await guard.handle301({ url: "/login/status" });
+  assert.equal(statusUrlRes.action, "ignored");
+  activeSessionFlag = false;
+  const guestRes = await guard.handle301({ url: "/recommend/songs" });
+  assert.equal(guestRes.action, "ignored");
+  assert.equal(guestRes.reason, "no-active-session");
+  assert.equal(verifyCalls, 1);
+
+  // 4. Cold-start native cookie hydration runtime tests
+  const createMemoryStorage = (initial = {}) => {
+    const map = new Map(Object.entries(initial));
+    return {
+      getItem: (k) => (map.has(k) ? map.get(k) : null),
+      setItem: (k, v) => map.set(k, String(v)),
+      removeItem: (k) => map.delete(k),
+    };
+  };
+
+  // Restore missing localStorage token from SecureCredentialStore
+  const s1 = createMemoryStorage();
+  const h1 = authSessionMod.hydrateAuthTokenSync({
+    storage: s1,
+    isNativeAndroid: true,
+    readSecureCookie: () => "MUSIC_U=restored_from_keystore; __csrf=123",
+    writeSecureCookie: () => true,
+    readCookieManagerCookie: () => "",
+  });
+  assert.equal(h1.restored, true);
+  assert.equal(h1.source, "secureStore");
+  assert.equal(s1.getItem("token"), "MUSIC_U=restored_from_keystore; __csrf=123");
+
+  // Fallback to CookieManager when MUSIC_U= present, and sync into SecureCredentialStore
+  const s2 = createMemoryStorage();
+  let writtenSecret2 = "";
+  const h2 = authSessionMod.hydrateAuthTokenSync({
+    storage: s2,
+    isNativeAndroid: true,
+    readSecureCookie: () => "",
+    writeSecureCookie: (v) => {
+      writtenSecret2 = v;
+      return true;
+    },
+    readCookieManagerCookie: () => "NMTID=abc; MUSIC_U=cm_user_cookie; __csrf=999",
+  });
+  assert.equal(h2.restored, true);
+  assert.equal(h2.source, "cookieManager");
+  assert.equal(s2.getItem("token"), "NMTID=abc; MUSIC_U=cm_user_cookie; __csrf=999");
+  assert.equal(writtenSecret2, "NMTID=abc; MUSIC_U=cm_user_cookie; __csrf=999");
+
+  // Ignore anonymous-only CookieManager cookie without MUSIC_U
+  const s3 = createMemoryStorage();
+  const h3 = authSessionMod.hydrateAuthTokenSync({
+    storage: s3,
+    isNativeAndroid: true,
+    readSecureCookie: () => "",
+    writeSecureCookie: () => true,
+    readCookieManagerCookie: () => "NMTID=abc; MUSIC_A=anon_only",
+  });
+  assert.equal(h3.restored, false);
+  assert.equal(h3.source, "none");
+  assert.equal(s3.getItem("token"), null);
+
+  // Mirror existing localStorage token into SecureCredentialStore
+  const s4 = createMemoryStorage({ token: "MUSIC_U=existing_local; __csrf=1" });
+  let writtenSecret4 = "";
+  const h4 = authSessionMod.hydrateAuthTokenSync({
+    storage: s4,
+    isNativeAndroid: true,
+    readSecureCookie: () => "",
+    writeSecureCookie: (v) => {
+      writtenSecret4 = v;
+      return true;
+    },
+    readCookieManagerCookie: () => "",
+  });
+  assert.equal(h4.restored, false);
+  assert.equal(h4.syncedToNative, true);
+  assert.equal(writtenSecret4, "MUSIC_U=existing_local; __csrf=1");
+
+  // 5. Static wiring invariants across request.ts, main.ts, App.vue, auth.ts & Android native
+  const requestTs = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/utils/request.ts"),
+    "utf-8"
+  );
+  assert.match(requestTs, /createHttp301SessionGuard/);
+  assert.match(requestTs, /\/login\/status/);
+  assert.match(requestTs, /noLogin:\s*true/);
+  assert.match(requestTs, /SESSION_EXPIRED_TOAST_TEXT/);
+  assert.match(requestTs, /ensureAndroidAuthRestoredSync/);
+  assert.ok(
+    !requestTs.includes("userStore.handleLogout();\n      console.log(`301"),
+    "request.ts must not immediately handleLogout on raw 301"
+  );
+
+  const mainTs = fs.readFileSync(path.join(repoRoot, "upstream/src/renderer/main.ts"), "utf-8");
+  assert.ok(
+    mainTs.indexOf("ensureAndroidAuthRestoredSync()") !== -1 &&
+      mainTs.indexOf("ensureAndroidAuthRestoredSync()") < mainTs.indexOf("app.use(pinia)"),
+    "main.ts must call ensureAndroidAuthRestoredSync() before mounting Pinia/Router"
+  );
+
+  const appVue = fs.readFileSync(path.join(repoRoot, "upstream/src/renderer/App.vue"), "utf-8");
+  assert.ok(
+    appVue.indexOf("ensureAndroidAuthRestoredSync()") !== -1 &&
+      appVue.indexOf("ensureAndroidAuthRestoredSync()") < appVue.indexOf("checkLoginStatus()"),
+    "App.vue must restore Android auth token before checkLoginStatus()"
+  );
+
+  const authTs = fs.readFileSync(path.join(repoRoot, "upstream/src/renderer/utils/auth.ts"), "utf-8");
+  assert.match(authTs, /persistNeteaseAuthToken/);
+  assert.match(authTs, /ensureAndroidAuthRestoredSync/);
+  assert.match(authTs, /removeNeteaseAuthToken/);
+
+  const bridgeKt = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/bridge/AndroidJsBridge.kt"),
+    "utf-8"
+  );
+  assert.match(bridgeKt, /@JavascriptInterface\s+fun\s+getNeteaseCookieFromStore\(/);
+  assert.match(bridgeKt, /secureStore\.removeSecret\(NETEASE_AUTH_COOKIE_SECRET_KEY\)/);
+
+  const mainActivityKt = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/MainActivity.kt"),
+    "utf-8"
+  );
+  assert.match(mainActivityKt, /CookieManager\.getInstance\(\)\.setAcceptCookie\(true\)/);
+});
+
+test("multi-platform login & binding: SMS captcha, Bilibili/QQ QR state machines, allowlists, AUTH_COOKIE_ROUTES, CrashLog redaction & unbind isolation", async () => {
+  // 1. Runtime tests on upstream/src/renderer/utils/platformAuth.ts
+  const platformAuthMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/platformAuth.ts")).href
+  );
+
+  // SMS captcha input validation & 60s countdown
+  const sendOk = platformAuthMod.validateCaptchaSendInput("138 0013-8000", "+86");
+  assert.equal(sendOk.ok, true);
+  assert.equal(sendOk.normalizedPhone, "13800138000");
+  assert.equal(sendOk.normalizedCtcode, "86");
+
+  assert.equal(platformAuthMod.validateCaptchaSendInput("12345", "86").ok, false);
+  assert.equal(platformAuthMod.validateCaptchaSendInput("91234567", "+852").ok, true);
+
+  const loginOk = platformAuthMod.validateCaptchaLoginInput("13800138000", " 654321 ", "86");
+  assert.equal(loginOk.ok, true);
+  assert.equal(loginOk.normalizedCaptcha, "654321");
+  assert.equal(platformAuthMod.validateCaptchaLoginInput("13800138000", "abc", "86").ok, false);
+
+  const now = 1_700_000_000_000;
+  assert.equal(platformAuthMod.computeCaptchaCooldownRemaining(now + 59_100, now), 60);
+  assert.equal(platformAuthMod.computeCaptchaCooldownRemaining(now - 1, now), 0);
+
+  // Bilibili QR state machine & cookie extraction
+  assert.equal(
+    platformAuthMod.parseBilibiliQrPollState({ data: { code: 86101 } }).status,
+    "waiting"
+  );
+  assert.equal(
+    platformAuthMod.parseBilibiliQrPollState({ data: { code: 86090 } }).status,
+    "scanned"
+  );
+  assert.equal(
+    platformAuthMod.parseBilibiliQrPollState({ data: { code: 86038 } }).status,
+    "expired"
+  );
+  const biliOk = platformAuthMod.parseBilibiliQrPollState(
+    { data: { code: 0, url: "https://passport.biligame.com/x?DedeUserID=998877" } },
+    [
+      "SESSDATA=bili_secret_123%2Cabc; Path=/; HttpOnly",
+      "bili_jct=csrf_token_xyz; Path=/",
+      "DedeUserID=998877; Path=/",
+      "sid=ignored_cookie; Path=/",
+    ]
+  );
+  assert.equal(biliOk.status, "confirmed");
+  assert.equal(biliOk.dedeUserId, "998877");
+  assert.match(biliOk.cookie, /SESSDATA=bili_secret_123%2Cabc/);
+  assert.match(biliOk.cookie, /bili_jct=csrf_token_xyz/);
+  assert.doesNotMatch(biliOk.cookie, /ignored_cookie/);
+  assert.equal(
+    platformAuthMod.parseBilibiliQrPollState({ data: { code: 0, url: "" } }, []).status,
+    "error"
+  );
+
+  // QQ hash33 token, ptuiCB parser & Cookie parser
+  assert.equal(platformAuthMod.computeQqPtqrToken("test_qrsig_value") >= 0, true);
+  assert.equal(platformAuthMod.parseQqPtuiCB("ptuiCB('66','0','','0','二维码未失效','');").status, "waiting");
+  assert.equal(platformAuthMod.parseQqPtuiCB("ptuiCB('67','0','','0','二维码认证中','');").status, "scanned");
+  assert.equal(platformAuthMod.parseQqPtuiCB("ptuiCB('65','0','','0','二维码已失效','');").status, "expired");
+  assert.equal(platformAuthMod.parseQqPtuiCB("ptuiCB('68','0','','0','已取消','');").status, "rejected");
+  const qqConfirm = platformAuthMod.parseQqPtuiCB(
+    "ptuiCB('0','0','https://ssl.ptlogin2.qq.com/check_sig?ptsig=abc','0','登录成功！','MilkTea');"
+  );
+  assert.equal(qqConfirm.status, "confirmed");
+  assert.equal(qqConfirm.nickname, "MilkTea");
+  assert.equal(
+    platformAuthMod.parseQqPtuiCB("ptuiCB('10005','0','','0','请使用手机验证','');").status,
+    "risk_control"
+  );
+
+  const qqCookieOk = platformAuthMod.parseQqMusicCookieInput(
+    "uin=o0123456789; qm_keyst=Q_H_L_token99; p_skey=pskey88; tracking=drop_me\r\n"
+  );
+  assert.equal(qqCookieOk.ok, true);
+  assert.equal(qqCookieOk.uid, "123456789");
+  assert.match(qqCookieOk.normalizedCookie, /uin=o0123456789/);
+  assert.match(qqCookieOk.normalizedCookie, /qm_keyst=Q_H_L_token99/);
+  assert.doesNotMatch(qqCookieOk.normalizedCookie, /tracking/);
+  assert.equal(platformAuthMod.parseQqMusicCookieInput("uin=o123456").ok, false);
+  assert.equal(platformAuthMod.parseQqMusicCookieInput("qm_keyst=abc").ok, false);
+
+  // Allowlist host check & redaction
+  for (const h of [
+    "passport.bilibili.com",
+    "api.bilibili.com",
+    "ssl.ptlogin2.qq.com",
+    "u.y.qq.com",
+    "c.y.qq.com",
+  ]) {
+    assert.equal(platformAuthMod.isAllowedPlatformAuthHost(h), true, `Expected ${h} allowed`);
+  }
+  for (const h of ["evil.com", "127.0.0.1", "169.254.169.254", ""]) {
+    assert.equal(platformAuthMod.isAllowedPlatformAuthHost(h), false, `Expected ${h} blocked`);
+  }
+
+  const redacted = platformAuthMod.redactPlatformSecrets(
+    "SESSDATA=secret1; bili_jct=csrf2; qm_keyst=qmk3; qqmusic_key=qqk4; p_skey=ps5; qrsig=qr6"
+  );
+  for (const secretVal of ["secret1", "csrf2", "qmk3", "qqk4", "ps5", "qr6"]) {
+    assert.doesNotMatch(redacted, new RegExp(secretVal));
+  }
+
+  // Independent unbind isolation: unbinding bilibili/qq never clears netease primary session
+  const baseState = {
+    netease: { token: "MUSIC_U=primary_netease_token", user: { userId: 1001, nickname: "主账号" }, loginType: "phone" },
+    bilibili: { uid: "998877", nickname: "B站号", avatar: "https://i0.hdslb.com/a.jpg", boundAt: 100 },
+    qq: { uid: "123456789", nickname: "QQ号", avatar: "https://q1.qlogo.cn/g?b=qq&nk=123456789&s=140", boundAt: 200 },
+  };
+  const afterUnbindBili = platformAuthMod.unbindPlatformIsolation(baseState, "bilibili");
+  assert.equal(afterUnbindBili.netease.token, baseState.netease.token);
+  assert.equal(afterUnbindBili.netease.user?.userId, 1001);
+  assert.equal(afterUnbindBili.netease.loginType, "phone");
+  assert.equal(afterUnbindBili.bilibili, null);
+  assert.equal(afterUnbindBili.qq?.uid, "123456789");
+
+  const afterUnbindQq = platformAuthMod.unbindPlatformIsolation(baseState, "qq");
+  assert.equal(afterUnbindQq.netease.token, baseState.netease.token);
+  assert.equal(afterUnbindQq.netease.user?.userId, 1001);
+  assert.equal(afterUnbindQq.qq, null);
+  assert.equal(afterUnbindQq.bilibili?.uid, "998877");
+
+  // 2. Backend Netlify music-api.mts allowlist & write-tier rate limit policy
+  for (const h of [
+    "passport.bilibili.com",
+    "api.bilibili.com",
+    "ssl.ptlogin2.qq.com",
+    "u.y.qq.com",
+    "c.y.qq.com",
+  ]) {
+    assert.equal(musicApiMod.PLATFORM_AUTH_ALLOWED_DOMAINS.has(h), true);
+  }
+  assert.equal(musicApiMod.AUTH_COOKIE_ROUTES.has("/captcha/sent"), true);
+  assert.equal(musicApiMod.resolveRateLimitPolicy("/captcha/sent").tier, "write");
+  for (const bindRoute of musicApiMod.PLATFORM_BIND_ROUTES) {
+    assert.equal(musicApiMod.AUTH_COOKIE_ROUTES.has(bindRoute), true, `${bindRoute} missing in AUTH_COOKIE_ROUTES`);
+    assert.equal(musicApiMod.resolveRateLimitPolicy(bindRoute).tier, "write", `${bindRoute} must use write rate-limit tier`);
+  }
+
+  // 3. Native guards, secret storage & UI hygiene checks
+  const androidGuardKt = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/SafeHttpGuard.kt"),
+    "utf-8"
+  );
+  const iosGuardSwift = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Server/SafeHttpGuard.swift"),
+    "utf-8"
+  );
+  for (const domain of [
+    "passport.bilibili.com",
+    "api.bilibili.com",
+    "ssl.ptlogin2.qq.com",
+    "u.y.qq.com",
+    "c.y.qq.com",
+  ]) {
+    assert.match(androidGuardKt, new RegExp(domain.replace(/\./g, "\\.")));
+    assert.match(iosGuardSwift, new RegExp(domain.replace(/\./g, "\\.")));
+  }
+
+  const crashLogKt = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/config/CrashLogManager.kt"),
+    "utf-8"
+  );
+  for (const key of ["SESSDATA", "bili_jct", "qm_keyst", "qqmusic_key", "p_skey", "qrsig"]) {
+    assert.match(crashLogKt, new RegExp(key));
+  }
+
+  const iosBridgeSwift = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Bridge/IOSJsBridge.swift"),
+    "utf-8"
+  );
+  for (const secretKey of ["netease_auth_cookie", "bilibili_auth_cookie", "qqmusic_auth_cookie"]) {
+    assert.match(iosBridgeSwift, new RegExp(secretKey));
+  }
+
+  const platformStoreTs = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/platformAccounts.ts"),
+    "utf-8"
+  );
+  assert.match(platformStoreTs, /nativeSecureSetSecret/);
+  assert.match(platformStoreTs, /nativeSecureRemoveSecret/);
+  assert.doesNotMatch(platformStoreTs, /localStorage\.setItem\([^)]*(?:SessionCookie|SESSDATA|qm_keyst|qqmusic_key)/i);
+
+  const vueFiles = [
+    "upstream/src/renderer/components/account/PlatformBindModal.vue",
+    "upstream/src/renderer/components/account/MultiPlatformAccountsCard.vue",
+    "upstream/src/renderer/views/login/index.vue",
+    "upstream/src/renderer/components/login/QrLogin.vue",
+  ];
+  for (const rel of vueFiles) {
+    const content = fs.readFileSync(path.join(repoRoot, rel), "utf-8");
+    assert.doesNotMatch(content, /:global\(\.dark\)/, `${rel} must not use :global(.dark)`);
+    assert.doesNotMatch(content, /v-html\s*=/, `${rel} must not use v-html`);
+  }
+
+  const basicTabVue = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/set/tabs/BasicTab.vue"),
+    "utf-8"
+  );
+  assert.match(basicTabVue, /<setting-item\s+v-if="userStore\.user"\s+title="当前登录账号">/);
+  assert.match(basicTabVue, /<multi-platform-accounts-card/);
+});
+
+test("cross-platform playlist import: URL extraction, text parsing, anti-wrong-song scoring, concurrency limit & SSRF blocking", async () => {
+  // 1. Runtime tests on upstream/src/renderer/utils/playlistImport.ts
+  const importMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/playlistImport.ts")).href
+  );
+
+  // Share copy URL extraction & platform detection for all 5 platforms
+  const shareSamples = [
+    {
+      text: "分享歌单《汽水每日微醺》https://qishui.douyin.com/s/abcdefg/ 快听",
+      platform: "qishui",
+      titleHint: "汽水每日微醺",
+      allowed: true,
+    },
+    {
+      text: "https://music.douyin.com/qishui/share/playlist?id=123456",
+      platform: "qishui",
+      allowed: true,
+    },
+    {
+      text: "分享歌单《深夜车窗》https://y.qq.com/n/ryqq/playlist/9087654321，一起来听！",
+      platform: "qq",
+      titleHint: "深夜车窗",
+      allowed: true,
+    },
+    {
+      text: "https://i.y.qq.com/n2/m/share/details/taoge.html?id=112233",
+      platform: "qq",
+      allowed: true,
+    },
+    {
+      text: "我在酷狗分享了歌单 https://t1.kugou.com/song.html?id=xyz999",
+      platform: "kugou",
+      allowed: true,
+    },
+    {
+      text: "https://m.kuwo.cn/newh5app/playlist_detail/55667788)",
+      platform: "kuwo",
+      allowed: true,
+    },
+    {
+      text: "分享的歌单《民谣日记》：https://music.163.com/playlist?id=987654321",
+      platform: "netease",
+      titleHint: "民谣日记",
+      allowed: true,
+    },
+    {
+      text: "短链分享 https://163cn.tv/abcXYZ",
+      platform: "netease",
+      allowed: true,
+    },
+    {
+      text: "恶意链接 https://evil.example.com/playlist?id=1",
+      platform: "unknown",
+      allowed: false,
+    },
+  ];
+  for (const s of shareSamples) {
+    const ext = importMod.extractShareUrlFromText(s.text);
+    assert.ok(ext, `Should extract URL from: ${s.text}`);
+    assert.equal(ext.platform, s.platform);
+    assert.equal(ext.allowed, s.allowed);
+    if (s.titleHint) assert.equal(ext.titleHint, s.titleHint);
+  }
+
+  // Domain allowlist SSRF & internal IP rejection
+  for (const okHost of [
+    "qishui.douyin.com",
+    "music.douyin.com",
+    "y.qq.com",
+    "c.y.qq.com",
+    "i.y.qq.com",
+    "t1.kugou.com",
+    "m.kuwo.cn",
+    "music.163.com",
+    "163cn.tv",
+  ]) {
+    assert.equal(importMod.isAllowedExternalPlaylistHost(okHost), true, `Expected allowed: ${okHost}`);
+  }
+  for (const badHost of [
+    "evil.com",
+    "evil-kuwo.cn",
+    "127.0.0.1",
+    "169.254.169.254",
+    "192.168.1.1",
+    "localhost",
+    "supabase.co",
+    "",
+  ]) {
+    assert.equal(importMod.isAllowedExternalPlaylistHost(badHost), false, `Expected blocked: ${badHost}`);
+  }
+
+  // Text line parser: prefixes, separators, dedup, XSS strip, 300-track cap
+  const sampleText = [
+    "",
+    "---",
+    "晴天 - 周杰伦",
+    "1. 晴天 - 周杰伦",
+    "02、七里香 / 周杰伦",
+    "(3) 江南 — 林俊杰",
+    "④ 稻香",
+    "24K Magic - Bruno Mars",
+    "<script>alert(1)</script><b>海阔天空</b> - Beyond",
+  ].join("\n");
+  const parsed = importMod.parsePlaylistTextLines(sampleText);
+  assert.equal(parsed.duplicateCount, 1);
+  assert.equal(parsed.truncatedCount, 0);
+  assert.equal(parsed.tracks.length, 6);
+  assert.deepEqual(
+    { title: parsed.tracks[0].title, artist: parsed.tracks[0].artist },
+    { title: "晴天", artist: "周杰伦" }
+  );
+  assert.deepEqual(
+    { title: parsed.tracks[1].title, artist: parsed.tracks[1].artist },
+    { title: "七里香", artist: "周杰伦" }
+  );
+  assert.deepEqual(
+    { title: parsed.tracks[2].title, artist: parsed.tracks[2].artist },
+    { title: "江南", artist: "林俊杰" }
+  );
+  assert.deepEqual(
+    { title: parsed.tracks[3].title, artist: parsed.tracks[3].artist },
+    { title: "稻香", artist: "" }
+  );
+  assert.equal(parsed.tracks[4].title, "24K Magic");
+  assert.equal(parsed.tracks[5].title, "海阔天空");
+  assert.doesNotMatch(parsed.tracks[5].title, /<script|<b>/i);
+
+  const manyLines = Array.from({ length: 320 }, (_, i) => `Track ${i + 1} - Artist ${i + 1}`).join("\n");
+  const capped = importMod.parsePlaylistTextLines(manyLines);
+  assert.equal(capped.tracks.length, 300);
+  assert.equal(capped.truncatedCount, 20);
+
+  // Anti-wrong-song scoring: prefers studio original over Live / 伴奏 / DJ
+  const candidates = [
+    { id: 1, name: "晴天 (Live)", ar: [{ name: "周杰伦" }], dt: 275000 },
+    { id: 2, name: "晴天 (DJ Remix)", ar: [{ name: "周杰伦" }], dt: 260000 },
+    { id: 3, name: "晴天", ar: [{ name: "周杰伦" }], dt: 269000 },
+    { id: 4, name: "晴天", ar: [{ name: "其他翻唱" }], dt: 269000 },
+  ];
+  const best = importMod.pickBestImportCandidate(
+    candidates,
+    (c) => ({ title: c.name, artists: c.ar.map((a) => a.name).join(" "), durationMs: c.dt }),
+    { targetTitle: "晴天", targetArtists: "周杰伦", expectedDurationMs: 269000 }
+  );
+  assert.equal(best?.item?.id, 3);
+
+  const mismatched = importMod.pickBestImportCandidate(
+    [{ id: 9, name: "完全无关的歌", ar: [{ name: "陌生歌手" }], dt: 200000 }],
+    (c) => ({ title: c.name, artists: c.ar.map((a) => a.name).join(" "), durationMs: c.dt }),
+    { targetTitle: "晴天", targetArtists: "周杰伦" }
+  );
+  assert.equal(mismatched, null);
+
+  // Concurrency-limited pool (max 3) & cancellation
+  let active = 0;
+  let maxActive = 0;
+  let progressTicks = 0;
+  await importMod.runConcurrentPool(
+    Array.from({ length: 9 }, (_, i) => i),
+    {
+      concurrency: 3,
+      delayMs: 5,
+      onProgress: () => {
+        progressTicks++;
+      },
+    },
+    async (item) => {
+      active++;
+      if (active > maxActive) maxActive = active;
+      await new Promise((r) => setTimeout(r, 12));
+      active--;
+      return item * 2;
+    }
+  );
+  assert.equal(maxActive <= 3, true, `Expected concurrency <= 3, got ${maxActive}`);
+  assert.equal(progressTicks, 9);
+
+  // 2. Runtime tests on netlify/functions/music-api.mts
+  for (const domain of [
+    "qishui.douyin.com",
+    "music.douyin.com",
+    "y.qq.com",
+    "c.y.qq.com",
+    "i.y.qq.com",
+    "kugou.com",
+    "kuwo.cn",
+    "music.163.com",
+    "163cn.tv",
+  ]) {
+    assert.equal(
+      musicApiMod.EXTERNAL_PLAYLIST_ALLOWED_DOMAINS.has(domain),
+      true,
+      `music-api.mts missing external playlist domain: ${domain}`
+    );
+  }
+  assert.equal(musicApiMod.resolveRateLimitPolicy("/playlist/import/external").tier, "write");
+
+  for (const blockedUrl of [
+    "http://127.0.0.1:8080/admin",
+    "http://169.254.169.254/latest/meta-data/",
+    "https://evil.example.com/playlist?id=1",
+  ]) {
+    const resp = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/playlist/import/external", {
+        method: "POST",
+        headers: {
+          Origin: TRUSTED_ORIGIN,
+          "Content-Type": "application/json",
+          "x-nf-client-connection-ip": "198.51.100.77",
+        },
+        body: JSON.stringify({ url: blockedUrl }),
+      }),
+      {}
+    );
+    assert.equal(resp.status, 403, `Expected 403 SSRF/allowlist block for ${blockedUrl}`);
+    const json = await resp.json();
+    assert.equal(json.blocked, true);
+  }
+
+  // 3. Native guards, custom playlist store & UI hygiene checks
+  const androidGuardKt = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/SafeHttpGuard.kt"),
+    "utf-8"
+  );
+  const iosGuardSwift = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Server/SafeHttpGuard.swift"),
+    "utf-8"
+  );
+  for (const domain of ["qishui.douyin.com", "music.douyin.com", "y.qq.com", "kugou.com", "kuwo.cn", "music.163.com", "163cn.tv"]) {
+    assert.match(androidGuardKt, new RegExp(domain.replace(/\./g, "\\.")));
+    assert.match(iosGuardSwift, new RegExp(domain.replace(/\./g, "\\.")));
+  }
+
+  const embeddedServerKt = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/EmbeddedHttpServer.kt"),
+    "utf-8"
+  );
+  const localHttpSwift = fs.readFileSync(
+    path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Server/LocalHttpServer.swift"),
+    "utf-8"
+  );
+  assert.match(embeddedServerKt, /\/playlist\/import\/external/);
+  assert.match(localHttpSwift, /\/playlist\/import\/external/);
+
+  const playlistStoreTs = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/store/modules/playlist.ts"),
+    "utf-8"
+  );
+  assert.match(playlistStoreTs, /saveCustomPlaylist/);
+  assert.match(playlistStoreTs, /xiaopang_custom_playlists_v1/);
+
+  const importModalVue = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/playlist/CrossPlatformImportModal.vue"),
+    "utf-8"
+  );
+  assert.doesNotMatch(importModalVue, /:global\(\.dark\)/);
+  assert.doesNotMatch(importModalVue, /v-html\s*=/);
+  assert.match(importModalVue, /getImgUrl\(/);
+  assert.match(importModalVue, /saveCustomPlaylist\(/);
+  assert.match(importModalVue, /FALLBACK_TO_TEXT_MESSAGE/);
+  assert.equal(
+    importMod.FALLBACK_TO_TEXT_MESSAGE,
+    "该链接暂无法自动读取，可复制歌单文字使用「文本导入」"
+  );
+
+  const myMusicVue = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/library/MyMusicLibrary.vue"),
+    "utf-8"
+  );
+  assert.match(myMusicVue, /CrossPlatformImportModal/);
+  assert.match(myMusicVue, /导入外部歌单/);
+});

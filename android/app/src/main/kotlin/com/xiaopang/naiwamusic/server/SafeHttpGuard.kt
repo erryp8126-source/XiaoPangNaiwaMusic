@@ -21,6 +21,29 @@ object SafeHttpGuard {
         "126.net"
     )
 
+    val PLATFORM_AUTH_ALLOWED_DOMAINS: Set<String> = setOf(
+        "passport.bilibili.com",
+        "api.bilibili.com",
+        "ssl.ptlogin2.qq.com",
+        "ptlogin2.qq.com",
+        "u.y.qq.com",
+        "c.y.qq.com",
+        "y.qq.com",
+        "graph.qq.com"
+    )
+
+    val EXTERNAL_PLAYLIST_ALLOWED_DOMAINS: Set<String> = setOf(
+        "qishui.douyin.com",
+        "music.douyin.com",
+        "y.qq.com",
+        "c.y.qq.com",
+        "i.y.qq.com",
+        "kugou.com",
+        "kuwo.cn",
+        "music.163.com",
+        "163cn.tv"
+    )
+
     val AUDIO_AND_PROXY_ALLOWED_DOMAINS: Set<String> = setOf(
         // 网易云与主流音乐解灰/音频 CDN 域名
         "163.com",

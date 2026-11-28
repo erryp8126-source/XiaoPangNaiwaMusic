@@ -1,6 +1,8 @@
 import { installAndroidWindowApi } from '@/utils/androidBridge';
+import { ensureAndroidAuthRestoredSync } from '@/utils/auth';
 
 installAndroidWindowApi();
+ensureAndroidAuthRestoredSync();
 
 import './index.css';
 import '@/assets/css/mobile.css';

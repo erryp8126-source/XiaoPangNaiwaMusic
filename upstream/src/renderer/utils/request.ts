@@ -3,6 +3,9 @@ import axios, { InternalAxiosRequestConfig } from 'axios';
 import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';
 import { useUserStore } from '@/store/modules/user';
 import { getAndroidApiBaseUrl, getAndroidLocalAuthToken, isAndroid } from '@/utils/androidBridge';
+import { ensureAndroidAuthRestoredSync } from '@/utils/auth';
+import { createHttp301SessionGuard, SESSION_EXPIRED_TOAST_TEXT } from '@/utils/authSession';
+import { showFloatingToast } from '@/utils/shortcutToast';
 
 import { getSetData, isElectron, isMobile } from '.';
 
@@ -82,14 +85,19 @@ request.interceptors.request.use(
       timestamp: Date.now(),
       device: isElectron ? 'pc' : isMobile ? 'mobile' : 'web'
     };
-    const token = localStorage.getItem('token');
-    if (token && config.method !== 'post') {
-      config.params.cookie = config.params.cookie !== undefined ? config.params.cookie : token;
-    } else if (token && config.method === 'post') {
-      config.data = {
-        ...config.data,
-        cookie: token
-      };
+    if (isAndroid() && typeof localStorage !== 'undefined' && !localStorage.getItem('token')) {
+      ensureAndroidAuthRestoredSync();
+    }
+    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
+    if (token && config.params?.noLogin !== true && config.params?.noCookie !== true) {
+      if (config.method !== 'post') {
+        config.params.cookie = config.params.cookie !== undefined ? config.params.cookie : token;
+      } else {
+        config.data = {
+          ...config.data,
+          cookie: config.data?.cookie !== undefined ? config.data.cookie : token
+        };
+      }
     }
     if (isElectron) {
       const proxyConfig = setData?.proxyConfig;
@@ -110,6 +118,51 @@ request.interceptors.request.use(
 );
 
 const NO_RETRY_URLS = ['暂时没有'];
+
+const isClientOfflineNow = (): boolean => {
+  try {
+    if (useOfflineAvailabilityStore().isOffline) {
+      return true;
+    }
+  } catch {
+    // ignore if Pinia is not active yet
+  }
+  return typeof navigator !== 'undefined' && navigator.onLine === false;
+};
+
+const session301Guard = createHttp301SessionGuard({
+  verifySession: () =>
+    request.get('/login/status', {
+      params: { noLogin: true },
+      noRetry: true,
+      timeout: 8000
+    } as CustomAxiosRequestConfig),
+  hasActiveAuthSession: () => {
+    try {
+      if (typeof localStorage !== 'undefined' && Boolean(localStorage.getItem('token'))) {
+        return true;
+      }
+    } catch {
+      // ignore
+    }
+    try {
+      const userStore = useUserStore();
+      return Boolean(userStore.user?.userId && userStore.loginType !== 'uid');
+    } catch {
+      return false;
+    }
+  },
+  isOffline: isClientOfflineNow,
+  onConfirmedExpired: async () => {
+    try {
+      const userStore = useUserStore();
+      await userStore.handleLogout();
+    } catch {
+      // ignore if Pinia is not active yet
+    }
+    showFloatingToast(SESSION_EXPIRED_TOAST_TEXT, 'ri-error-warning-line', 2600);
+  }
+});
 
 // 响应拦截器
 request.interceptors.response.use(
@@ -135,14 +188,7 @@ request.interceptors.response.use(
     const config = error.config as CustomAxiosRequestConfig;
 
     // 离线安静模式：断网时立即快速失败并打标，避免无意义重试与重复弹窗
-    let storeOffline = false;
-    try {
-      storeOffline = useOfflineAvailabilityStore().isOffline;
-    } catch {
-      // ignore if Pinia is not active yet
-    }
-    const navigatorOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
-    if (storeOffline || navigatorOffline) {
+    if (isClientOfflineNow()) {
       (error as any).isOfflineError = true;
       return Promise.reject(error);
     }
@@ -152,13 +198,23 @@ request.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    // 处理 301 状态码
-    if (error.response?.status === 301 && config.params.noLogin !== true) {
-      // 使用 store mutation 清除用户信息
-      const userStore = useUserStore();
-      userStore.handleLogout();
-      console.log(`301 状态码，清除登录信息后重试第 ${config.retryCount} 次`);
-      config.retryCount = 3;
+    // 处理 301 状态码：先加防重入锁调用 /login/status 核验，防止冷启动竞态或单次波动误登出
+    if (error.response?.status === 301 && config.params?.noLogin !== true) {
+      const guardResult = await session301Guard.handle301({
+        url: String(config.url || ''),
+        noLogin: config.params?.noLogin === true
+      });
+      if (guardResult.action === 'logged-out') {
+        console.warn(`[request] HTTP 301 确认会话失效 (${guardResult.reason})，已清理登录态`);
+        config.noRetry = true;
+      } else if (guardResult.action === 'kept-valid') {
+        console.info(
+          `[request] 收到 HTTP 301 但 /login/status 仍有效 (${guardResult.reason})，保留登录态并允许安全重试`
+        );
+      } else {
+        console.info(`[request] HTTP 301 未触发登出 (${guardResult.reason})`);
+        config.noRetry = true;
+      }
     }
 
     // 检查是否还可以重试

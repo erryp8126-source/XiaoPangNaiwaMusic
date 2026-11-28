@@ -5,6 +5,8 @@ import { useI18n } from 'vue-i18n';
 
 import { checkQr, createQr, getQrKey, getUserDetail } from '@/api/login';
 import { setAnimationClass } from '@/utils';
+import { persistNeteaseAuthToken } from '@/utils/auth';
+import { launchExternalAppScheme, saveQrImageToGallery } from '@/utils/qrActions';
 
 defineOptions({
   name: 'QrLogin'
@@ -86,7 +88,7 @@ const timerIsQr = (key: string) => {
       // 登录成功
       if (data.code === 803) {
         qrStatus.value = 'confirmed';
-        localStorage.setItem('token', data.cookie);
+        persistNeteaseAuthToken(data.cookie);
         const user = await getUserDetail();
         const successMsg = t('login.message.loginSuccess');
         message.success(successMsg);
@@ -112,6 +114,25 @@ const timerIsQr = (key: string) => {
 // 手动刷新二维码
 const refreshQr = () => {
   loadLogin();
+};
+
+const savingQr = ref(false);
+
+const handleSaveQr = async () => {
+  if (!qrUrl.value || savingQr.value) return;
+  savingQr.value = true;
+  try {
+    const res = await saveQrImageToGallery('xiaopang-netease-qr', qrUrl.value);
+    if (res.ok) message.success(res.message);
+    else message.warning(res.message);
+  } finally {
+    savingQr.value = false;
+  }
+};
+
+const handleOpenNeteaseApp = () => {
+  launchExternalAppScheme('orpheus://');
+  message.info('正在唤起网易云音乐，也可先点击上方保存二维码到相册扫码');
 };
 
 // 获取状态显示文本
@@ -179,6 +200,27 @@ onUnmounted(() => {
     <!-- 状态文本 -->
     <div class="text" :class="{ expired: qrStatus === 'expired', scanned: qrStatus === 'scanned' }">
       {{ getStatusText() }}
+    </div>
+
+    <!-- 单机便捷操作：保存二维码到相册 + 一键打开网易云音乐 -->
+    <div v-if="qrStatus === 'active' || qrStatus === 'scanned'" class="qr-helper-actions">
+      <button
+        type="button"
+        class="qr-helper-pill"
+        :disabled="savingQr || !qrUrl"
+        @click="handleSaveQr"
+      >
+        <i class="ri-download-2-line"></i>
+        <span>{{ savingQr ? '保存中...' : '保存二维码到相册' }}</span>
+      </button>
+      <button
+        type="button"
+        class="qr-helper-pill accent"
+        @click="handleOpenNeteaseApp"
+      >
+        <i class="ri-external-link-line"></i>
+        <span>打开网易云音乐</span>
+      </button>
     </div>
 
     <!-- 手动刷新按钮 -->
@@ -268,10 +310,25 @@ onUnmounted(() => {
 }
 
 .refresh-area {
-  @apply mt-3;
+  @apply mt-2.5;
 
   .manual-refresh {
     @apply text-gray-300 hover:text-white text-xs;
+  }
+}
+
+.qr-helper-actions {
+  @apply mt-3 flex items-center justify-center gap-2 flex-wrap px-2;
+}
+
+.qr-helper-pill {
+  @apply inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-[11px] font-bold text-white/95 transition-all active:scale-95;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+
+  &.accent {
+    background: linear-gradient(135deg, rgba(255, 209, 71, 0.32) 0%, rgba(235, 143, 0, 0.42) 100%);
+    border-color: rgba(255, 214, 102, 0.55);
   }
 }
 </style>

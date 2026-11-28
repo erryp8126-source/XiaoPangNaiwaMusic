@@ -140,6 +140,7 @@ export const usePlayerStore = defineStore('player', () => {
     setPlayList: playlist.setPlayList,
     addToNextPlay: playlist.addToNextPlay,
     reorderPlayList: playlist.reorderPlayList,
+    saveCustomPlaylist: playlist.saveCustomPlaylist,
     saveCurrentQueueAsCustomPlaylist: playlist.saveCurrentQueueAsCustomPlaylist,
     removeFromPlayList: playlist.removeFromPlayList,
     clearPlayAll: playlist.clearPlayAll,

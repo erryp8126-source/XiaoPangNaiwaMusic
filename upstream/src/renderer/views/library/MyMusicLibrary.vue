@@ -52,6 +52,21 @@
             </button>
 
             <button
+              type="button"
+              class="platform-bind-pill px-2.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 active:scale-95 transition-all bg-slate-100/90 text-slate-700 hover:bg-slate-200/80 dark:bg-[#1C1C22] dark:text-[#FAFAFA] dark:border dark:border-white/[0.08]"
+              @click="showPlatformBindCardModal = true"
+            >
+              <i class="ri-links-line text-sm text-emerald-500"></i>
+              <span>平台绑定</span>
+              <span
+                v-if="boundExtensionCount > 0"
+                class="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500 text-white"
+              >
+                {{ boundExtensionCount }}
+              </span>
+            </button>
+
+            <button
               v-if="primaryActionLabel"
               type="button"
               class="px-3.5 py-2 rounded-full text-xs font-extrabold text-white shadow-md active:scale-95 transition-all flex items-center gap-1.5 flex-shrink-0"
@@ -379,19 +394,48 @@
           <i class="ri-play-list-2-line text-4xl text-slate-300 dark:text-[#71717A]"></i>
           <p class="text-sm text-slate-500 dark:text-[#A1A1AA]">暂无自建或收藏歌单</p>
           <p class="text-xs text-slate-400 dark:text-[#71717A]">
-            可在播放队列点击「存为歌单」保存到本地，或登录账号同步网易云歌单
+            支持粘贴汽水 / QQ / 酷狗 / 酷我 / 网易云分享链接或文本清单，一键生成自建歌单
           </p>
-          <button
-            v-if="!userStore.user"
-            type="button"
-            class="px-5 py-2 rounded-full text-xs font-extrabold text-white shadow-md"
-            style="background: linear-gradient(135deg, #ffc21c 0%, #eb8f00 100%)"
-            @click="goToUserAccount"
-          >
-            登录同步网易云歌单
-          </button>
+          <div class="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+            <button
+              type="button"
+              class="px-5 py-2 rounded-full text-xs font-extrabold text-white shadow-md active:scale-95 transition-all"
+              style="background: linear-gradient(135deg, #ffc21c 0%, #eb8f00 100%)"
+              @click="showCrossPlatformImportModal = true"
+            >
+              导入外部歌单
+            </button>
+            <button
+              v-if="!userStore.user"
+              type="button"
+              class="px-4 py-2 rounded-full text-xs font-semibold bg-slate-100/90 dark:bg-[#1C1C22] text-slate-700 dark:text-[#FAFAFA] border border-slate-200/70 dark:border-white/[0.08]"
+              @click="goToUserAccount"
+            >
+              登录同步网易云歌单
+            </button>
+          </div>
         </div>
         <div v-else class="space-y-4 pb-16">
+          <!-- 跨平台导入快捷条 -->
+          <div class="flex items-center justify-between gap-3 p-3 rounded-2xl bg-white/85 dark:bg-[#131316] border border-slate-200/70 dark:border-white/[0.08]">
+            <div class="min-w-0">
+              <div class="text-xs font-bold text-slate-900 dark:text-[#FAFAFA]">
+                跨平台歌单导入
+              </div>
+              <div class="text-[11px] text-slate-500 dark:text-[#A1A1AA] truncate mt-0.5">
+                粘贴汽水 / QQ / 酷狗 / 酷我 / 网易云链接或文本列表
+              </div>
+            </div>
+            <button
+              type="button"
+              class="px-3.5 py-1.5 rounded-full text-xs font-extrabold text-white shadow-sm active:scale-95 transition-all flex-shrink-0 flex items-center gap-1"
+              style="background: linear-gradient(135deg, #ffc21c 0%, #eb8f00 100%)"
+              @click="showCrossPlatformImportModal = true"
+            >
+              <i class="ri-download-cloud-2-line text-sm"></i>
+              <span>导入外部歌单</span>
+            </button>
+          </div>
           <!-- 本地自建歌单 -->
           <div v-if="customPlaylists.length > 0" class="space-y-2">
             <div class="px-1 text-xs font-bold text-slate-500 dark:text-[#A1A1AA] flex items-center justify-between">
@@ -471,6 +515,21 @@
         </div>
       </n-scrollbar>
     </div>
+
+    <n-modal
+      v-model:show="showPlatformBindCardModal"
+      :z-index="12000"
+      preset="card"
+      title="多平台账号与绑定"
+      style="width: min(560px, 94vw)"
+    >
+      <multi-platform-accounts-card @playlist-imported="handlePlatformPlaylistImported" />
+    </n-modal>
+
+    <cross-platform-import-modal
+      v-model:show="showCrossPlatformImportModal"
+      @imported="handlePlatformPlaylistImported"
+    />
   </div>
 </template>
 
@@ -481,10 +540,13 @@ import { useRoute, useRouter } from 'vue-router';
 
 import { getUserPlaylist } from '@/api/user';
 import { navigateToMusicList } from '@/components/common/MusicListNavigator';
+import MultiPlatformAccountsCard from '@/components/account/MultiPlatformAccountsCard.vue';
 import TrackOriginTag from '@/components/common/TrackOriginTag.vue';
+import CrossPlatformImportModal from '@/components/playlist/CrossPlatformImportModal.vue';
 import { useFavoriteStore } from '@/store/modules/favorite';
 import { useLocalMusicStore } from '@/store/modules/localMusic';
 import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';
+import { usePlatformAccountsStore } from '@/store/modules/platformAccounts';
 import { usePlayerStore } from '@/store/modules/player';
 import { usePlayHistoryStore } from '@/store/modules/playHistory';
 import { useUserStore } from '@/store/modules/user';
@@ -527,6 +589,7 @@ const router = useRouter();
 const message = useMessage();
 const dialog = useDialog();
 const playerStore = usePlayerStore();
+const platformAccountsStore = usePlatformAccountsStore();
 const offlineStore = useOfflineAvailabilityStore();
 const localMusicStore = useLocalMusicStore();
 const playHistoryStore = usePlayHistoryStore();
@@ -535,6 +598,17 @@ const userStore = useUserStore();
 const nativeCapabilities = getNativeCapabilities();
 
 const activeTab = ref<LibraryTab>(offlineStore.isOffline ? 'downloaded' : 'favorite');
+const showPlatformBindCardModal = ref(false);
+const showCrossPlatformImportModal = ref(false);
+const boundExtensionCount = computed(
+  () =>
+    (platformAccountsStore.isBilibiliBound ? 1 : 0) +
+    (platformAccountsStore.isQqBound ? 1 : 0)
+);
+const handlePlatformPlaylistImported = () => {
+  loadCustomPlaylists();
+  activeTab.value = 'playlists';
+};
 const batchMode = ref(false);
 const selectedKeys = ref<Set<string>>(new Set());
 const loadingDownloaded = ref(false);
@@ -788,6 +862,7 @@ const isAllSelected = computed(
 );
 
 const primaryActionLabel = computed(() => {
+  if (activeTab.value === 'playlists') return '导入外部歌单';
   if (activeTab.value === 'downloaded' && downloadedItems.value.length > 0) return '播放全部';
   if (activeTab.value === 'local') return localItems.value.length > 0 ? '播放全部' : '导入本地';
   if (activeTab.value === 'cached' && cachedItems.value.length > 0) return '播放全部';
@@ -796,6 +871,7 @@ const primaryActionLabel = computed(() => {
 });
 
 const primaryActionIcon = computed(() => {
+  if (activeTab.value === 'playlists') return 'ri-download-cloud-2-line';
   if (activeTab.value === 'local' && localItems.value.length === 0) return 'ri-folder-add-line';
   return 'ri-play-fill';
 });
@@ -839,6 +915,10 @@ const toggleSelectAll = () => {
 
 const handlePrimaryAction = async () => {
   triggerHaptic('medium');
+  if (activeTab.value === 'playlists') {
+    showCrossPlatformImportModal.value = true;
+    return;
+  }
   if (activeTab.value === 'local' && localItems.value.length === 0) {
     await handleImportOrScanLocal();
     return;

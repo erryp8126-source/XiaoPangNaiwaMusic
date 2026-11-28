@@ -38,7 +38,7 @@ import { useSettingsStore } from '@/store/modules/settings';
 import { useUserStore } from '@/store/modules/user';
 import { isAndroid, isElectron, isLyricWindow, isNative } from '@/utils';
 import { dispatchAndroidBackHandlers, onAndroidEvent } from '@/utils/androidBridge';
-import { checkLoginStatus } from '@/utils/auth';
+import { checkLoginStatus, ensureAndroidAuthRestoredSync } from '@/utils/auth';
 import {
   registerPlaybackSearchNavigator,
   registerPlaybackToastSink
@@ -306,7 +306,8 @@ if (!isLyricWindow.value) {
   settingsStore.initializeTheme();
   settingsStore.initializeSystemFonts();
 
-  // 初始化登录状态 - 从 localStorage 恢复用户信息和登录类型
+  // 初始化登录状态 - 先从原生安全存储同步恢复 Cookie，再从 localStorage 恢复用户信息和登录类型
+  ensureAndroidAuthRestoredSync();
   const loginInfo = checkLoginStatus();
   if (loginInfo.isLoggedIn) {
     if (loginInfo.user && !userStore.user) {

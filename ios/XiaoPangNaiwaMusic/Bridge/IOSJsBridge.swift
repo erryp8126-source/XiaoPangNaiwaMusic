@@ -74,7 +74,10 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         let preloadedSecrets = secureStore.preloadKnownSecrets([
             "cloud_sync_github_token",
             "cloud_sync_webdav_password",
-            "cloud_sync_quick_code"
+            "cloud_sync_quick_code",
+            "netease_auth_cookie",
+            "bilibili_auth_cookie",
+            "qqmusic_auth_cookie"
         ])
         let secretsData = (try? JSONSerialization.data(withJSONObject: preloadedSecrets)) ?? Data("{}".utf8)
         let secretsJson = String(data: secretsData, encoding: .utf8) ?? "{}"

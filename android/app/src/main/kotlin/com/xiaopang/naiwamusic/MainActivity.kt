@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.webkit.ConsoleMessage
+import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -291,6 +292,9 @@ class MainActivity : AppCompatActivity() {
             if (!userAgentString.contains("AlgerAndroid")) {
                 userAgentString = "$userAgentString AlgerAndroid/${BuildConfig.VERSION_NAME} Mobile"
             }
+        }
+        runCatching {
+            CookieManager.getInstance().setAcceptCookie(true)
         }
 
         webView.setBackgroundColor(Color.parseColor("#F6FAFD"))

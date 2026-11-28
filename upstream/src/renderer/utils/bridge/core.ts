@@ -193,6 +193,18 @@ export function nativeSecureRemoveSecret(key: string): boolean {
   }
 }
 
+export function getNativeNeteaseCookieFromStore(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    if (typeof window.AlgerAndroid?.getNeteaseCookieFromStore === 'function') {
+      return String(window.AlgerAndroid.getNeteaseCookieFromStore() || '');
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
+
 /**
  * 清空 Web/原生端持久化保存的网易云 Cookie（以及原生后台播放服务缓存的 Cookie）
  * 绝不触碰本地音乐、已下载歌曲和云同步配置

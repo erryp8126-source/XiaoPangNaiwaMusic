@@ -94,6 +94,7 @@ export interface AndroidBridgeInterface {
   secureSetSecret?(key: string, value: string): boolean;
   secureGetSecret?(key: string): string;
   secureRemoveSecret?(key: string): boolean;
+  getNeteaseCookieFromStore?(): string;
   clearNeteaseCookies?(): boolean;
 }
 

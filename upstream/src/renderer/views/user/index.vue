@@ -111,7 +111,10 @@
               </n-tabs>
             </div>
             <n-scrollbar>
-              <div class="mt-4">
+              <div class="pt-3 px-1">
+                <multi-platform-accounts-card hide-primary class="mb-3" />
+              </div>
+              <div class="mt-2">
                 <div
                   v-if="albumLoading && currentTab === 'album'"
                   class="flex h-32 items-center justify-center"
@@ -188,6 +191,7 @@
       :class="setAnimationClass('animate__fadeIn')"
     >
       <login-component @login-success="handleLoginSuccess" />
+      <multi-platform-accounts-card hide-primary class="w-full max-w-[420px] px-4 pb-24" />
     </div>
   </div>
 </template>
@@ -202,6 +206,7 @@ import { useRouter } from 'vue-router';
 import { getUserAlbumSublist, getUserDetail, getUserPlaylist, getUserRecord } from '@/api/user';
 import { navigateToMusicList } from '@/components/common/MusicListNavigator';
 import PlayBottom from '@/components/common/PlayBottom.vue';
+import MultiPlatformAccountsCard from '@/components/account/MultiPlatformAccountsCard.vue';
 import SongItem from '@/components/common/SongItem.vue';
 import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';
 import { usePlayerStore } from '@/store/modules/player';
@@ -695,7 +700,7 @@ html.dark .account-pill-logout {
   }
 
   .login-container {
-    @apply flex justify-center items-center h-full w-full overflow-y-auto;
+    @apply flex flex-col justify-start items-center h-full w-full overflow-y-auto py-4 gap-4;
   }
 }
 

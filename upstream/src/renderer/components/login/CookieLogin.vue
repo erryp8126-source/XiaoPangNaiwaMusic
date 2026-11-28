@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n';
 
 import { getUserDetail } from '@/api/login';
 import { isElectron, setAnimationClass } from '@/utils';
+import { persistNeteaseAuthToken } from '@/utils/auth';
 
 defineOptions({
   name: 'CookieLogin'
@@ -39,6 +40,7 @@ const loginByToken = async () => {
     // 获取用户信息验证token有效性
     const user = await getUserDetail();
     if (user.data && user.data.profile) {
+      persistNeteaseAuthToken(token.value.trim());
       const successMsg = t('login.message.tokenLoginSuccess');
       message.success(successMsg);
       emit('loginSuccess', user.data.profile, 'cookie');
@@ -79,6 +81,7 @@ const handleCookieReceived = async (_event: any, cookieValue: string) => {
     // 验证Cookie有效性
     const user = await getUserDetail();
     if (user.data && user.data.profile) {
+      persistNeteaseAuthToken(cookieValue);
       const successMsg = t('login.message.autoGetCookieSuccess');
       message.success(successMsg);
       emit('loginSuccess', user.data.profile, 'cookie');

@@ -38,6 +38,7 @@ export {
   getNativeAudioCacheMaxMb,
   getNativeCapabilities,
   getNativeLastCrashLog,
+  getNativeNeteaseCookieFromStore,
   invokeAndroidAsync,
   isAndroid,
   isAndroidAudioCached,

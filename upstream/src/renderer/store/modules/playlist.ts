@@ -427,11 +427,14 @@ export const usePlaylistStore = defineStore(
     };
 
     /**
-     * 一键保存当前播放队列为本地自建歌单（与云同步 xiaopang_custom_playlists_v1 打通）
+     * 保存任意曲目列表为本地自建歌单（与云同步 xiaopang_custom_playlists_v1 打通）
      */
-    const saveCurrentQueueAsCustomPlaylist = (name: string): { ok: boolean; count: number; id?: string } => {
+    const saveCustomPlaylist = (
+      name: string,
+      tracks: SongResult[]
+    ): { ok: boolean; count: number; id?: string } => {
       const trimmed = name.trim();
-      if (!trimmed || playList.value.length === 0) {
+      if (!trimmed || !Array.isArray(tracks) || tracks.length === 0) {
         return { ok: false, count: 0 };
       }
       const STORAGE_KEY = 'xiaopang_custom_playlists_v1';
@@ -450,7 +453,7 @@ export const usePlaylistStore = defineStore(
         id,
         name: trimmed,
         updatedAt: Date.now(),
-        tracks: minifySongList(playList.value)
+        tracks: minifySongList(tracks)
       };
       existing.unshift(entry);
       try {
@@ -459,6 +462,13 @@ export const usePlaylistStore = defineStore(
         return { ok: false, count: 0 };
       }
       return { ok: true, count: entry.tracks.length, id };
+    };
+
+    /**
+     * 一键保存当前播放队列为本地自建歌单（与云同步 xiaopang_custom_playlists_v1 打通）
+     */
+    const saveCurrentQueueAsCustomPlaylist = (name: string): { ok: boolean; count: number; id?: string } => {
+      return saveCustomPlaylist(name, playList.value);
     };
 
     /**
@@ -998,6 +1008,7 @@ export const usePlaylistStore = defineStore(
       setPlayList,
       addToNextPlay,
       reorderPlayList,
+      saveCustomPlaylist,
       saveCurrentQueueAsCustomPlaylist,
       removeFromPlayList,
       clearPlayAll,

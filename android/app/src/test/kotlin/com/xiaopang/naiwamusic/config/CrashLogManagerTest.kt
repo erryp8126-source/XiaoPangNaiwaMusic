@@ -15,6 +15,8 @@ class CrashLogManagerTest {
             java.lang.IllegalStateException: Request failed
             Cookie: MUSIC_U=super_secret_cookie_value; __csrf=csrf_secret_123
             Set-Cookie: MUSIC_A=anon_secret_abc; Path=/
+            SESSDATA=bili_sess_secret_999; bili_jct=bili_csrf_888; DedeUserID=12345678
+            qm_keyst=qq_keyst_secret_777; qqmusic_key=qq_music_key_666; p_skey=qq_pskey_555; qrsig=qq_qrsig_444
             Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.secret
             X-Alger-Token: 0123456789abcdef
             SyncCode=NAIWA-7392-K8M4AB sync_failed_id NAIWA-8888-ABCDEF token=ghp_1234567890abcdefghij123456
@@ -26,6 +28,13 @@ class CrashLogManagerTest {
         assertFalse(sanitized.contains("super_secret_cookie_value"))
         assertFalse(sanitized.contains("csrf_secret_123"))
         assertFalse(sanitized.contains("anon_secret_abc"))
+        assertFalse(sanitized.contains("bili_sess_secret_999"))
+        assertFalse(sanitized.contains("bili_csrf_888"))
+        assertFalse(sanitized.contains("12345678"))
+        assertFalse(sanitized.contains("qq_keyst_secret_777"))
+        assertFalse(sanitized.contains("qq_music_key_666"))
+        assertFalse(sanitized.contains("qq_pskey_555"))
+        assertFalse(sanitized.contains("qq_qrsig_444"))
         assertFalse(sanitized.contains("eyJhbGciOiJIUzI1NiJ9"))
         assertFalse(sanitized.contains("0123456789abcdef"))
         assertFalse(sanitized.contains("NAIWA-7392-K8M4AB"))
