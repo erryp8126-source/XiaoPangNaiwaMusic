@@ -14,7 +14,7 @@
     "netease-cloud-music-api-alger": "^4.30.0"
   },
   "devDependencies": {
-    "@netlify/functions": "^6.1.1"
+    "@netlify/functions": "^6.1.2"
   },
   "overrides": {
     "basic-ftp": "^6.2.6",
