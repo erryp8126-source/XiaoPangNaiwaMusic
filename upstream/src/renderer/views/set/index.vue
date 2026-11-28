@@ -88,8 +88,46 @@
     <!-- 内容区域（v-if 保证常用/高级面板不重复挂载监听器与弹窗） -->
     <n-scrollbar ref="scrollbarRef" class="flex-1">
       <div class="w-full mx-auto pb-40 pt-4 page-padding">
-        <!-- 1. 常用设置（默认直接展示：外观/省电、音质/缓存/播放偏好/蓝牙/桌面歌词、云同步） -->
+        <!-- 1. 常用设置（默认直接展示：版本公告条 + 外观/省电、音质/缓存/播放偏好/蓝牙/桌面歌词、云同步） -->
         <div v-if="activeTier === 'common'" class="space-y-6 animate-fade-in">
+          <!-- 版本与更新公告快捷入口 -->
+          <div
+            class="px-4 py-3 rounded-[20px] bg-white dark:bg-[#131316] border border-slate-200/90 dark:border-white/[0.08] shadow-[0_2px_12px_rgba(15,23,42,0.05)] flex items-center justify-between gap-3 flex-wrap"
+          >
+            <div class="flex items-center gap-2.5 min-w-0">
+              <div
+                class="w-9 h-9 rounded-2xl bg-amber-500/12 text-amber-600 dark:text-[#FFC533] flex items-center justify-center flex-shrink-0"
+              >
+                <i class="ri-megaphone-line text-lg"></i>
+              </div>
+              <div class="min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="text-sm font-extrabold text-slate-900 dark:text-[#FAFAFA] whitespace-nowrap">
+                    小庞奶娃音乐
+                  </span>
+                  <span
+                    class="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/12 text-amber-700 dark:bg-amber-500/15 dark:text-[#FFC533] border border-amber-500/20 whitespace-nowrap"
+                  >
+                    v{{ config.version }}
+                  </span>
+                </div>
+                <div class="text-xs text-slate-500 dark:text-zinc-400 truncate mt-0.5">
+                  查看近期新增功能、播放优化与安全更新说明
+                </div>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              class="px-3.5 py-1.5 rounded-full text-xs font-extrabold text-white shadow-sm whitespace-nowrap flex-shrink-0 active:scale-95 transition-all inline-flex items-center gap-1.5"
+              style="background: linear-gradient(135deg, #D97706 0%, #EA580C 100%)"
+              @click="openReleaseAnnouncementFromCommon"
+            >
+              <i class="ri-sparkling-line text-sm"></i>
+              <span>查看更新公告</span>
+            </button>
+          </div>
+
           <basic-tab id="settings-basic" mode="common" />
           <playback-tab id="settings-playback" mode="common" />
           <cloud-sync-tab id="settings-sync" mode="common" />
@@ -148,6 +186,7 @@ import PlayBottom from '@/components/common/PlayBottom.vue';
 import { useCloudSyncStore } from '@/store/modules/cloudSync';
 import { useSettingsStore } from '@/store/modules/settings';
 import { isElectron } from '@/utils';
+import { dispatchOpenReleaseAnnouncement } from '@/utils/announcementPolicy';
 import { formatRelativeSyncTime } from '@/utils/cloudSyncMerge';
 
 import config from '../../../../package.json';
@@ -259,6 +298,10 @@ const switchTier = (tier: SettingsTier) => {
   nextTick(() => {
     scrollbarRef.value?.scrollTo?.({ top: 0, behavior: 'smooth' });
   });
+};
+
+const openReleaseAnnouncementFromCommon = () => {
+  dispatchOpenReleaseAnnouncement();
 };
 
 const jumpToSection = (tier: SettingsTier, anchorId: string) => {

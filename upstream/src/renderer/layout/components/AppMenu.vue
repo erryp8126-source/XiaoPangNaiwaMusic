@@ -130,7 +130,7 @@ const MOBILE_ICON_MAP: Record<string, { normal: string; active: string; shortLab
   '/': { normal: 'ri-compass-3-line', active: 'ri-compass-3-fill', shortLabel: '发现' },
   '/list': { normal: 'ri-play-list-2-line', active: 'ri-play-list-2-fill', shortLabel: '歌单' },
   '/toplist': { normal: 'ri-trophy-line', active: 'ri-trophy-fill', shortLabel: '排行' },
-  '/library': { normal: 'ri-music-2-line', active: 'ri-music-2-fill', shortLabel: '我的音乐' },
+  '/library': { normal: 'ri-music-2-line', active: 'ri-music-2-fill', shortLabel: '我的' },
   '/history': { normal: 'ri-heart-3-line', active: 'ri-heart-3-fill', shortLabel: '收藏' },
   '/user': { normal: 'ri-user-smile-line', active: 'ri-user-smile-fill', shortLabel: '我的' },
   '/album': { normal: 'ri-album-line', active: 'ri-album-fill', shortLabel: '新碟' }
@@ -214,7 +214,8 @@ html.dark .mobile-dock:not(.is-immersive-dark) {
   }
 
   .dock-label {
-    @apply text-[10.5px] font-semibold mt-1 leading-none tracking-tight;
+    @apply text-[10.5px] font-semibold mt-1 leading-none tracking-tight whitespace-nowrap;
+    white-space: nowrap;
   }
 
   &:active .dock-pill {

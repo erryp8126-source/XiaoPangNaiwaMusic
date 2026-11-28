@@ -1,86 +1,96 @@
 <template>
   <div class="my-library-page h-full w-full flex flex-col bg-transparent overflow-hidden">
-    <!-- 顶部标题、账号入口与总存储占用卡片 -->
-    <div class="flex-shrink-0 page-padding pt-3 pb-2 space-y-3">
+    <!-- 顶部标题、账号入口与快捷操作卡片 -->
+    <div class="flex-shrink-0 page-padding pt-2.5 pb-1.5 space-y-2.5">
       <div
-        class="rounded-[22px] p-4 bg-white/88 dark:bg-[#131316]/95 backdrop-blur-xl border border-sky-100/80 dark:border-white/[0.08] shadow-[0_6px_22px_rgba(82,134,168,0.08)] dark:shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
+        class="rounded-[22px] p-3.5 sm:p-4 bg-white/88 dark:bg-[#131316]/95 backdrop-blur-xl border border-sky-100/80 dark:border-white/[0.08] shadow-[0_6px_22px_rgba(82,134,168,0.08)] dark:shadow-[0_8px_24px_rgba(0,0,0,0.45)] space-y-2.5"
       >
-        <div class="flex items-start justify-between gap-3">
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2 flex-wrap">
-              <h1 class="text-lg md:text-xl font-extrabold text-slate-900 dark:text-[#FAFAFA] tracking-tight">
-                我的音乐
-              </h1>
-              <span
-                v-if="invalidFileCount > 0"
-                class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-600 dark:text-rose-300"
-              >
-                {{ invalidFileCount }} 项失效
-              </span>
-            </div>
-            <div class="mt-1 flex items-center gap-2 flex-wrap text-xs text-slate-500 dark:text-[#A1A1AA]">
-              <span>
-                总存储占用
-                <b class="text-slate-800 dark:text-[#FAFAFA] font-extrabold">{{ totalStorageText }}</b>
-              </span>
-              <span class="opacity-40">·</span>
-              <span>已下载 {{ formatBytes(downloadedTotalBytes) }}</span>
-              <span class="opacity-40">·</span>
-              <span>手机本地 {{ formatBytes(localTotalBytes) }}</span>
-              <template v-if="nativeCapabilities.supportsAudioCache">
-                <span class="opacity-40">·</span>
-                <span>缓存 {{ formatBytes(audioCacheBytes) }}</span>
-              </template>
-            </div>
+        <!-- 第一行：标题与轻量账号胶囊 -->
+        <div class="flex items-center justify-between gap-2">
+          <div class="flex items-center gap-2 min-w-0">
+            <h1 class="text-lg md:text-xl font-extrabold text-slate-900 dark:text-[#FAFAFA] tracking-tight whitespace-nowrap">
+              我的音乐
+            </h1>
+            <span
+              v-if="invalidFileCount > 0"
+              class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-600 dark:text-rose-300 whitespace-nowrap"
+            >
+              {{ invalidFileCount }} 项失效
+            </span>
           </div>
 
-          <!-- 账号快捷入口 + 当前分页主操作 -->
-          <div class="flex items-center gap-2 flex-shrink-0">
-            <button
-              type="button"
-              class="account-entry-pill px-2.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 active:scale-95 transition-all bg-slate-100/90 text-slate-700 hover:bg-slate-200/80 dark:bg-[#1C1C22] dark:text-[#FAFAFA] dark:border dark:border-white/[0.08]"
-              @click="goToUserAccount"
-            >
-              <img
-                v-if="userStore.user?.avatarUrl"
-                :src="getImgUrl(userStore.user.avatarUrl, '50y50')"
-                alt=""
-                class="w-4 h-4 rounded-full object-cover"
-              />
-              <i v-else class="ri-user-smile-line text-sm text-amber-500 dark:text-[#FFC533]"></i>
-              <span class="max-w-[72px] truncate">{{ userStore.user?.nickname || '账号' }}</span>
-            </button>
+          <button
+            type="button"
+            class="account-entry-pill px-2.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 flex-shrink-0 whitespace-nowrap active:scale-95 transition-all bg-slate-100/90 text-slate-700 hover:bg-slate-200/80 dark:bg-[#1C1C22] dark:text-[#FAFAFA] dark:border dark:border-white/[0.08]"
+            @click="goToUserAccount"
+          >
+            <img
+              v-if="userStore.user?.avatarUrl"
+              :src="getImgUrl(userStore.user.avatarUrl, '50y50')"
+              alt=""
+              class="w-4 h-4 rounded-full object-cover flex-shrink-0"
+            />
+            <i v-else class="ri-user-smile-line text-sm text-amber-500 dark:text-[#FFC533] flex-shrink-0"></i>
+            <span class="max-w-[76px] truncate">{{ userStore.user?.nickname || '账号' }}</span>
+          </button>
+        </div>
 
-            <button
-              type="button"
-              class="platform-bind-pill px-2.5 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 active:scale-95 transition-all bg-slate-100/90 text-slate-700 hover:bg-slate-200/80 dark:bg-[#1C1C22] dark:text-[#FAFAFA] dark:border dark:border-white/[0.08]"
-              @click="showPlatformBindCardModal = true"
-            >
-              <i class="ri-links-line text-sm text-emerald-500"></i>
-              <span>平台绑定</span>
-              <span
-                v-if="boundExtensionCount > 0"
-                class="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500 text-white"
-              >
-                {{ boundExtensionCount }}
-              </span>
-            </button>
+        <!-- 第二行：横向完整展示存储统计信息 -->
+        <div class="flex items-center gap-x-2 gap-y-1 flex-wrap text-xs text-slate-500 dark:text-[#A1A1AA]">
+          <span class="whitespace-nowrap">
+            总存储占用
+            <b class="text-slate-800 dark:text-[#FAFAFA] font-extrabold">{{ totalStorageText }}</b>
+          </span>
+          <span class="opacity-40">·</span>
+          <span class="whitespace-nowrap">已下载 {{ formatBytes(downloadedTotalBytes) }}</span>
+          <span class="opacity-40">·</span>
+          <span class="whitespace-nowrap">手机本地 {{ formatBytes(localTotalBytes) }}</span>
+          <template v-if="nativeCapabilities.supportsAudioCache">
+            <span class="opacity-40">·</span>
+            <span class="whitespace-nowrap">缓存 {{ formatBytes(audioCacheBytes) }}</span>
+          </template>
+        </div>
 
-            <button
-              v-if="primaryActionLabel"
-              type="button"
-              class="px-3.5 py-2 rounded-full text-xs font-extrabold text-white shadow-md active:scale-95 transition-all flex items-center gap-1.5 flex-shrink-0"
-              style="background: linear-gradient(135deg, #ffc21c 0%, #eb8f00 100%)"
-              @click="handlePrimaryAction"
+        <!-- 第三行：高频快捷操作条（平台绑定 + 导入歌单 + 分页主操作） -->
+        <div class="flex items-center flex-wrap gap-2">
+          <button
+            type="button"
+            class="platform-bind-pill px-3 py-1.5 rounded-full text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap active:scale-95 transition-all bg-slate-100/90 text-slate-700 hover:bg-slate-200/80 dark:bg-[#1C1C22] dark:text-[#FAFAFA] dark:border dark:border-white/[0.08]"
+            @click="showPlatformBindCardModal = true"
+          >
+            <i class="ri-links-line text-sm text-emerald-500 flex-shrink-0"></i>
+            <span>平台绑定</span>
+            <span
+              v-if="boundExtensionCount > 0"
+              class="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500 text-white leading-none"
             >
-              <i :class="primaryActionIcon" class="text-sm"></i>
-              <span>{{ primaryActionLabel }}</span>
-            </button>
-          </div>
+              {{ boundExtensionCount }}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            class="import-playlist-pill px-3.5 py-1.5 rounded-full text-xs font-extrabold text-white shadow-sm inline-flex items-center gap-1.5 whitespace-nowrap active:scale-95 transition-all"
+            style="background: linear-gradient(135deg, #ffc21c 0%, #eb8f00 100%)"
+            @click="openCrossPlatformImport"
+          >
+            <i class="ri-download-cloud-2-line text-sm flex-shrink-0"></i>
+            <span>导入歌单</span>
+          </button>
+
+          <button
+            v-if="primaryActionLabel && activeTab !== 'playlists'"
+            type="button"
+            class="px-3 py-1.5 rounded-full text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap active:scale-95 transition-all bg-amber-500/12 text-amber-700 hover:bg-amber-500/20 dark:bg-amber-500/15 dark:text-[#FFC533] border border-amber-500/25"
+            @click="handlePrimaryAction"
+          >
+            <i :class="primaryActionIcon" class="text-sm flex-shrink-0"></i>
+            <span>{{ primaryActionLabel }}</span>
+          </button>
         </div>
 
         <!-- 6 分类统一标签栏：收藏 · 已下载 · 手机音乐 · 已缓存 · 最近播放 · 歌单 -->
-        <div class="mt-3 flex items-center gap-1.5 overflow-x-auto scrollbar-hide pb-0.5">
+        <div class="mt-2.5 flex items-center gap-1.5 overflow-x-auto scrollbar-hide pb-0.5">
           <button
             v-for="tab in libraryTabs"
             :key="tab.id"
@@ -879,6 +889,11 @@ const primaryActionIcon = computed(() => {
 const goToUserAccount = () => {
   triggerHaptic('light');
   void router.push('/user');
+};
+
+const openCrossPlatformImport = () => {
+  triggerHaptic('light');
+  showCrossPlatformImportModal.value = true;
 };
 
 const switchTab = (tab: LibraryTab) => {

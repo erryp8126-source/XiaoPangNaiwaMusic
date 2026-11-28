@@ -3556,15 +3556,35 @@ test("iteration 1 UX: unified playback feedback throttling, offline quiet mode, 
     path.join(repoRoot, "upstream/src/renderer/layout/components/AppMenu.vue"),
     "utf-8"
   );
-  assert.match(appMenuSrc, /'\/library'[\s\S]*我的音乐/);
+  assert.match(appMenuSrc, /'\/library'[\s\S]*shortLabel:\s*'我的'/);
+  assert.match(appMenuSrc, /\.dock-label[\s\S]*white-space:\s*nowrap/);
 
   const librarySrc = fs.readFileSync(
     path.join(repoRoot, "upstream/src/renderer/views/library/MyMusicLibrary.vue"),
     "utf-8"
   );
-  for (const token of ["我的音乐", "手机音乐", "歌单", "account-entry-pill", "xiaopang_custom_playlists_v1"]) {
+  for (const token of [
+    "我的音乐",
+    "手机音乐",
+    "歌单",
+    "account-entry-pill",
+    "xiaopang_custom_playlists_v1",
+    "平台绑定",
+    "导入歌单",
+    "whitespace-nowrap",
+    "flex-wrap",
+  ]) {
     assert.ok(librarySrc.includes(token), `MyMusicLibrary.vue must include "${token}"`);
   }
+
+  const settingsIndexSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/set/index.vue"),
+    "utf-8"
+  );
+  assert.match(settingsIndexSrc, /查看更新公告/);
+  assert.match(settingsIndexSrc, /dispatchOpenReleaseAnnouncement/);
+  assert.doesNotMatch(settingsIndexSrc, /:global\(\.dark\)/);
+  assert.doesNotMatch(settingsIndexSrc, /v-html\s*=/);
 
   const playBarSrc = fs.readFileSync(
     path.join(repoRoot, "upstream/src/renderer/components/player/PlayBar.vue"),
