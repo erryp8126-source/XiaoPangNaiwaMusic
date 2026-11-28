@@ -195,7 +195,8 @@ class EmbeddedHttpServer(
     private fun handleNeteaseApi(session: IHTTPSession, uri: String): Response {
         val params = collectParams(session)
         params.remove("token")
-        val headerCookie = session.headers["cookie"]
+        val headerCookie = session.headers["x-netease-cookie"]?.takeIf { it.isNotBlank() }
+            ?: session.headers["cookie"]
         if (params["cookie"].isNullOrBlank() && !headerCookie.isNullOrBlank() && params["noCookie"] != "true") {
             params["cookie"] = headerCookie
         }
@@ -446,7 +447,7 @@ class EmbeddedHttpServer(
             resp.addHeader("Vary", "Origin")
         }
         resp.addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-        resp.addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Cookie, X-Alger-Token")
+        resp.addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Cookie, X-Netease-Cookie, X-Alger-Token")
         resp.addHeader("Cache-Control", "no-store")
         return resp
     }

@@ -876,15 +876,30 @@ final class AudioPlayerManager: NSObject {
 
         // 1. 单曲循环：直接在 iOS 原生层瞬时重播
         if nativePlayMode == 1, let p = player {
-            p.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            let loopInstanceId = currentInstanceId
+            p.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak p] _ in
                 DispatchQueue.main.async {
-                    guard let self = self, !self.userPaused else { return }
+                    guard let self = self,
+                          let p = p,
+                          self.player === p,
+                          self.currentInstanceId == loopInstanceId,
+                          !self.userPaused else { return }
                     self.desiredAutoplay = true
                     self.isTransitioningTrack = false
                     self.endTransitionBackgroundTask()
-                    p.playImmediately(atRate: max(0.25, min(4.0, self.desiredRate)))
                     self.cachedPositionSec = 0
-                    self.cachedIsPlaying = true
+                    self.cachedIsPlaying = false
+                    p.playImmediately(atRate: max(0.25, min(4.0, self.desiredRate)))
+                    if p.timeControlStatus == .playing {
+                        self.cachedIsPlaying = true
+                        ListeningStatsTracker.shared.onPlayStateChanged(
+                            playing: true,
+                            songId: self.currentSongId,
+                            title: self.currentTitle,
+                            artist: self.currentArtist,
+                            cover: self.currentCoverUrl
+                        )
+                    }
                     self.emitAudioEvent(type: "replayed")
                     self.updateNowPlayingInfo()
                 }
@@ -1125,14 +1140,33 @@ final class AudioPlayerManager: NSObject {
             guard !workingQueue.isEmpty else {
                 DispatchQueue.main.async {
                     if !self.userPaused && self.currentInstanceId == tokenId, let p = self.player {
-                        p.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
-                        p.playImmediately(atRate: max(0.25, min(4.0, self.desiredRate)))
-                        self.cachedPositionSec = 0
-                        self.cachedIsPlaying = true
-                        self.isTransitioningTrack = false
-                        self.endTransitionBackgroundTask()
-                        self.emitAudioEvent(type: "replayed")
-                        self.updateNowPlayingInfo()
+                        let loopInstanceId = tokenId
+                        p.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak p] _ in
+                            DispatchQueue.main.async {
+                                guard let self = self,
+                                      let p = p,
+                                      self.player === p,
+                                      self.currentInstanceId == loopInstanceId,
+                                      !self.userPaused else { return }
+                                self.cachedPositionSec = 0
+                                self.cachedIsPlaying = false
+                                self.isTransitioningTrack = false
+                                self.endTransitionBackgroundTask()
+                                p.playImmediately(atRate: max(0.25, min(4.0, self.desiredRate)))
+                                if p.timeControlStatus == .playing {
+                                    self.cachedIsPlaying = true
+                                    ListeningStatsTracker.shared.onPlayStateChanged(
+                                        playing: true,
+                                        songId: self.currentSongId,
+                                        title: self.currentTitle,
+                                        artist: self.currentArtist,
+                                        cover: self.currentCoverUrl
+                                    )
+                                }
+                                self.emitAudioEvent(type: "replayed")
+                                self.updateNowPlayingInfo()
+                            }
+                        }
                     } else {
                         self.isTransitioningTrack = false
                         self.endTransitionBackgroundTask()
@@ -1180,14 +1214,33 @@ final class AudioPlayerManager: NSObject {
 
             DispatchQueue.main.async {
                 if !self.userPaused && self.currentInstanceId == tokenId && count == 1, let p = self.player {
-                    p.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
-                    p.playImmediately(atRate: max(0.25, min(4.0, self.desiredRate)))
-                    self.cachedPositionSec = 0
-                    self.cachedIsPlaying = true
-                    self.isTransitioningTrack = false
-                    self.endTransitionBackgroundTask()
-                    self.emitAudioEvent(type: "replayed")
-                    self.updateNowPlayingInfo()
+                    let loopInstanceId = tokenId
+                    p.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak p] _ in
+                        DispatchQueue.main.async {
+                            guard let self = self,
+                                  let p = p,
+                                  self.player === p,
+                                  self.currentInstanceId == loopInstanceId,
+                                  !self.userPaused else { return }
+                            self.cachedPositionSec = 0
+                            self.cachedIsPlaying = false
+                            self.isTransitioningTrack = false
+                            self.endTransitionBackgroundTask()
+                            p.playImmediately(atRate: max(0.25, min(4.0, self.desiredRate)))
+                            if p.timeControlStatus == .playing {
+                                self.cachedIsPlaying = true
+                                ListeningStatsTracker.shared.onPlayStateChanged(
+                                    playing: true,
+                                    songId: self.currentSongId,
+                                    title: self.currentTitle,
+                                    artist: self.currentArtist,
+                                    cover: self.currentCoverUrl
+                                )
+                            }
+                            self.emitAudioEvent(type: "replayed")
+                            self.updateNowPlayingInfo()
+                        }
+                    }
                 } else {
                     self.isTransitioningTrack = false
                     self.endTransitionBackgroundTask()
@@ -1333,12 +1386,26 @@ final class AudioPlayerManager: NSObject {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
+    internal static func appendCoverSizeParam(_ urlStr: String) -> String {
+        guard urlStr.hasPrefix("http"),
+              !urlStr.contains("127.0.0.1"),
+              !urlStr.contains("param=") else {
+            return urlStr
+        }
+        if let hashIdx = urlStr.firstIndex(of: "#") {
+            let base = String(urlStr[..<hashIdx])
+            let frag = String(urlStr[hashIdx...])
+            let sep = base.contains("?") ? "&" : "?"
+            return "\(base)\(sep)param=300y300\(frag)"
+        }
+        let separator = urlStr.contains("?") ? "&" : "?"
+        return "\(urlStr)\(separator)param=300y300"
+    }
+
     private func fetchCoverArtworkAsync(urlStr: String, instanceId: Int) {
         currentArtwork = nil
         guard !urlStr.isEmpty, !urlStr.hasPrefix("/images/") else { return }
-        let finalStr = (urlStr.hasPrefix("http") && !urlStr.contains("127.0.0.1") && !urlStr.contains("param="))
-            ? "\(urlStr)?param=300y300"
-            : urlStr
+        let finalStr = Self.appendCoverSizeParam(urlStr)
         guard let url = URL(string: finalStr) else { return }
 
         URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in

@@ -8,6 +8,7 @@ import {
   attachAuthCookieToRequestConfig,
   buildLoginStatusVerifyConfig,
   createHttp301SessionGuard,
+  redactSensitiveErrorForLog,
   SESSION_EXPIRED_TOAST_TEXT
 } from '@/utils/authSession';
 import { showFloatingToast } from '@/utils/shortcutToast';
@@ -66,6 +67,16 @@ const MAX_RETRIES = 1;
 // 重试延迟（毫秒）
 const RETRY_DELAY = 500;
 
+const shouldUseCookieHeader = (urlBase: string | undefined): boolean => {
+  if (isElectron) return false;
+  if (isAndroid()) return true;
+  const clean = String(urlBase || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\/+$/, '');
+  return clean === '/api' || /^https:\/\/[a-z0-9.-]+\.netlify\.app\/api$/.test(clean);
+};
+
 // 请求拦截器
 request.interceptors.request.use(
   (config: CustomAxiosRequestConfig) => {
@@ -95,7 +106,9 @@ request.interceptors.request.use(
       ensureAndroidAuthRestoredSync();
     }
     const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
-    attachAuthCookieToRequestConfig(config, token);
+    attachAuthCookieToRequestConfig(config, token, {
+      preferHeader: shouldUseCookieHeader(config.baseURL)
+    });
     if (isElectron) {
       const proxyConfig = setData?.proxyConfig;
       if (proxyConfig?.enable && ['http', 'https'].includes(proxyConfig?.protocol)) {
@@ -177,7 +190,7 @@ request.interceptors.response.use(
     return response;
   },
   async (error) => {
-    console.error('error', error);
+    console.error('[request] error:', redactSensitiveErrorForLog(error));
     const config = error.config as CustomAxiosRequestConfig;
 
     // 离线安静模式：断网时立即快速失败并打标，避免无意义重试与重复弹窗

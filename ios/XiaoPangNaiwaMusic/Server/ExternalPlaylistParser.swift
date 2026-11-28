@@ -129,9 +129,8 @@ final class ExternalPlaylistParser {
                 if let id = disstid,
                    let apiUrl = URL(string: "https://c.y.qq.com/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg?type=1&json=1&utf8=1&onlysong=0&new_format=1&disstid=\(id)&format=json&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq.json&needNewCode=0"),
                    let apiText = try? fetchBoundedText(url: apiUrl, extraHeaders: ["Referer": "https://y.qq.com/"]).body,
-                   let start = apiText.firstIndex(of: "{"),
-                   let end = apiText.lastIndex(of: "}"),
-                   let data = String(apiText[start...end]).data(using: .utf8),
+                   let jsonSlice = Self.extractJsonObjectSlice(from: apiText),
+                   let data = jsonSlice.data(using: .utf8),
                    let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                    let cd = (root["cdlist"] as? [[String: Any]])?.first {
                     playlistName = sanitizePlainText(cd["dissname"] as? String ?? "", maxLen: 80)
@@ -510,6 +509,15 @@ final class ExternalPlaylistParser {
             return nil
         }
         return String(text[range])
+    }
+
+    internal static func extractJsonObjectSlice(from text: String) -> String? {
+        guard let start = text.firstIndex(of: "{"),
+              let end = text.lastIndex(of: "}"),
+              start <= end else {
+            return nil
+        }
+        return String(text[start...end])
     }
 
     private func jsonString(_ obj: [String: Any]) -> String {

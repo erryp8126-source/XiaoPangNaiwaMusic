@@ -163,16 +163,39 @@ enum SafeHttpGuard {
     }
 
     /// 校验协议、域名白名单，并解析该主机名对应的全部 IPv4/IPv6 地址，拒绝任意私网/回环/链路本地/组播/未指定地址
-    static func validateUrlAndResolve(_ url: URL, allowedSuffixes: Set<String>) -> Bool {
-        return validateResolvedUrl(url, allowedSuffixes: allowedSuffixes)
+    static func validateUrlAndResolve(
+        _ url: URL,
+        allowedSuffixes: Set<String>,
+        requireHttps: Bool = false
+    ) -> Bool {
+        return validateResolvedUrl(url, allowedSuffixes: allowedSuffixes, requireHttps: requireHttps)
+    }
+
+    /// 仅校验协议与域名白名单语法（不发起 DNS 查询，供单元测试与语法预检使用）
+    internal static func validateUrlSyntax(
+        _ url: URL,
+        allowedSuffixes: Set<String>,
+        requireHttps: Bool = false
+    ) -> Bool {
+        guard let scheme = url.scheme?.lowercased(),
+              requireHttps ? (scheme == "https") : (scheme == "http" || scheme == "https") else {
+            return false
+        }
+        guard let host = url.host?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines),
+              !host.isEmpty else {
+            return false
+        }
+        return isAllowedDomain(host, allowedSuffixes: allowedSuffixes)
     }
 
     private static func validateResolvedUrl(
         _ url: URL,
         allowedSuffixes: Set<String>?,
-        blockedSuffixes: Set<String>? = nil
+        blockedSuffixes: Set<String>? = nil,
+        requireHttps: Bool = false
     ) -> Bool {
-        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+        guard let scheme = url.scheme?.lowercased(),
+              requireHttps ? (scheme == "https") : (scheme == "http" || scheme == "https") else {
             return false
         }
         guard let host = url.host?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines),
@@ -228,17 +251,23 @@ final class SafeRedirectSessionDelegate: NSObject, URLSessionTaskDelegate {
     private let allowedSuffixes: Set<String>?
     private let blockedSuffixes: Set<String>?
     private let maxRedirects: Int
+    private let requireHttps: Bool
+    private let onHopResponse: ((HTTPURLResponse) -> Void)?
     private let lock = NSLock()
     private var hopCounts: [Int: Int] = [:]
 
     init(
         allowedSuffixes: Set<String>?,
         blockedSuffixes: Set<String>? = nil,
-        maxRedirects: Int = SafeHttpGuard.maxRedirects
+        maxRedirects: Int = SafeHttpGuard.maxRedirects,
+        requireHttps: Bool = false,
+        onHopResponse: ((HTTPURLResponse) -> Void)? = nil
     ) {
         self.allowedSuffixes = allowedSuffixes
         self.blockedSuffixes = blockedSuffixes
         self.maxRedirects = maxRedirects
+        self.requireHttps = requireHttps
+        self.onHopResponse = onHopResponse
         super.init()
     }
 
@@ -249,6 +278,8 @@ final class SafeRedirectSessionDelegate: NSObject, URLSessionTaskDelegate {
         newRequest request: URLRequest,
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
+        onHopResponse?(response)
+
         guard Self.allowedRedirectCodes.contains(response.statusCode),
               let nextUrl = request.url else {
             completionHandler(nil)
@@ -267,7 +298,13 @@ final class SafeRedirectSessionDelegate: NSObject, URLSessionTaskDelegate {
 
         let isAllowed: Bool
         if let allowedSuffixes = allowedSuffixes {
-            isAllowed = SafeHttpGuard.validateUrlAndResolve(nextUrl, allowedSuffixes: allowedSuffixes)
+            isAllowed = SafeHttpGuard.validateUrlAndResolve(
+                nextUrl,
+                allowedSuffixes: allowedSuffixes,
+                requireHttps: requireHttps
+            )
+        } else if requireHttps && nextUrl.scheme?.lowercased() != "https" {
+            isAllowed = false
         } else if let blockedSuffixes = blockedSuffixes {
             isAllowed = SafeHttpGuard.validateCustomLxUrlAndResolve(nextUrl, blockedSuffixes: blockedSuffixes)
         } else {

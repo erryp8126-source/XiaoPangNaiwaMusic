@@ -10,19 +10,83 @@ import UIKit
 /// 2. CORS 严格仅允许本机回环同源，不再反射任意 Origin
 /// 3. `/local-file` 与 `/local-cover` 严格校验音频扩展名与 Documents 规范化目录边界
 final class LocalHttpServer {
+    internal static let maxHeaderBytes = 16 * 1024
+    internal static let maxBodyBytes = 16 * 1024 * 1024
+    internal static let connectionReceiveTimeoutSec: TimeInterval = 15.0
+    private static let fileStreamChunkBytes = 256 * 1024
     private static let allowedAudioExts: Set<String> = [
         "mp3", "flac", "m4a", "aac", "wav", "ogg", "oga", "opus", "alac"
     ]
 
+    internal enum RequestFrameEvaluation: Equatable {
+        case needMoreHeaders
+        case needMoreBody(expectedTotal: Int)
+        case complete(expectedTotal: Int)
+        case reject(status: Int, message: String)
+    }
+
+    internal enum ByteRangeResult: Equatable {
+        case full
+        case partial(start: Int64, end: Int64)
+        case unsatisfiable
+    }
+
+    private final class ConnectionReceiveGuard {
+        private let lock = NSLock()
+        private var finished = false
+        private var timeoutWork: DispatchWorkItem?
+
+        func attachTimeout(_ work: DispatchWorkItem) {
+            lock.lock()
+            if finished {
+                lock.unlock()
+                work.cancel()
+                return
+            }
+            timeoutWork = work
+            lock.unlock()
+        }
+
+        func markFinished() -> Bool {
+            lock.lock()
+            if finished {
+                lock.unlock()
+                return false
+            }
+            finished = true
+            let work = timeoutWork
+            timeoutWork = nil
+            lock.unlock()
+            work?.cancel()
+            return true
+        }
+    }
+
     private let ncmClient: NeteaseApiClient
     private let unblockEngine: MusicUnblockEngine
     private let externalPlaylistParser: ExternalPlaylistParser
-    private let queue = DispatchQueue(label: "com.xiaopang.naiwamusic.httpserver", attributes: .concurrent)
+    private let platformAuthProxy = PlatformAuthProxy()
+    private let connectionQueue = DispatchQueue(label: "com.xiaopang.naiwamusic.httpserver", attributes: .concurrent)
+    private let lifecycleQueue = DispatchQueue(label: "com.xiaopang.naiwamusic.httpserver.lifecycle")
+    private let stateLock = NSLock()
+    private let lifecycleLock = NSLock()
 
     let authToken: String
-    private var listener: NWListener?
-    private(set) var port: Int = 30488
-    private(set) var isRunning: Bool = false
+    private var _listener: NWListener?
+    private var _port: Int = 30488
+    private var _isRunning: Bool = false
+
+    var port: Int {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return _port
+    }
+
+    var isRunning: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return _isRunning
+    }
 
     init(ncmClient: NeteaseApiClient, unblockEngine: MusicUnblockEngine) {
         self.ncmClient = ncmClient
@@ -43,56 +107,113 @@ final class LocalHttpServer {
 
     @discardableResult
     func start(preferredPort: Int = 30488) -> Int {
-        for candidate in preferredPort...(preferredPort + 10) {
-            if tryStart(on: UInt16(candidate)) {
-                self.port = candidate
-                self.isRunning = true
-                return candidate
-            }
-        }
-        self.isRunning = false
-        return -1
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        return startLocked(preferredPort: preferredPort)
     }
 
     func ensureAlive() {
-        if !isRunning || listener == nil {
-            _ = start(preferredPort: port)
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        stateLock.lock()
+        let alive = _isRunning && _listener != nil
+        let currentPort = _port
+        stateLock.unlock()
+        if !alive {
+            _ = startLocked(preferredPort: currentPort)
         }
     }
 
     func stop() {
-        listener?.cancel()
-        listener = nil
-        isRunning = false
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        stopLocked()
     }
 
-    private func tryStart(on portValue: UInt16) -> Bool {
+    private func stopLocked() {
+        stateLock.lock()
+        let prevListener = _listener
+        _listener = nil
+        _isRunning = false
+        stateLock.unlock()
+        prevListener?.cancel()
+    }
+
+    private func startLocked(preferredPort: Int) -> Int {
+        let totalBudgetDeadline = Date().addingTimeInterval(3.0)
+        for candidate in preferredPort...(preferredPort + 10) {
+            let remaining = totalBudgetDeadline.timeIntervalSinceNow
+            if remaining <= 0.05 { break }
+            let perPortTimeout = min(0.5, remaining)
+            if tryStart(on: UInt16(candidate), timeoutSeconds: perPortTimeout) {
+                stateLock.lock()
+                _port = candidate
+                _isRunning = true
+                stateLock.unlock()
+                return candidate
+            }
+        }
+        stateLock.lock()
+        _isRunning = false
+        stateLock.unlock()
+        return -1
+    }
+
+    private func tryStart(on portValue: UInt16, timeoutSeconds: TimeInterval) -> Bool {
         guard let nwPort = NWEndpoint.Port(rawValue: portValue) else { return false }
+        stopLocked()
+
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
         params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: nwPort)
 
         guard let newListener = try? NWListener(using: params) else { return false }
 
+        stateLock.lock()
+        _listener = newListener
+        stateLock.unlock()
+
         let sem = DispatchSemaphore(value: 0)
+        let attemptLock = NSLock()
         var started = false
         var resolved = false
 
         newListener.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
+                if let self = self {
+                    self.stateLock.lock()
+                    if self._listener === newListener {
+                        self._isRunning = true
+                    }
+                    self.stateLock.unlock()
+                }
+                attemptLock.lock()
                 if !resolved {
                     resolved = true
                     started = true
+                    attemptLock.unlock()
                     sem.signal()
+                } else {
+                    attemptLock.unlock()
                 }
-                self?.isRunning = true
             case .failed, .cancelled:
-                self?.isRunning = false
+                if let self = self {
+                    self.stateLock.lock()
+                    if self._listener === newListener {
+                        self._isRunning = false
+                        self._listener = nil
+                    }
+                    self.stateLock.unlock()
+                }
+                attemptLock.lock()
                 if !resolved {
                     resolved = true
                     started = false
+                    attemptLock.unlock()
                     sem.signal()
+                } else {
+                    attemptLock.unlock()
                 }
             default:
                 break
@@ -103,19 +224,37 @@ final class LocalHttpServer {
             self?.handleConnection(conn)
         }
 
-        newListener.start(queue: queue)
-        _ = sem.wait(timeout: .now() + 2.0)
+        newListener.start(queue: lifecycleQueue)
+        _ = sem.wait(timeout: .now() + max(0.1, timeoutSeconds))
 
-        if started {
-            self.listener = newListener
+        attemptLock.lock()
+        let didStart = started
+        if !resolved {
+            resolved = true
+        }
+        attemptLock.unlock()
+
+        if didStart {
             return true
         } else {
+            stateLock.lock()
+            if _listener === newListener {
+                _listener = nil
+                _isRunning = false
+            }
+            stateLock.unlock()
             newListener.cancel()
             return false
         }
     }
 
     // MARK: - Connection & HTTP/1.1 Parsing
+
+    private struct FileStreamDescriptor {
+        let fileUrl: URL
+        let offset: Int64
+        let length: Int64
+    }
 
     private struct HttpRequest {
         let method: String
@@ -132,21 +271,139 @@ final class LocalHttpServer {
         var headers: [String: String] = [:]
         var multiHeaders: [(String, String)] = []
         let body: Data
+        var streamFile: FileStreamDescriptor? = nil
+    }
+
+    internal static func evaluateIncomingRequestFrame(
+        buffer: Data,
+        maxHeaderBytes: Int = LocalHttpServer.maxHeaderBytes,
+        maxBodyBytes: Int = LocalHttpServer.maxBodyBytes
+    ) -> RequestFrameEvaluation {
+        let sep = Data("\r\n\r\n".utf8)
+        guard let range = buffer.range(of: sep) else {
+            if buffer.count > maxHeaderBytes {
+                return .reject(status: 431, message: "Request Header Fields Too Large")
+            }
+            return .needMoreHeaders
+        }
+
+        let headerByteCount = buffer.distance(from: buffer.startIndex, to: range.lowerBound)
+        if headerByteCount > maxHeaderBytes {
+            return .reject(status: 431, message: "Request Header Fields Too Large")
+        }
+
+        guard let headerStr = String(data: buffer[..<range.lowerBound], encoding: .utf8) else {
+            return .reject(status: 400, message: "Malformed HTTP Headers")
+        }
+
+        var declaredContentLength: Int?
+        for line in headerStr.components(separatedBy: "\r\n").dropFirst() {
+            if line.isEmpty { continue }
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let k = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+            let v = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            if k == "transfer-encoding" {
+                if !v.isEmpty {
+                    return .reject(status: 501, message: "Transfer-Encoding Not Supported")
+                }
+            } else if k == "content-length" {
+                guard !v.isEmpty, v.allSatisfy({ $0.isASCII && $0.isNumber }) else {
+                    return .reject(status: 400, message: "Invalid Content-Length")
+                }
+                guard let parsedLen = Int(v), parsedLen <= maxBodyBytes else {
+                    return .reject(status: 413, message: "Payload Too Large")
+                }
+                if let existing = declaredContentLength, existing != parsedLen {
+                    return .reject(status: 400, message: "Conflicting Content-Length")
+                }
+                declaredContentLength = parsedLen
+            }
+        }
+
+        let contentLength = declaredContentLength ?? 0
+        let headerEndOffset = buffer.distance(from: buffer.startIndex, to: range.upperBound)
+        let (total, overflow) = headerEndOffset.addingReportingOverflow(contentLength)
+        guard !overflow, total >= headerEndOffset else {
+            return .reject(status: 413, message: "Payload Too Large")
+        }
+        if buffer.count >= total {
+            return .complete(expectedTotal: total)
+        }
+        return .needMoreBody(expectedTotal: total)
+    }
+
+    internal static func parseByteRange(header: String?, totalLength: Int64) -> ByteRangeResult {
+        guard totalLength > 0 else {
+            return header == nil ? .full : .unsatisfiable
+        }
+        guard let rawHeader = header?.trimmingCharacters(in: .whitespacesAndNewlines), !rawHeader.isEmpty else {
+            return .full
+        }
+        guard rawHeader.lowercased().hasPrefix("bytes=") else {
+            return .full
+        }
+        let spec = String(rawHeader.dropFirst(6))
+            .split(separator: ",", maxSplits: 1, omittingEmptySubsequences: false)
+            .first
+            .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        let parts = spec.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return .unsatisfiable }
+
+        let startStr = String(parts[0]).trimmingCharacters(in: .whitespaces)
+        let endStr = String(parts[1]).trimmingCharacters(in: .whitespaces)
+
+        if startStr.isEmpty {
+            guard !endStr.isEmpty,
+                  endStr.allSatisfy({ $0.isASCII && $0.isNumber }),
+                  let suffixLen = Int64(endStr),
+                  suffixLen > 0 else {
+                return .unsatisfiable
+            }
+            let start = max(0, totalLength - suffixLen)
+            return .partial(start: start, end: totalLength - 1)
+        }
+
+        guard startStr.allSatisfy({ $0.isASCII && $0.isNumber }),
+              let start = Int64(startStr),
+              start >= 0,
+              start < totalLength else {
+            return .unsatisfiable
+        }
+
+        if endStr.isEmpty {
+            return .partial(start: start, end: totalLength - 1)
+        }
+
+        guard endStr.allSatisfy({ $0.isASCII && $0.isNumber }),
+              let rawEnd = Int64(endStr),
+              rawEnd >= start else {
+            return .unsatisfiable
+        }
+        let end = min(rawEnd, totalLength - 1)
+        return .partial(start: start, end: end)
     }
 
     private func handleConnection(_ conn: NWConnection) {
-        conn.start(queue: queue)
-        receiveFullRequest(conn: conn, accumulated: Data(), expectedTotal: nil)
+        let receiveGuard = ConnectionReceiveGuard()
+        let timeoutWork = DispatchWorkItem { [weak conn] in
+            if receiveGuard.markFinished() {
+                conn?.cancel()
+            }
+        }
+        receiveGuard.attachTimeout(timeoutWork)
+        connectionQueue.asyncAfter(deadline: .now() + Self.connectionReceiveTimeoutSec, execute: timeoutWork)
+        conn.start(queue: connectionQueue)
+        receiveFullRequest(conn: conn, accumulated: Data(), receiveGuard: receiveGuard)
     }
 
-    private func receiveFullRequest(conn: NWConnection, accumulated: Data, expectedTotal: Int?) {
+    private func receiveFullRequest(conn: NWConnection, accumulated: Data, receiveGuard: ConnectionReceiveGuard) {
         conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else {
-                conn.cancel()
+                if receiveGuard.markFinished() { conn.cancel() }
                 return
             }
             if error != nil {
-                conn.cancel()
+                if receiveGuard.markFinished() { conn.cancel() }
                 return
             }
 
@@ -155,38 +412,41 @@ final class LocalHttpServer {
                 buf.append(chunk)
             }
 
-            let sep = Data("\r\n\r\n".utf8)
-            var targetLen = expectedTotal
-            if targetLen == nil, let range = buf.range(of: sep) {
-                let headerStr = String(data: buf[..<range.lowerBound], encoding: .utf8) ?? ""
-                var contentLength = 0
-                for line in headerStr.components(separatedBy: "\r\n").dropFirst() {
-                    if let colon = line.firstIndex(of: ":") {
-                        let k = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
-                        if k == "content-length" {
-                            let v = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-                            contentLength = Int(v) ?? 0
+            if buf.count > Self.maxHeaderBytes + 4 + Self.maxBodyBytes {
+                if receiveGuard.markFinished() {
+                    let resp = self.jsonResponse(status: 413, obj: ["code": 413, "msg": "Payload Too Large"])
+                    self.sendHttpResponse(resp, conn: conn)
+                }
+                return
+            }
+
+            switch Self.evaluateIncomingRequestFrame(buffer: buf) {
+            case .reject(let status, let message):
+                if receiveGuard.markFinished() {
+                    let resp = self.jsonResponse(status: status, obj: ["code": status, "msg": message])
+                    self.sendHttpResponse(resp, conn: conn)
+                }
+                return
+            case .complete(let expectedTotal):
+                if receiveGuard.markFinished() {
+                    let exact = Data(buf.prefix(expectedTotal))
+                    self.processHttpBuffer(exact, conn: conn)
+                }
+                return
+            case .needMoreHeaders, .needMoreBody:
+                if isComplete {
+                    if receiveGuard.markFinished() {
+                        if buf.isEmpty {
+                            conn.cancel()
+                        } else {
+                            let resp = self.jsonResponse(status: 400, obj: ["code": 400, "msg": "Incomplete HTTP Request"])
+                            self.sendHttpResponse(resp, conn: conn)
                         }
                     }
+                    return
                 }
-                targetLen = range.upperBound + contentLength
+                self.receiveFullRequest(conn: conn, accumulated: buf, receiveGuard: receiveGuard)
             }
-
-            if let total = targetLen, buf.count >= total {
-                self.processHttpBuffer(buf, conn: conn)
-                return
-            }
-
-            if isComplete {
-                if !buf.isEmpty {
-                    self.processHttpBuffer(buf, conn: conn)
-                } else {
-                    conn.cancel()
-                }
-                return
-            }
-
-            self.receiveFullRequest(conn: conn, accumulated: buf, expectedTotal: targetLen)
         }
     }
 
@@ -251,7 +511,7 @@ final class LocalHttpServer {
             resp.headers["Vary"] = "Origin"
         }
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Cookie, Range, X-Alger-Token"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Cookie, X-Netease-Cookie, Range, X-Alger-Token"
         if resp.headers["Cache-Control"] == nil {
             resp.headers["Cache-Control"] = "no-store"
         }
@@ -294,6 +554,50 @@ final class LocalHttpServer {
     }
 
     private func sendHttpResponse(_ resp: HttpResponse, conn: NWConnection) {
+        if let stream = resp.streamFile {
+            let fh: FileHandle
+            do {
+                fh = try FileHandle(forReadingFrom: stream.fileUrl)
+                if #available(iOS 13.0, *) {
+                    try fh.seek(toOffset: UInt64(max(0, stream.offset)))
+                } else {
+                    fh.seek(toFileOffset: UInt64(max(0, stream.offset)))
+                }
+            } catch {
+                let notFound = HttpResponse(
+                    status: 404,
+                    statusText: httpStatusText(404),
+                    contentType: "text/plain",
+                    body: Data("File not found".utf8)
+                )
+                sendHttpResponse(notFound, conn: conn)
+                return
+            }
+
+            var headerStr = "HTTP/1.1 \(resp.status) \(resp.statusText)\r\n"
+            headerStr += "Content-Type: \(resp.contentType)\r\n"
+            headerStr += "Content-Length: \(stream.length)\r\n"
+            headerStr += "Connection: close\r\n"
+            for (k, v) in resp.headers {
+                headerStr += "\(k): \(v)\r\n"
+            }
+            for (k, v) in resp.multiHeaders {
+                headerStr += "\(k): \(v)\r\n"
+            }
+            headerStr += "\r\n"
+
+            let headerData = Data(headerStr.utf8)
+            conn.send(content: headerData, completion: .contentProcessed { [weak self] err in
+                guard err == nil, let self = self else {
+                    try? fh.close()
+                    conn.cancel()
+                    return
+                }
+                self.streamFileChunks(fh: fh, remaining: stream.length, conn: conn)
+            })
+            return
+        }
+
         var headerStr = "HTTP/1.1 \(resp.status) \(resp.statusText)\r\n"
         headerStr += "Content-Type: \(resp.contentType)\r\n"
         headerStr += "Content-Length: \(resp.body.count)\r\n"
@@ -311,6 +615,42 @@ final class LocalHttpServer {
 
         conn.send(content: out, completion: .contentProcessed { _ in
             conn.cancel()
+        })
+    }
+
+    private func streamFileChunks(fh: FileHandle, remaining: Int64, conn: NWConnection) {
+        guard remaining > 0 else {
+            try? fh.close()
+            conn.cancel()
+            return
+        }
+        let chunkSize = Int(min(Int64(Self.fileStreamChunkBytes), remaining))
+        var chunk = Data()
+        autoreleasepool {
+            if #available(iOS 13.4, *) {
+                chunk = (try? fh.read(upToCount: chunkSize)) ?? Data()
+            } else {
+                chunk = fh.readData(ofLength: chunkSize)
+            }
+        }
+        guard !chunk.isEmpty else {
+            try? fh.close()
+            conn.cancel()
+            return
+        }
+        let nextRemaining = remaining - Int64(chunk.count)
+        if nextRemaining <= 0 {
+            try? fh.close()
+        }
+        conn.send(content: chunk, completion: .contentProcessed { [weak self] err in
+            guard err == nil, let self = self, nextRemaining > 0 else {
+                if err != nil || nextRemaining > 0 {
+                    try? fh.close()
+                }
+                conn.cancel()
+                return
+            }
+            self.streamFileChunks(fh: fh, remaining: nextRemaining, conn: conn)
         })
     }
 
@@ -337,7 +677,28 @@ final class LocalHttpServer {
         if path == "/playlist/import/external" {
             return handleExternalPlaylistImport(req)
         }
+        if path.hasPrefix("/bind/") {
+            return handlePlatformBind(req)
+        }
         return handleNeteaseApi(req)
+    }
+
+    private func handlePlatformBind(_ req: HttpRequest) -> HttpResponse {
+        var params = collectParams(req)
+        params.removeValue(forKey: "token")
+        let res = platformAuthProxy.handle(path: req.path, params: params)
+        return HttpResponse(
+            status: res.status,
+            statusText: httpStatusText(res.status),
+            contentType: "application/json; charset=utf-8",
+            body: Data(res.body.utf8)
+        )
+    }
+
+    internal func dispatchBindForTesting(path: String, params: [String: String]) -> (status: Int, body: String) {
+        var clean = params
+        clean.removeValue(forKey: "token")
+        return platformAuthProxy.handle(path: path, params: clean)
     }
 
     private func handleHealth() -> HttpResponse {
@@ -385,9 +746,12 @@ final class LocalHttpServer {
         var params = collectParams(req)
         params.removeValue(forKey: "token")
         if (params["cookie"] ?? "").isEmpty,
-           let headerCookie = req.headers["cookie"], !headerCookie.isEmpty,
            params["noCookie"] != "true" {
-            params["cookie"] = headerCookie
+            if let xCookie = req.headers["x-netease-cookie"], !xCookie.isEmpty {
+                params["cookie"] = xCookie
+            } else if let headerCookie = req.headers["cookie"], !headerCookie.isEmpty {
+                params["cookie"] = headerCookie
+            }
         }
 
         let apiRes = ncmClient.dispatch(path: req.path, params: params)
@@ -469,58 +833,70 @@ final class LocalHttpServer {
 
     private func handleLocalFile(_ req: HttpRequest) -> HttpResponse {
         let params = collectParams(req)
-        guard let rawPath = params["path"], !rawPath.isEmpty else {
-            return HttpResponse(status: 400, statusText: "Bad Request", contentType: "text/plain", body: Data("Missing path".utf8))
+        guard let decoded = params["path"], !decoded.isEmpty else {
+            return HttpResponse(status: 400, statusText: httpStatusText(400), contentType: "text/plain", body: Data("Missing path".utf8))
         }
-        let decoded = rawPath.removingPercentEncoding ?? rawPath
         let fileUrl = URL(fileURLWithPath: decoded)
         guard isAllowedAudioFile(fileUrl) else {
-            return HttpResponse(status: 403, statusText: "Forbidden", contentType: "text/plain", body: Data("Forbidden file".utf8))
+            return HttpResponse(status: 403, statusText: httpStatusText(403), contentType: "text/plain", body: Data("Forbidden file".utf8))
         }
-        guard FileManager.default.fileExists(atPath: fileUrl.path),
-              let attrs = try? FileManager.default.attributesOfItem(atPath: fileUrl.path),
+        let canonicalUrl = fileUrl.standardizedFileURL.resolvingSymlinksInPath()
+        guard FileManager.default.fileExists(atPath: canonicalUrl.path),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: canonicalUrl.path),
               let totalLen = (attrs[.size] as? NSNumber)?.int64Value, totalLen > 0 else {
-            return HttpResponse(status: 404, statusText: "Not Found", contentType: "text/plain", body: Data("File not found".utf8))
+            return HttpResponse(status: 404, statusText: httpStatusText(404), contentType: "text/plain", body: Data("File not found".utf8))
         }
 
         let mime = guessAudioMime(decoded)
-        if let rangeHeader = req.headers["range"], rangeHeader.hasPrefix("bytes=") {
-            let spec = rangeHeader.dropFirst(6).split(separator: ",").first.map(String.init) ?? ""
-            let parts = spec.split(separator: "-", omittingEmptySubsequences: false)
-            let start = Int64(parts.first ?? "") ?? 0
-            let endRaw = parts.count > 1 ? Int64(parts[1]) : nil
-            let end = min(endRaw ?? (totalLen - 1), totalLen - 1)
-            if start >= 0 && start <= end && end < totalLen,
-               let fh = try? FileHandle(forReadingFrom: fileUrl) {
-                defer { try? fh.close() }
-                try? fh.seek(toOffset: UInt64(start))
-                let chunkLen = Int(end - start + 1)
-                let chunkData = fh.readData(ofLength: chunkLen)
-                var resp = HttpResponse(status: 206, statusText: "Partial Content", contentType: mime, body: chunkData)
-                resp.headers["Accept-Ranges"] = "bytes"
-                resp.headers["Content-Range"] = "bytes \(start)-\(end)/\(totalLen)"
-                return resp
-            }
-        }
+        switch Self.parseByteRange(header: req.headers["range"], totalLength: totalLen) {
+        case .partial(let start, let end):
+            let len = end - start + 1
+            var resp = HttpResponse(
+                status: 206,
+                statusText: httpStatusText(206),
+                contentType: mime,
+                body: Data(),
+                streamFile: FileStreamDescriptor(fileUrl: canonicalUrl, offset: start, length: len)
+            )
+            resp.headers["Accept-Ranges"] = "bytes"
+            resp.headers["Content-Range"] = "bytes \(start)-\(end)/\(totalLen)"
+            return resp
 
-        let fullData = (try? Data(contentsOf: fileUrl)) ?? Data()
-        var resp = HttpResponse(status: 200, statusText: "OK", contentType: mime, body: fullData)
-        resp.headers["Accept-Ranges"] = "bytes"
-        return resp
+        case .unsatisfiable:
+            var resp = HttpResponse(
+                status: 416,
+                statusText: httpStatusText(416),
+                contentType: "text/plain",
+                body: Data("Range Not Satisfiable".utf8)
+            )
+            resp.headers["Accept-Ranges"] = "bytes"
+            resp.headers["Content-Range"] = "bytes */\(totalLen)"
+            return resp
+
+        case .full:
+            var resp = HttpResponse(
+                status: 200,
+                statusText: httpStatusText(200),
+                contentType: mime,
+                body: Data(),
+                streamFile: FileStreamDescriptor(fileUrl: canonicalUrl, offset: 0, length: totalLen)
+            )
+            resp.headers["Accept-Ranges"] = "bytes"
+            return resp
+        }
     }
 
     private func handleLocalCover(_ req: HttpRequest) -> HttpResponse {
         let params = collectParams(req)
-        guard let rawPath = params["path"], !rawPath.isEmpty else {
-            return HttpResponse(status: 404, statusText: "Not Found", contentType: "text/plain", body: Data("No cover".utf8))
+        guard let decoded = params["path"], !decoded.isEmpty else {
+            return HttpResponse(status: 404, statusText: httpStatusText(404), contentType: "text/plain", body: Data("No cover".utf8))
         }
-        let decoded = rawPath.removingPercentEncoding ?? rawPath
         let fileUrl = URL(fileURLWithPath: decoded)
         guard isAllowedAudioFile(fileUrl) else {
-            return HttpResponse(status: 403, statusText: "Forbidden", contentType: "text/plain", body: Data("Forbidden path".utf8))
+            return HttpResponse(status: 403, statusText: httpStatusText(403), contentType: "text/plain", body: Data("Forbidden path".utf8))
         }
         guard FileManager.default.fileExists(atPath: fileUrl.path) else {
-            return HttpResponse(status: 404, statusText: "Not Found", contentType: "text/plain", body: Data("No cover".utf8))
+            return HttpResponse(status: 404, statusText: httpStatusText(404), contentType: "text/plain", body: Data("No cover".utf8))
         }
 
         let asset = AVURLAsset(url: fileUrl)
@@ -587,14 +963,24 @@ final class LocalHttpServer {
     private func httpStatusText(_ code: Int) -> String {
         switch code {
         case 200: return "OK"
+        case 204: return "No Content"
         case 206: return "Partial Content"
         case 400: return "Bad Request"
         case 401: return "Unauthorized"
         case 403: return "Forbidden"
         case 404: return "Not Found"
+        case 405: return "Method Not Allowed"
+        case 413: return "Payload Too Large"
+        case 416: return "Range Not Satisfiable"
+        case 422: return "Unprocessable Entity"
+        case 429: return "Too Many Requests"
+        case 431: return "Request Header Fields Too Large"
         case 500: return "Internal Server Error"
+        case 501: return "Not Implemented"
         case 502: return "Bad Gateway"
-        default: return "OK"
+        case 503: return "Service Unavailable"
+        case 504: return "Gateway Timeout"
+        default: return "Status \(code)"
         }
     }
 

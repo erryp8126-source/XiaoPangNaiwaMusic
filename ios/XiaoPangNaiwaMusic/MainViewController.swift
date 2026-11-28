@@ -21,6 +21,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     private let pathMonitorQueue = DispatchQueue(label: "com.xiaopang.naiwamusic.network.monitor")
     private var isNetworkOnline: Bool = true
     private var foregroundNetworkObserver: NSObjectProtocol?
+    private var needsRecoveryAfterProcessTermination: Bool = false
 
     deinit {
         if let observer = audioRouteObserver {
@@ -88,6 +89,12 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
             },
             onShareOrSaveImage: { [weak self] filename, pngData, cb in
                 self?.presentShareSheetForImage(filename: filename, data: pngData, completion: cb)
+            },
+            onRefreshUserScripts: { [weak self] in
+                self?.refreshInjectedUserScripts()
+            },
+            onAudioCacheSync: { [weak self] in
+                self?.syncAudioCacheToJs()
             },
             callbackDispatcher: { [weak self] callbackId, success, resultJson in
                 self?.dispatchAsyncCallbackToJs(callbackId: callbackId, success: success, resultJson: resultJson)
@@ -170,20 +177,35 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         webView.evaluateJavaScript(js, completionHandler: nil)
     }
 
+    private func refreshInjectedUserScripts() {
+        guard webView != nil, jsBridge != nil else { return }
+        let ucc = webView.configuration.userContentController
+        ucc.removeAllUserScripts()
+        ucc.addUserScript(jsBridge.makeInjectionScript())
+    }
+
+    private func syncAudioCacheToJs() {
+        guard webView != nil else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let wv = self.webView else { return }
+            let stateJson = self.services.audioManager.getStateJson()
+            let trackJson = self.services.audioManager.getActiveTrackJson()
+            let js =
+                "window.__algerUpdateIosStateCache && window.__algerUpdateIosStateCache(\(stateJson));" +
+                "window.__algerUpdateIosActiveTrack && window.__algerUpdateIosActiveTrack(\(trackJson));"
+            wv.evaluateJavaScript(js, completionHandler: nil)
+        }
+    }
+
     private func loadLocalApp() {
-        let wasRunning = services.httpServer.isRunning
-        if !wasRunning {
+        if !services.httpServer.isRunning {
             services.httpServer.ensureAlive()
         }
         guard services.httpServer.isRunning, !services.httpServer.authToken.isEmpty else {
             showToast("本地播放服务启动失败，请重启应用重试")
             return
         }
-        if !wasRunning {
-            let ucc = webView.configuration.userContentController
-            ucc.removeAllUserScripts()
-            ucc.addUserScript(jsBridge.makeInjectionScript())
-        }
+        refreshInjectedUserScripts()
         let port = services.httpServer.port
         let ver = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "1"
         if let url = URL(string: "http://127.0.0.1:\(port)/__app/index.html?v=\(ver)") {
@@ -194,8 +216,18 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     }
 
     func reloadIfBlank() {
-        if webView.url == nil {
+        guard webView != nil else { return }
+        if needsRecoveryAfterProcessTermination || webView.url == nil {
+            needsRecoveryAfterProcessTermination = false
             loadLocalApp()
+            return
+        }
+        webView.evaluateJavaScript("document.body ? document.body.childElementCount : 0") { [weak self] result, error in
+            guard let self = self else { return }
+            let count = (result as? NSNumber)?.intValue ?? 0
+            if error != nil || count == 0 {
+                self.loadLocalApp()
+            }
         }
     }
 
@@ -226,8 +258,10 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     // MARK: - WKNavigationDelegate & WKUIDelegate
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        needsRecoveryAfterProcessTermination = false
         injectSafeAreaCssVars()
         syncAudioOutputExternalState()
+        syncAudioCacheToJs()
         let online = pathMonitor.map { $0.currentPath.status == .satisfied } ?? isNetworkOnline
         isNetworkOnline = online
         syncNetworkStatusToJs(online: online)
@@ -241,6 +275,9 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         let localPort = services.httpServer.port
         let url = navigationAction.request.url
         if IOSJsBridge.isAllowedWebViewNavigationUrl(url, localPort: localPort) {
+            if navigationAction.targetFrame?.isMainFrame != false && url?.absoluteString != "about:blank" {
+                refreshInjectedUserScripts()
+            }
             decisionHandler(.allow)
             return
         }
@@ -274,6 +311,16 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         return nil
     }
 
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        needsRecoveryAfterProcessTermination = true
+        services.httpServer.ensureAlive()
+        refreshInjectedUserScripts()
+        if UIApplication.shared.applicationState == .active {
+            needsRecoveryAfterProcessTermination = false
+            loadLocalApp()
+        }
+    }
+
     // MARK: - Native -> JS Dispatchers
 
     private func dispatchAsyncCallbackToJs(callbackId: String, success: Bool, resultJson: String) {
@@ -288,9 +335,18 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     private func pushEventToJs(channel: String, payloadJson: String) {
         let qCh = jsQuote(channel)
         let qPayload = jsQuote(payloadJson)
-        let js = "window.__algerNativeEvent && window.__algerNativeEvent(\(qCh), \(qPayload));"
         DispatchQueue.main.async { [weak self] in
-            self?.webView?.evaluateJavaScript(js, completionHandler: nil)
+            guard let self = self, let wv = self.webView else { return }
+            var prefixJs = ""
+            if channel == "audio-event" {
+                let stateJson = self.services.audioManager.getStateJson()
+                let trackJson = self.services.audioManager.getActiveTrackJson()
+                prefixJs =
+                    "window.__algerUpdateIosStateCache && window.__algerUpdateIosStateCache(\(stateJson));" +
+                    "window.__algerUpdateIosActiveTrack && window.__algerUpdateIosActiveTrack(\(trackJson));"
+            }
+            let js = "\(prefixJs)window.__algerNativeEvent && window.__algerNativeEvent(\(qCh), \(qPayload));"
+            wv.evaluateJavaScript(js, completionHandler: nil)
         }
     }
 

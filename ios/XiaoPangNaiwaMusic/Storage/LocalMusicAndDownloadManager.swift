@@ -701,7 +701,6 @@ final class LocalMusicAndDownloadManager: NSObject, URLSessionDownloadDelegate {
     func parseMetadata(paths: [String], skipAssetProbe: Bool = false) -> [[String: Any]] {
         let port = portProvider()
         let rawToken = tokenProvider()
-        let tokenParam = rawToken.isEmpty ? "" : "&token=\(rawToken)"
         return paths.compactMap { path -> [String: Any]? in
             let url = URL(fileURLWithPath: path)
             guard FileManager.default.fileExists(atPath: path) else { return nil }
@@ -731,7 +730,7 @@ final class LocalMusicAndDownloadManager: NSObject, URLSessionDownloadDelegate {
             }
 
             let encPath = path.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? path
-            let picUrl = hasCover ? "http://127.0.0.1:\(port)/local-cover?path=\(encPath)\(tokenParam)" : ""
+            let picUrl = hasCover ? Self.buildLocalCoverUrl(path: path, port: port, token: rawToken) : ""
             let size = ((try? FileManager.default.attributesOfItem(atPath: path)[.size]) as? NSNumber)?.int64Value ?? 0
 
             // 读取同名 .lrc 歌词
@@ -757,6 +756,23 @@ final class LocalMusicAndDownloadManager: NSObject, URLSessionDownloadDelegate {
                 "lyric": lrcText
             ]
         }
+    }
+
+    internal static func buildLocalCoverUrl(path: String, port: Int, token: String) -> String {
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = "127.0.0.1"
+        components.port = port
+        components.path = "/local-cover"
+        var items = [URLQueryItem(name: "path", value: path)]
+        if !token.isEmpty {
+            items.append(URLQueryItem(name: "token", value: token))
+        }
+        components.queryItems = items
+        if let encodedQuery = components.percentEncodedQuery {
+            components.percentEncodedQuery = encodedQuery.replacingOccurrences(of: "+", with: "%2B")
+        }
+        return components.string ?? ""
     }
 
     private func buildDownloadedItem(url: URL) -> [String: Any] {

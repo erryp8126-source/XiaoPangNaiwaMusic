@@ -609,4 +609,207 @@ final class Batch3VerificationTests: XCTestCase {
         XCTAssertTrue(jsonPath.contains("/Backups/"))
         XCTAssertTrue(jsonPath.hasSuffix("/sync_backup.json"))
     }
+
+    /// 验证 11（Batch 3 H-12）：iOS /bind/* 路由接入、B 站 / QQ 独立域名白名单、HTTPS 校验与 Cookie 解析
+    func testPlatformAuthProxyRoutingAllowlistsAndParsers() {
+        let prefs = AppPrefs()
+        let ncm = NeteaseApiClient(prefs: prefs)
+        let unblock = MusicUnblockEngine()
+        let server = LocalHttpServer(ncmClient: ncm, unblockEngine: unblock)
+
+        let qqBad = server.dispatchBindForTesting(path: "/bind/qq/qr/poll", params: ["qrsig": "abc; evil=1"])
+        XCTAssertEqual(qqBad.status, 200)
+        XCTAssertTrue(qqBad.body.contains("\"status\":\"error\""))
+
+        let biliMissing = server.dispatchBindForTesting(path: "/bind/bilibili/qr/poll", params: [:])
+        XCTAssertEqual(biliMissing.status, 200)
+        XCTAssertTrue(biliMissing.body.contains("\"status\":\"error\""))
+
+        let unknownRoute = server.dispatchBindForTesting(path: "/bind/unknown/endpoint", params: [:])
+        XCTAssertEqual(unknownRoute.status, 404)
+
+        XCTAssertEqual(PlatformAuthProxy.computeQqPtqrToken(""), 0)
+        XCTAssertGreaterThan(PlatformAuthProxy.computeQqPtqrToken("test_qrsig_value"), 0)
+        XCTAssertFalse(PlatformAuthProxy.isValidQrsig(""))
+        XCTAssertFalse(PlatformAuthProxy.isValidQrsig("abc; inject=1"))
+        XCTAssertTrue(PlatformAuthProxy.isValidQrsig("valid_qrsig_123"))
+
+        let waiting = PlatformAuthProxy.parseQqPtuiCB("ptuiCB('66','0','','0','二维码未失效。', '')")
+        XCTAssertEqual(waiting.status, "waiting")
+        let confirmed = PlatformAuthProxy.parseQqPtuiCB("ptuiCB('0','0','https://ssl.ptlogin2.qq.com/check_sig?ok=1','0','登录成功！', '小庞')")
+        XCTAssertEqual(confirmed.status, "confirmed")
+        XCTAssertEqual(confirmed.nickname, "小庞")
+
+        let biliMap = PlatformAuthProxy.extractBilibiliCookieMap(
+            setCookies: ["SESSDATA=s123; Path=/; HttpOnly", "bili_jct=csrf1; Path=/", "DedeUserID=9876; Path=/", "IGNORE=x"],
+            redirectUrl: nil
+        )
+        XCTAssertEqual(biliMap["SESSDATA"], "s123")
+        XCTAssertEqual(biliMap["DedeUserID"], "9876")
+        XCTAssertNil(biliMap["IGNORE"])
+
+        let qqMap = PlatformAuthProxy.extractQqCookieMap(
+            setCookies: ["qm_keyst=qmk_1; Path=/", "uin=o00123456; Path=/"],
+            existingCookie: "p_skey=ps_2; IGNORED=foo"
+        )
+        XCTAssertEqual(qqMap["qm_keyst"], "qmk_1")
+        XCTAssertEqual(qqMap["p_skey"], "ps_2")
+        XCTAssertNil(qqMap["IGNORED"])
+        XCTAssertEqual(PlatformAuthProxy.normalizeQqUin("o00123456"), "123456")
+
+        XCTAssertTrue(SafeHttpGuard.validateUrlSyntax(
+            URL(string: "https://passport.bilibili.com/x/web")!,
+            allowedSuffixes: SafeHttpGuard.bilibiliAuthAllowedDomains,
+            requireHttps: true
+        ))
+        XCTAssertFalse(SafeHttpGuard.validateUrlSyntax(
+            URL(string: "https://passport.bilibili.com/x/web")!,
+            allowedSuffixes: SafeHttpGuard.qqAuthAllowedDomains,
+            requireHttps: true
+        ))
+        XCTAssertFalse(SafeHttpGuard.validateUrlSyntax(
+            URL(string: "http://ssl.ptlogin2.qq.com/check_sig")!,
+            allowedSuffixes: SafeHttpGuard.qqAuthAllowedDomains,
+            requireHttps: true
+        ))
+    }
+
+    /// 验证 12（Batch 3 H-13 / H-14）：LocalHttpServer Header/Body 上限、Content-Length 溢出防护与 Range 解析
+    func testLocalHttpServerFrameLimitsOverflowAndRangeParsing() {
+        let valid = Data("GET /__alger_health HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\n\r\n".utf8)
+        XCTAssertEqual(LocalHttpServer.evaluateIncomingRequestFrame(buffer: valid), .complete(expectedTotal: valid.count))
+
+        let overflow = Data("POST /login HTTP/1.1\r\nContent-Length: 9223372036854775807\r\n\r\n".utf8)
+        XCTAssertEqual(LocalHttpServer.evaluateIncomingRequestFrame(buffer: overflow), .reject(status: 413, message: "Payload Too Large"))
+
+        let negative = Data("POST /login HTTP/1.1\r\nContent-Length: -5\r\n\r\n".utf8)
+        XCTAssertEqual(LocalHttpServer.evaluateIncomingRequestFrame(buffer: negative), .reject(status: 400, message: "Invalid Content-Length"))
+
+        let chunked = Data("POST /login HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n".utf8)
+        XCTAssertEqual(LocalHttpServer.evaluateIncomingRequestFrame(buffer: chunked), .reject(status: 501, message: "Transfer-Encoding Not Supported"))
+
+        let hugeHeaders = Data(repeating: 0x41, count: LocalHttpServer.maxHeaderBytes + 64)
+        XCTAssertEqual(LocalHttpServer.evaluateIncomingRequestFrame(buffer: hugeHeaders), .reject(status: 431, message: "Request Header Fields Too Large"))
+
+        let oversizedBody = Data("POST /login HTTP/1.1\r\nContent-Length: \(LocalHttpServer.maxBodyBytes + 1)\r\n\r\n".utf8)
+        XCTAssertEqual(LocalHttpServer.evaluateIncomingRequestFrame(buffer: oversizedBody), .reject(status: 413, message: "Payload Too Large"))
+
+        XCTAssertEqual(LocalHttpServer.parseByteRange(header: "bytes=-500", totalLength: 1000), .partial(start: 500, end: 999))
+        XCTAssertEqual(LocalHttpServer.parseByteRange(header: "bytes=-2000", totalLength: 1000), .partial(start: 0, end: 999))
+        XCTAssertEqual(LocalHttpServer.parseByteRange(header: "bytes=100-", totalLength: 1000), .partial(start: 100, end: 999))
+        XCTAssertEqual(LocalHttpServer.parseByteRange(header: "bytes=0-99", totalLength: 1000), .partial(start: 0, end: 99))
+        XCTAssertEqual(LocalHttpServer.parseByteRange(header: "bytes=1000-2000", totalLength: 1000), .unsatisfiable)
+        XCTAssertEqual(LocalHttpServer.parseByteRange(header: "bytes=-0", totalLength: 1000), .unsatisfiable)
+        XCTAssertEqual(LocalHttpServer.parseByteRange(header: "bytes=500-100", totalLength: 1000), .unsatisfiable)
+        XCTAssertEqual(LocalHttpServer.parseByteRange(header: nil, totalLength: 1000), .full)
+    }
+
+    /// 验证 13（Batch 3 H-17 / H-19 / L-03）：封面 Query 编码、ExternalPlaylistParser 切片边界与封面参数 ?/& 拼接
+    func testLocalCoverUrlEncodingAndExternalPlaylistBoundary() {
+        let specialPath = "/var/mobile/Documents/LocalMusic/AC+DC 100%&live.flac"
+        let coverUrl = LocalMusicAndDownloadManager.buildLocalCoverUrl(path: specialPath, port: 30488, token: "tok+1=2")
+        XCTAssertFalse(coverUrl.contains("+"), "Literal '+' must be percent-encoded as %2B: \(coverUrl)")
+        let comps = URLComponents(string: coverUrl)
+        XCTAssertEqual(comps?.queryItems?.first(where: { $0.name == "path" })?.value, specialPath)
+        XCTAssertEqual(comps?.queryItems?.first(where: { $0.name == "token" })?.value, "tok+1=2")
+
+        XCTAssertNil(ExternalPlaylistParser.extractJsonObjectSlice(from: "broken } before { payload"))
+        XCTAssertEqual(ExternalPlaylistParser.extractJsonObjectSlice(from: "cb({\"code\":200});"), "{\"code\":200}")
+
+        XCTAssertEqual(
+            AudioPlayerManager.appendCoverSizeParam("https://p1.music.126.net/a.jpg"),
+            "https://p1.music.126.net/a.jpg?param=300y300"
+        )
+        XCTAssertEqual(
+            AudioPlayerManager.appendCoverSizeParam("https://p1.music.126.net/a.jpg?auth=xyz"),
+            "https://p1.music.126.net/a.jpg?auth=xyz&param=300y300"
+        )
+        XCTAssertEqual(
+            AudioPlayerManager.appendCoverSizeParam("https://p1.music.126.net/a.jpg?param=120y120"),
+            "https://p1.music.126.net/a.jpg?param=120y120"
+        )
+        XCTAssertEqual(
+            AudioPlayerManager.appendCoverSizeParam("http://127.0.0.1:30488/local-cover?path=a"),
+            "http://127.0.0.1:30488/local-cover?path=a"
+        )
+    }
+
+    /// 验证 14（Batch 3 H-22）：IOSJsBridge 在 audioLoad / audioStop / 原生推送时同步更新 _audioState 与 _activeTrack
+    func testIosBridgeAudioStateAndActiveTrackSync() {
+        let prefs = AppPrefs()
+        let ncm = NeteaseApiClient(prefs: prefs)
+        let unblock = MusicUnblockEngine()
+        let httpServer = LocalHttpServer(ncmClient: ncm, unblockEngine: unblock)
+        let audio = AudioPlayerManager(ncmClient: ncm, unblockEngine: unblock, skipSystemAudioSetup: true)
+        let storage = LocalMusicAndDownloadManager(portProvider: { 30488 }, tokenProvider: { "tok" }) { _, _ in }
+
+        let bridge = IOSJsBridge(
+            prefs: prefs,
+            ncmClient: ncm,
+            unblockEngine: unblock,
+            httpServer: httpServer,
+            audioManager: audio,
+            storageManager: storage,
+            onStatusBarStyle: { _ in },
+            onOpenExternalUrl: { _ in },
+            onShowToast: { _ in },
+            onPickTextFile: { cb in cb(nil) },
+            onPickLocalAudioSources: { cb in cb(["canceled": true, "filePaths": []]) },
+            callbackDispatcher: { _, _, _ in }
+        )
+
+        let ctx = JSContext()!
+        ctx.evaluateScript("var window = this; window.location = { protocol: 'http:', hostname: '127.0.0.1' }; window.webkit = { messageHandlers: { AlgerIOS: { postMessage: function() {} } } };")
+        ctx.evaluateScript(bridge.makeInjectionScript().source)
+
+        let res = ctx.evaluateScript("""
+        (function() {
+          window.AlgerAndroid.audioLoad(JSON.stringify({
+            instanceId: 7,
+            songId: '12345',
+            url: 'https://cdn.example.com/1.mp3',
+            title: 'Test Track',
+            artist: 'Tester',
+            album: 'Album',
+            cover: 'https://img/1.jpg',
+            seekTime: 12,
+            durationSec: 180,
+            autoplay: true
+          }));
+          var afterLoadTrack = JSON.parse(window.AlgerAndroid.audioGetActiveTrack());
+          var afterLoadState = JSON.parse(window.AlgerAndroid.audioGetState());
+          window.__algerUpdateIosStateCache({ position: 42, playing: false });
+          window.__algerUpdateIosActiveTrack({ hasActiveTrack: true, songId: '12345', position: 42, playing: false });
+          var afterNativeTrack = JSON.parse(window.AlgerAndroid.audioGetActiveTrack());
+          var afterNativeState = JSON.parse(window.AlgerAndroid.audioGetState());
+          window.AlgerAndroid.audioStop();
+          var afterStopTrack = JSON.parse(window.AlgerAndroid.audioGetActiveTrack());
+          var afterStopState = JSON.parse(window.AlgerAndroid.audioGetState());
+          return JSON.stringify({
+            afterLoadTrack: afterLoadTrack,
+            afterLoadState: afterLoadState,
+            afterNativeTrack: afterNativeTrack,
+            afterNativeState: afterNativeState,
+            afterStopTrack: afterStopTrack,
+            afterStopState: afterStopState
+          });
+        })();
+        """)?.toString() ?? "{}"
+        let dict = (try? JSONSerialization.jsonObject(with: Data(res.utf8))) as? [String: Any]
+        let afterLoadTrack = dict?["afterLoadTrack"] as? [String: Any]
+        let afterLoadState = dict?["afterLoadState"] as? [String: Any]
+        let afterNativeTrack = dict?["afterNativeTrack"] as? [String: Any]
+        let afterNativeState = dict?["afterNativeState"] as? [String: Any]
+        let afterStopTrack = dict?["afterStopTrack"] as? [String: Any]
+        let afterStopState = dict?["afterStopState"] as? [String: Any]
+
+        XCTAssertEqual(afterLoadTrack?["hasActiveTrack"] as? Bool, true)
+        XCTAssertEqual(afterLoadTrack?["songId"] as? String, "12345")
+        XCTAssertEqual(afterLoadTrack?["playing"] as? Bool, true)
+        XCTAssertEqual(afterLoadState?["position"] as? Double, 12)
+        XCTAssertEqual(afterNativeTrack?["position"] as? Double, 42)
+        XCTAssertEqual(afterNativeState?["playing"] as? Bool, false)
+        XCTAssertEqual(afterStopTrack?["hasActiveTrack"] as? Bool, false)
+        XCTAssertEqual(afterStopState?["playing"] as? Bool, false)
+    }
 }

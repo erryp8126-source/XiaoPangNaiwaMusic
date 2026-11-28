@@ -4979,20 +4979,29 @@ test("Batch 1 [C-01 & H-11]: 301 verifySession preserves MUSIC_U and POST retry 
   assert.equal(verifyCfg.timeout, 8000);
   assert.equal("noLogin" in verifyCfg, false);
 
-  // 2. GET /login/status attaches MUSIC_U token while noLogin:true omits it
+  // 2. GET /login/status attaches MUSIC_U via X-Netease-Cookie header by default, supports preferHeader: false fallback, and omits when noLogin:true
   const token = "MUSIC_U=valid_user_cookie_123;";
   const verifyReq = authSessionMod.attachAuthCookieToRequestConfig(
     { method: "get", url: "/login/status", ...authSessionMod.buildLoginStatusVerifyConfig() },
     token
   );
-  assert.equal(verifyReq.params.cookie, token);
+  assert.equal(verifyReq.headers?.["X-Netease-Cookie"], token);
+  assert.equal(verifyReq.params?.cookie, undefined);
   assert.equal(verifyReq.skip301Guard, true);
+
+  const legacyQueryReq = authSessionMod.attachAuthCookieToRequestConfig(
+    { method: "get", url: "/login/status", ...authSessionMod.buildLoginStatusVerifyConfig() },
+    token,
+    { preferHeader: false }
+  );
+  assert.equal(legacyQueryReq.params.cookie, token);
 
   const explicitNoLoginReq = authSessionMod.attachAuthCookieToRequestConfig(
     { method: "get", url: "/song/url", params: { id: 1, noLogin: true } },
     token
   );
   assert.equal(explicitNoLoginReq.params.cookie, undefined);
+  assert.equal(explicitNoLoginReq.headers?.["X-Netease-Cookie"], undefined);
 
   // 3. POST retry with serialized JSON string data does not spread string characters ("0": "{")
   const retriedPostReq = authSessionMod.attachAuthCookieToRequestConfig(
@@ -5018,6 +5027,7 @@ test("Batch 1 [C-01 & H-11]: 301 verifySession preserves MUSIC_U and POST retry 
     token
   );
   assert.equal(rawStringPostReq.data, "plain-raw-body");
+  assert.equal(rawStringPostReq.headers?.["X-Netease-Cookie"], token);
 
   const searchParamsReq = authSessionMod.attachAuthCookieToRequestConfig(
     {
@@ -5042,7 +5052,7 @@ test("Batch 1 [C-01 & H-11]: 301 verifySession preserves MUSIC_U and POST retry 
         { method: "get", url: "/login/status", ...authSessionMod.buildLoginStatusVerifyConfig() },
         token
       );
-      capturedVerifyCookie = cfg.params.cookie;
+      capturedVerifyCookie = cfg.headers?.["X-Netease-Cookie"] || cfg.params?.cookie || "";
       // Backend returns anonimousUser: true unless MUSIC_U is actually present
       if (capturedVerifyCookie !== token) {
         return { data: { code: 200, account: { id: 999, anonimousUser: true }, profile: null } };
@@ -5516,4 +5526,372 @@ test("Batch 2 [H-16..H-21, H-26..H-28, M-09, M-12]: cross-platform playback, lyr
   assert.doesNotMatch(playlistTs, /newPlayList\.splice\(nowPlayListIndex,\s*1\)/);
   assert.match(playlistTs, /audioService\.stop\(\)/);
   assert.match(playlistTs, /playbackRequestManager\.cancelAllRequests\(\)/);
+});
+
+test("Batch 3 [H-25 & H-10]: lxCrypto handles Uint8Array key/iv, suffix cipher modes, Unicode Base64, negative sigBytes & binary RSA; authSession redacts secrets", async () => {
+  const { stripTypeScriptTypes } = await import("node:module");
+
+  // 1. Load lxCrypto.ts with root CryptoJS and real JSEncrypt (or Node crypto/BigInt fallback when upstream deps aren't installed in CI)
+  const upstreamJsEncrypt = path.join(
+    repoRoot,
+    "upstream/node_modules/jsencrypt/bin/jsencrypt.min.js"
+  );
+  let JSEncryptImpl;
+  if (fs.existsSync(upstreamJsEncrypt)) {
+    globalThis.window ??= globalThis;
+    globalThis.self ??= globalThis;
+    const mod = require(upstreamJsEncrypt);
+    JSEncryptImpl = mod.JSEncrypt || mod.default || mod;
+  } else {
+    class BigIntHex {
+      constructor(val) {
+        this.value =
+          typeof val === "bigint"
+            ? val
+            : BigInt("0x" + (String(val || "0").replace(/^0x/i, "") || "0"));
+      }
+      bitLength() {
+        return this.value === 0n ? 0 : this.value.toString(2).length;
+      }
+      toString(radix = 16) {
+        return this.value.toString(radix);
+      }
+    }
+    const modPow = (base, exp, mod) => {
+      let result = 1n;
+      let b = base % mod;
+      let e = exp;
+      while (e > 0n) {
+        if (e & 1n) result = (result * b) % mod;
+        e >>= 1n;
+        b = (b * b) % mod;
+      }
+      return result;
+    };
+    JSEncryptImpl = class NodeFallbackJSEncrypt {
+      setPublicKey(pem) {
+        const jwk = crypto.createPublicKey(pem).export({ format: "jwk" });
+        const n = new BigIntHex(Buffer.from(jwk.n, "base64url").toString("hex"));
+        const eVal = BigInt("0x" + Buffer.from(jwk.e, "base64url").toString("hex"));
+        this._key = {
+          n,
+          doPublic: (m) => new BigIntHex(modPow(m.value, eVal, n.value)),
+        };
+      }
+      setPrivateKey(pem) {
+        const jwk = crypto.createPrivateKey(pem).export({ format: "jwk" });
+        const n = new BigIntHex(Buffer.from(jwk.n, "base64url").toString("hex"));
+        const d = new BigIntHex(Buffer.from(jwk.d, "base64url").toString("hex"));
+        this._key = {
+          n,
+          d,
+          doPrivate: (c) => new BigIntHex(modPow(c.value, d.value, n.value)),
+        };
+      }
+      getKey() {
+        return this._key;
+      }
+    };
+  }
+
+  globalThis.__batch3TestCryptoJS = require("crypto-js");
+  globalThis.__batch3TestJSEncrypt = JSEncryptImpl;
+  const rawLxCrypto = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/utils/lxCrypto.ts"),
+    "utf-8"
+  );
+  const patchedLxCrypto = rawLxCrypto
+    .replace(
+      /import\s+CryptoJS\s+from\s+['"]crypto-js['"];/,
+      "const CryptoJS = (globalThis as any).__batch3TestCryptoJS;"
+    )
+    .replace(
+      /import\s+\{\s*JSEncrypt\s*\}\s+from\s+['"]jsencrypt['"];/,
+      "const JSEncrypt = (globalThis as any).__batch3TestJSEncrypt;"
+    );
+  const jsLxCrypto = stripTypeScriptTypes(patchedLxCrypto, { mode: "strip" });
+  const lxCrypto = await import(
+    `data:text/javascript;base64,${Buffer.from(jsLxCrypto, "utf-8").toString("base64")}`
+  );
+
+  // AES with Uint8Array key & IV + suffix cipher modes ('aes-128-ecb' vs 'aes-128-cbc')
+  const keyBytes = new Uint8Array(Buffer.from("0123456789abcdef", "utf8"));
+  const ivBytes = new Uint8Array(Buffer.from("fedcba9876543210", "utf8"));
+  const twoIdenticalBlocks = new Uint8Array(32).fill(0x41);
+
+  const ecbCipher = lxCrypto.aesEncrypt(twoIdenticalBlocks, "aes-128-ecb", keyBytes);
+  assert.deepEqual(
+    ecbCipher.slice(0, 16),
+    ecbCipher.slice(16, 32),
+    "aes-128-ecb must encrypt identical blocks identically"
+  );
+  const ecbPlain = lxCrypto.aesDecrypt(ecbCipher, "aes-128-ecb", keyBytes);
+  assert.deepEqual(ecbPlain, twoIdenticalBlocks);
+
+  const cbcCipher = lxCrypto.aesEncrypt(twoIdenticalBlocks, "aes-128-cbc", keyBytes, ivBytes);
+  assert.notDeepEqual(
+    cbcCipher.slice(0, 16),
+    cbcCipher.slice(16, 32),
+    "aes-128-cbc must chain blocks differently"
+  );
+  const cbcPlain = lxCrypto.aesDecrypt(cbcCipher, "aes-128-cbc", keyBytes, ivBytes);
+  assert.deepEqual(cbcPlain, twoIdenticalBlocks);
+
+  // Wrong key decrypt must clamp negative sigBytes safely instead of slicing trailing bytes
+  const wrongKey = new Uint8Array(Buffer.from("zzzzzzzzzzzzzzzz", "utf8"));
+  const badPlain = lxCrypto.aesDecrypt(cbcCipher, "aes-128-cbc", wrongKey, ivBytes);
+  assert.ok(badPlain instanceof Uint8Array);
+
+  // Unicode base64Encode / base64Decode
+  const unicodeMsg = "小庞奶娃音乐 🎵 100%";
+  const b64 = lxCrypto.base64Encode(unicodeMsg);
+  assert.equal(Buffer.from(lxCrypto.base64Decode(b64)).toString("utf8"), unicodeMsg);
+
+  // Binary RSA round-trip + OpenSSL interop with non-UTF-8 byte values (0x00, 0x80..0xff)
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", {
+    modulusLength: 1024,
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs1", format: "pem" },
+  });
+  const binarySecret = new Uint8Array([0x00, 0x80, 0xff, 0xfe, 0x7f, 0xc3, 0x28, 0x11]);
+  const rsaCipher = lxCrypto.rsaEncrypt(binarySecret, publicKey);
+  assert.equal(rsaCipher.length, 128);
+  const opensslPlain = crypto.privateDecrypt(
+    { key: privateKey, padding: crypto.constants.RSA_PKCS1_PADDING },
+    rsaCipher
+  );
+  assert.deepEqual(new Uint8Array(opensslPlain), binarySecret);
+
+  const rsaDecrypted = lxCrypto.rsaDecrypt(rsaCipher, privateKey);
+  assert.deepEqual(rsaDecrypted, binarySecret);
+
+  // 2. Log redaction strips MUSIC_U, cookies, headers, and query secrets
+  const authSessionMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/authSession.ts")).href
+  );
+  const redacted = authSessionMod.redactSensitiveErrorForLog({
+    name: "AxiosError",
+    message: "Failed with MUSIC_U=super_secret_u_val&token=tok999",
+    code: "ERR_BAD_RESPONSE",
+    response: { status: 301 },
+    config: {
+      method: "get",
+      url: "/user/playlist?cookie=MUSIC_U%3Dleak_here&token=tok123",
+      headers: {
+        "X-Netease-Cookie": "MUSIC_U=secret_header",
+        "X-Alger-Token": "secret_local_token",
+      },
+      params: {
+        id: 42,
+        cookie: "MUSIC_U=secret_param",
+        token: "tok_param",
+      },
+      data: { password: "raw_password" },
+    },
+  });
+  const dumped = JSON.stringify(redacted);
+  for (const leak of ["super_secret_u_val", "tok999", "leak_here", "tok123", "secret_header", "secret_local_token", "secret_param", "tok_param", "raw_password"]) {
+    assert.equal(dumped.includes(leak), false, `Redacted error log must not contain "${leak}": ${dumped}`);
+  }
+  assert.equal(redacted.status, 301);
+  assert.equal(redacted.params.id, 42);
+  assert.equal(redacted.params.cookie, "[REDACTED]");
+});
+
+test("Batch 3 [H-09 & M-04 & M-07 & H-10]: Netlify CAS rate limit, rightmost XFF, prototype pollution defense & security headers", async () => {
+  // 1. Rightmost XFF IP selection (resistant to attacker-spoofed left header)
+  assert.equal(
+    musicApiMod.extractClientIp(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/health", {
+        headers: { "x-forwarded-for": "1.2.3.4, 198.51.100.10, 203.0.113.99" },
+      })
+    ),
+    "203.0.113.99"
+  );
+  assert.equal(
+    musicApiMod.extractClientIp(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/health", {
+        headers: {
+          "x-nf-client-connection-ip": "192.0.2.44",
+          "x-forwarded-for": "1.2.3.4, 203.0.113.99",
+        },
+      })
+    ),
+    "192.0.2.44"
+  );
+
+  // 2. Concurrent CAS retries against Blobs store prevent counter lost updates
+  const backing = new Map();
+  let seq = 1;
+  const mockCasStore = {
+    async getWithMetadata(key) {
+      await new Promise((r) => setTimeout(r, 1));
+      const cur = backing.get(key);
+      return cur ? { data: cur.data, etag: cur.etag } : null;
+    },
+    async setJSON(key, data, opts = {}) {
+      const cur = backing.get(key);
+      if (opts.onlyIfNew) {
+        if (cur) return { modified: false };
+      } else if (opts.onlyIfMatch) {
+        if (!cur || cur.etag !== opts.onlyIfMatch) return { modified: false };
+      }
+      const etag = `etag_${seq++}`;
+      backing.set(key, { data, etag });
+      return { modified: true, etag };
+    },
+  };
+
+  const results = await Promise.all(
+    Array.from({ length: 6 }, () =>
+      musicApiMod.incrementBlobsRateLimitCas(mockCasStore, "rl_test_bucket", {
+        maxReq: 5,
+        windowBucket: 1,
+        tier: "write",
+        retryAfterSec: 60,
+      })
+    )
+  );
+  const allowedCount = results.filter((r) => r.allowed).length;
+  const blockedCount = results.filter((r) => !r.allowed).length;
+  assert.equal(allowedCount, 5, "Exactly maxReq (5) concurrent CAS calls may pass");
+  assert.equal(blockedCount, 1, "6th concurrent CAS call must be rejected");
+  assert.equal(backing.get("rl_test_bucket")?.data?.count, 5);
+
+  // 3. Prototype pollution defense & X-Netease-Cookie forwarding + CORS header
+  const prevSecret = process.env.APP_API_SECRET;
+  delete process.env.APP_API_SECRET;
+  const ncmApi = require("netease-cloud-music-api-alger");
+  const origSearchDefault = ncmApi.search_default;
+  let capturedCallParams = null;
+  ncmApi.search_default = async (callParams) => {
+    capturedCallParams = callParams;
+    return { status: 200, body: { code: 200 }, cookie: [] };
+  };
+
+  try {
+    const preflight = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/login/status", {
+        method: "OPTIONS",
+        headers: { Origin: TRUSTED_ORIGIN },
+      }),
+      {}
+    );
+    assert.equal(preflight.status, 204);
+    assert.match(
+      preflight.headers.get("access-control-allow-headers") || "",
+      /X-Netease-Cookie/i
+    );
+
+    const res = await musicApiHandler(
+      new Request("https://xiaopang-naiwa-music.netlify.app/api/search/default?constructor=evil&prototype=bad", {
+        method: "POST",
+        headers: {
+          Origin: TRUSTED_ORIGIN,
+          "Content-Type": "application/json",
+          "X-Netease-Cookie": "MUSIC_U=header_cookie_abc",
+          "x-nf-client-connection-ip": "198.51.100.88",
+        },
+        body: '{"__proto__":{"polluted":"yes"},"constructor":{"x":1},"prototype":{"y":2},"keywords":"hello"}',
+      }),
+      {}
+    );
+    assert.equal(res.status, 200);
+    assert.equal(({}).polluted, undefined, "Object.prototype must not be polluted");
+    assert.equal(Object.prototype.hasOwnProperty.call(capturedCallParams, "__proto__"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(capturedCallParams, "constructor"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(capturedCallParams, "prototype"), false);
+    assert.match(capturedCallParams.cookie, /MUSIC_U=header_cookie_abc/);
+  } finally {
+    ncmApi.search_default = origSearchDefault;
+    if (prevSecret !== undefined) process.env.APP_API_SECRET = prevSecret;
+  }
+
+  // 4. netlify.toml security headers (without UTF-8 BOM)
+  const netlifyTomlBuf = fs.readFileSync(path.join(repoRoot, "netlify.toml"));
+  assert.notEqual(netlifyTomlBuf[0], 0xef);
+  const netlifyToml = netlifyTomlBuf.toString("utf-8");
+  assert.match(netlifyToml, /\[\[headers\]\]/);
+  assert.match(netlifyToml, /X-Frame-Options\s*=\s*"DENY"/);
+  assert.match(netlifyToml, /X-Content-Type-Options\s*=\s*"nosniff"/);
+  assert.match(netlifyToml, /Referrer-Policy\s*=\s*"strict-origin-when-cross-origin"/);
+});
+
+test("Batch 3 [H-12..H-15, H-17, H-19, H-22, H-23, L-03]: cross-platform iOS parity, crash guards & log redaction invariants", () => {
+  const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), "utf-8");
+
+  assert.equal(
+    fs.existsSync(path.join(repoRoot, "ios/XiaoPangNaiwaMusic/Server/PlatformAuthProxy.swift")),
+    true,
+    "iOS PlatformAuthProxy.swift must exist"
+  );
+  const platformProxySwift = read("ios/XiaoPangNaiwaMusic/Server/PlatformAuthProxy.swift");
+  for (const ep of [
+    "/bind/bilibili/qr/generate",
+    "/bind/bilibili/qr/poll",
+    "/bind/bilibili/nav",
+    "/bind/bilibili/fav/folders",
+    "/bind/bilibili/fav/resources",
+    "/bind/bilibili/audio/resolve",
+    "/bind/qq/qr/generate",
+    "/bind/qq/qr/poll",
+    "/bind/qq/profile",
+    "/bind/qq/playlists",
+    "/bind/qq/playlist/detail",
+    "/bind/qq/unblock",
+  ]) {
+    assert.ok(platformProxySwift.includes(ep), `PlatformAuthProxy.swift missing ${ep}`);
+  }
+  assert.match(platformProxySwift, /bilibiliAuthAllowedDomains/);
+  assert.match(platformProxySwift, /qqAuthAllowedDomains/);
+  assert.match(platformProxySwift, /requireHttps:\s*true/);
+
+  const iosServer = read("ios/XiaoPangNaiwaMusic/Server/LocalHttpServer.swift");
+  assert.match(iosServer, /path\.hasPrefix\("\/bind\/"\)/);
+  assert.match(iosServer, /addingReportingOverflow/);
+  assert.match(iosServer, /maxHeaderBytes/);
+  assert.match(iosServer, /maxBodyBytes/);
+  assert.match(iosServer, /streamFileChunks/);
+  assert.match(iosServer, /case 416:/);
+  assert.match(iosServer, /X-Netease-Cookie/);
+  assert.match(iosServer, /lifecycleLock/);
+  assert.match(iosServer, /stateLock/);
+  const iosLocalFileBlock = iosServer.slice(
+    iosServer.indexOf("private func handleLocalFile("),
+    iosServer.indexOf("private func handleLocalCover(")
+  );
+  assert.doesNotMatch(iosLocalFileBlock, /removingPercentEncoding/);
+  const iosLocalCoverBlock = iosServer.slice(
+    iosServer.indexOf("private func handleLocalCover("),
+    iosServer.indexOf("// MARK: - Helpers")
+  );
+  assert.doesNotMatch(iosLocalCoverBlock, /removingPercentEncoding/);
+
+  const iosStorage = read("ios/XiaoPangNaiwaMusic/Storage/LocalMusicAndDownloadManager.swift");
+  assert.match(iosStorage, /func buildLocalCoverUrl\(/);
+  assert.match(iosStorage, /URLComponents/);
+
+  const extParserSwift = read("ios/XiaoPangNaiwaMusic/Server/ExternalPlaylistParser.swift");
+  assert.match(extParserSwift, /extractJsonObjectSlice/);
+  assert.match(extParserSwift, /start <= end/);
+
+  const iosBridge = read("ios/XiaoPangNaiwaMusic/Bridge/IOSJsBridge.swift");
+  assert.match(iosBridge, /__algerUpdateIosActiveTrack/);
+  assert.match(iosBridge, /onRefreshUserScripts/);
+
+  const iosMainVc = read("ios/XiaoPangNaiwaMusic/MainViewController.swift");
+  assert.match(iosMainVc, /webViewWebContentProcessDidTerminate/);
+  assert.match(iosMainVc, /refreshInjectedUserScripts/);
+
+  const iosPlayer = read("ios/XiaoPangNaiwaMusic/Player/AudioPlayerManager.swift");
+  assert.match(iosPlayer, /self\.player === p/);
+  assert.match(iosPlayer, /appendCoverSizeParam/);
+
+  const androidServer = read("android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/EmbeddedHttpServer.kt");
+  assert.match(androidServer, /x-netease-cookie/);
+  assert.match(androidServer, /X-Netease-Cookie/);
+
+  const requestTs = read("upstream/src/renderer/utils/request.ts");
+  assert.match(requestTs, /redactSensitiveErrorForLog/);
+  assert.doesNotMatch(requestTs, /console\.error\(\s*['"]error['"]\s*,\s*error\s*\)/);
 });

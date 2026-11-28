@@ -1,7 +1,15 @@
 export const NATIVE_NETEASE_COOKIE_SECRET_KEY = 'netease_auth_cookie';
+export const NETEASE_COOKIE_HEADER = 'X-Netease-Cookie';
 export const SESSION_EXPIRED_TOAST_TEXT = '登录状态已过期，请重新登录';
 
 const MUSIC_U_VALUE_RE = /(?:^|;\s*)MUSIC_U=([^;\s]+)/;
+const SENSITIVE_KV_TEXT_RE =
+  /\b(MUSIC_U|MUSIC_A|SESSDATA|bili_jct|qqmusic_key|qm_keyst|p_skey|pt4_token|qrsig|__csrf)=([^;\s&"']+)/gi;
+const SENSITIVE_QUERY_PARAM_RE =
+  /([?&](?:cookie|token|secret|password|authorization|auth)=)([^&#\s]+)/gi;
+const SENSITIVE_BEARER_RE = /(Bearer\s+)([A-Za-z0-9._~+/=-]+)/gi;
+const SENSITIVE_KEY_NAME_RE =
+  /(cookie|token|secret|password|authorization|x-alger-token|x-netease-cookie|skey|qm_keyst|sessdata|bili_jct|qrsig)/i;
 
 export interface AuthTokenStorageLike {
   getItem(key: string): string | null;
@@ -49,12 +57,85 @@ export interface Http301SessionGuardDeps {
 }
 
 export interface AuthRequestConfigLike {
+  url?: string;
   method?: string;
   params?: Record<string, any>;
+  headers?: any;
   data?: any;
   skip301Guard?: boolean;
   noRetry?: boolean;
   timeout?: number;
+}
+
+export interface AttachAuthCookieOptions {
+  preferHeader?: boolean;
+}
+
+function hasHeaderCaseInsensitive(headers: any, name: string): boolean {
+  if (!headers || typeof headers !== 'object') return false;
+  if (typeof headers.has === 'function') {
+    return Boolean(headers.has(name));
+  }
+  const target = name.toLowerCase();
+  return Object.keys(headers).some((k) => k.toLowerCase() === target && Boolean(headers[k]));
+}
+
+function setHeaderIfMissing(config: AuthRequestConfigLike, name: string, value: string): void {
+  if (!config.headers || typeof config.headers !== 'object') {
+    config.headers = {};
+  }
+  if (typeof config.headers.set === 'function') {
+    if (!hasHeaderCaseInsensitive(config.headers, name)) {
+      config.headers.set(name, value, false);
+    }
+    return;
+  }
+  if (!hasHeaderCaseInsensitive(config.headers, name)) {
+    config.headers[name] = value;
+  }
+}
+
+export function redactSensitiveText(input: string): string {
+  return String(input || '')
+    .replace(SENSITIVE_KV_TEXT_RE, '$1=[REDACTED]')
+    .replace(SENSITIVE_QUERY_PARAM_RE, '$1[REDACTED]')
+    .replace(SENSITIVE_BEARER_RE, '$1[REDACTED]');
+}
+
+function sanitizeParamsForLog(raw: unknown): Record<string, unknown> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(raw as Record<string, unknown>)) {
+    const val = (raw as Record<string, unknown>)[key];
+    if (SENSITIVE_KEY_NAME_RE.test(key)) {
+      out[key] = '[REDACTED]';
+    } else if (typeof val === 'string') {
+      out[key] = redactSensitiveText(val);
+    } else if (typeof val === 'number' || typeof val === 'boolean') {
+      out[key] = val;
+    }
+  }
+  return out;
+}
+
+export function redactSensitiveErrorForLog(error: unknown): Record<string, unknown> {
+  if (!error || typeof error !== 'object') {
+    return {
+      message: typeof error === 'string' ? redactSensitiveText(error) : 'Request failed'
+    };
+  }
+  const err = error as Record<string, any>;
+  const safe: Record<string, unknown> = {
+    message: typeof err.message === 'string' ? redactSensitiveText(err.message) : 'Request failed'
+  };
+  if (typeof err.name === 'string' && err.name) safe.name = err.name;
+  if (err.code !== undefined) safe.code = err.code;
+  if (err.response?.status !== undefined) safe.status = err.response.status;
+  if (err.config?.method) safe.method = String(err.config.method).toUpperCase();
+  if (typeof err.config?.url === 'string') safe.url = redactSensitiveText(err.config.url);
+  const safeParams = sanitizeParamsForLog(err.config?.params);
+  if (safeParams && Object.keys(safeParams).length > 0) safe.params = safeParams;
+  return safe;
 }
 
 /**
@@ -77,19 +158,28 @@ export function buildLoginStatusVerifyConfig(): {
 /**
  * 向请求配置安全注入网易云登录 Cookie：
  * - 仅在未设置 noLogin / noCookie 时注入
+ * - 对非 POST 请求默认优先通过 `X-Netease-Cookie` 请求头传递，减少 GET URL Query 明文泄露
  * - 对 POST 重试时已被 Axios 序列化的 JSON 字符串 body 先还原为对象，避免 `{ ...jsonStr }` 按字符展开破坏请求体
  */
 export function attachAuthCookieToRequestConfig<T extends AuthRequestConfigLike>(
   config: T,
-  token: string | null | undefined
+  token: string | null | undefined,
+  options?: AttachAuthCookieOptions
 ): T {
   const cleanToken = typeof token === 'string' ? token : '';
   if (!cleanToken || config.params?.noLogin === true || config.params?.noCookie === true) {
     return config;
   }
 
+  const preferHeader = options?.preferHeader !== false;
   const method = String(config.method || 'get').toLowerCase();
   if (method !== 'post') {
+    if (preferHeader) {
+      if (config.params?.cookie === undefined) {
+        setHeaderIfMissing(config, NETEASE_COOKIE_HEADER, cleanToken);
+      }
+      return config;
+    }
     const params =
       config.params && typeof config.params === 'object' ? { ...config.params } : {};
     if (params.cookie === undefined) {
@@ -113,10 +203,14 @@ export function attachAuthCookieToRequestConfig<T extends AuthRequestConfigLike>
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
           config.data =
             parsed.cookie !== undefined ? parsed : { ...parsed, cookie: cleanToken };
+          return config;
         }
       } catch {
         // 非法或非 JSON 对象字符串，保持原值不按字符展开
       }
+    }
+    if (preferHeader) {
+      setHeaderIfMissing(config, NETEASE_COOKIE_HEADER, cleanToken);
     }
     return config;
   }

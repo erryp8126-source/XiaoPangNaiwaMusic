@@ -473,13 +473,21 @@ function verifyApiCredential(req: Request, apiPath: string): boolean {
 
 const memoryRateLimitMap = new Map<string, { count: number; expiresAt: number }>();
 
-function extractClientIp(req: Request, context?: Context): string {
+export function extractClientIp(req: Request, context?: Context): string {
   const nfIp = req.headers.get("x-nf-client-connection-ip")?.trim();
   if (nfIp) return nfIp;
   const ctxIp = typeof (context as any)?.ip === "string" ? String((context as any).ip).trim() : "";
   if (ctxIp) return ctxIp;
-  const xff = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  if (xff) return xff;
+  const xffRaw = req.headers.get("x-forwarded-for");
+  if (xffRaw) {
+    const parts = xffRaw
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+    if (parts.length > 0) {
+      return parts[parts.length - 1];
+    }
+  }
   return "unknown";
 }
 
@@ -572,10 +580,94 @@ interface RateLimitDecision {
   retryAfterSec: number;
 }
 
+export interface RateLimitBlobsStoreLike {
+  getWithMetadata(
+    key: string,
+    options: { type: "json" }
+  ): Promise<{ data?: any; etag?: string } | null>;
+  setJSON(
+    key: string,
+    data: unknown,
+    options?: { onlyIfNew?: boolean } | { onlyIfMatch?: string }
+  ): Promise<{ etag?: string; modified: boolean }>;
+}
+
+const MAX_RATE_LIMIT_CAS_RETRIES = 6;
+
+export async function incrementBlobsRateLimitCas(
+  store: RateLimitBlobsStoreLike,
+  key: string,
+  options: {
+    maxReq: number;
+    windowBucket: number;
+    tier: RateLimitTier;
+    retryAfterSec: number;
+  }
+): Promise<RateLimitDecision> {
+  const { maxReq, windowBucket, tier, retryAfterSec } = options;
+  for (let attempt = 0; attempt < MAX_RATE_LIMIT_CAS_RETRIES; attempt++) {
+    const existing = await store.getWithMetadata(key, { type: "json" });
+    if (!existing) {
+      const writeRes = await store.setJSON(
+        key,
+        { count: 1, windowBucket, updatedAt: Date.now() },
+        { onlyIfNew: true }
+      );
+      if (writeRes?.modified) {
+        return {
+          allowed: 1 <= maxReq,
+          tier,
+          limit: maxReq,
+          remaining: Math.max(0, maxReq - 1),
+          retryAfterSec,
+        };
+      }
+    } else {
+      const currentCount = Number(existing.data?.count) || 0;
+      if (currentCount >= maxReq) {
+        return {
+          allowed: false,
+          tier,
+          limit: maxReq,
+          remaining: 0,
+          retryAfterSec,
+        };
+      }
+      const nextCount = currentCount + 1;
+      const writeRes = await store.setJSON(
+        key,
+        { count: nextCount, windowBucket, updatedAt: Date.now() },
+        existing.etag ? { onlyIfMatch: existing.etag } : undefined
+      );
+      if (!existing.etag || writeRes?.modified) {
+        return {
+          allowed: nextCount <= maxReq,
+          tier,
+          limit: maxReq,
+          remaining: Math.max(0, maxReq - nextCount),
+          retryAfterSec,
+        };
+      }
+    }
+
+    if (attempt < MAX_RATE_LIMIT_CAS_RETRIES - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5 + Math.floor(Math.random() * 10)));
+    }
+  }
+
+  return {
+    allowed: false,
+    tier,
+    limit: maxReq,
+    remaining: 0,
+    retryAfterSec,
+  };
+}
+
 /**
  * 按客户端 IP（x-nf-client-connection-ip）及路由级别（standard / unblock / write）执行分桶窗口限流：
  * 1. 优先使用可配置的外部 Redis REST 存储（RATE_LIMIT_REDIS_REST_URL + RATE_LIMIT_REDIS_REST_TOKEN）
- * 2. 其次使用 Netlify Blobs 部署隔离存储（避免 Serverless 冷启动清零计数）
+ * 2. 其次使用 Netlify Blobs 部署隔离存储 + ETag CAS 原子更新（避免 Serverless 冷启动清零及并发竞态绕过）
  * 3. 本地测试或无 Blobs 运行时优雅回退至进程内存窗口计数
  */
 async function checkIpRateLimit(clientIp: string, apiPath: string = "/"): Promise<RateLimitDecision> {
@@ -621,19 +713,15 @@ async function checkIpRateLimit(clientIp: string, apiPath: string = "/"): Promis
     }
   }
 
-  // 2. Netlify Blobs 持久化窗口计数（跨冷启动生效）
+  // 2. Netlify Blobs 持久化窗口计数（基于 ETag CAS 并发重试，跨冷启动生效）
   try {
     const store = getDeployStore({ name: "music-api-ratelimit", consistency: "strong" });
-    const existing = (await store.get(key, { type: "json" })) as { count?: number } | null;
-    const nextCount = (Number(existing?.count) || 0) + 1;
-    await store.setJSON(key, { count: nextCount, windowBucket, updatedAt: Date.now() });
-    return {
-      allowed: nextCount <= maxReq,
+    return await incrementBlobsRateLimitCas(store as unknown as RateLimitBlobsStoreLike, key, {
+      maxReq,
+      windowBucket,
       tier,
-      limit: maxReq,
-      remaining: Math.max(0, maxReq - nextCount),
       retryAfterSec,
-    };
+    });
   } catch {
     // 非 Netlify 运行时（如本地单测）自动回退进程内存窗口
   }
@@ -758,7 +846,7 @@ function buildCorsHeaders(origin: string | null): Record<string, string> {
   const headers: Record<string, string> = {
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers":
-      "Content-Type, Authorization, X-Requested-With, X-App-Api-Key, X-App-Timestamp, X-App-Signature",
+      "Content-Type, Authorization, X-Requested-With, X-Netease-Cookie, X-App-Api-Key, X-App-Timestamp, X-App-Signature",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin, Referer",
   };
@@ -2635,9 +2723,10 @@ export default async (req: Request, context: Context): Promise<Response> => {
     );
   }
 
-  const params: Record<string, any> = {};
+  const FORBIDDEN_PARAM_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+  const params: Record<string, any> = Object.create(null);
   reqUrl.searchParams.forEach((value, key) => {
-    if (value.length <= 8192) {
+    if (!FORBIDDEN_PARAM_KEYS.has(key) && value.length <= 8192) {
       params[key] = value;
     }
   });
@@ -2656,12 +2745,18 @@ export default async (req: Request, context: Context): Promise<Response> => {
         if (contentType.includes("application/json")) {
           const jsonBody = JSON.parse(rawText);
           if (jsonBody && typeof jsonBody === "object" && !Array.isArray(jsonBody)) {
-            Object.assign(params, jsonBody);
+            for (const key of Object.keys(jsonBody)) {
+              if (!FORBIDDEN_PARAM_KEYS.has(key)) {
+                params[key] = jsonBody[key];
+              }
+            }
           }
         } else if (contentType.includes("application/x-www-form-urlencoded")) {
           const form = new URLSearchParams(rawText);
           form.forEach((value, key) => {
-            params[key] = value;
+            if (!FORBIDDEN_PARAM_KEYS.has(key)) {
+              params[key] = value;
+            }
           });
         }
       }
@@ -2673,9 +2768,9 @@ export default async (req: Request, context: Context): Promise<Response> => {
     }
   }
 
-  // 严禁外部传入 proxy 或 realIP（含大小写变体）滥用服务端做跳板/SSRF
+  // 严禁外部传入 proxy 或 realIP（含大小写变体）及原型链危险键滥用服务端做跳板/污染
   for (const key of Object.keys(params)) {
-    if (/^(proxy|realip)$/i.test(key)) {
+    if (FORBIDDEN_PARAM_KEYS.has(key) || /^(proxy|realip)$/i.test(key)) {
       delete params[key];
     }
   }
@@ -2709,7 +2804,15 @@ export default async (req: Request, context: Context): Promise<Response> => {
   }
 
   const headerCookies = parseCookieHeader(req.headers.get("cookie"));
-  let cookieStr = mergeCookieString(headerCookies, params.cookie);
+  const allowUserCookieHeader = params.noCookie !== true && params.noCookie !== "true";
+  const neteaseHeaderCookie = allowUserCookieHeader
+    ? req.headers.get("x-netease-cookie")?.trim()
+    : undefined;
+  let mergedCookies: Record<string, string> = { ...headerCookies };
+  if (neteaseHeaderCookie) {
+    mergedCookies = { ...mergedCookies, ...parseCookieHeader(neteaseHeaderCookie) };
+  }
+  let cookieStr = mergeCookieString(mergedCookies, params.cookie);
   if (!cookieStr.includes("MUSIC_U=") && !cookieStr.includes("MUSIC_A=")) {
     const anon = await ensureAnonymousCookie();
     if (anon) {
@@ -2717,11 +2820,14 @@ export default async (req: Request, context: Context): Promise<Response> => {
     }
   }
 
-  const callParams: Record<string, any> = {
-    ...params,
-    cookie: cookieStr,
-    realIP: DEFAULT_CN_IP,
-  };
+  const callParams: Record<string, any> = {};
+  for (const key of Object.keys(params)) {
+    if (!FORBIDDEN_PARAM_KEYS.has(key) && !/^(proxy|realip)$/i.test(key)) {
+      callParams[key] = params[key];
+    }
+  }
+  callParams.cookie = cookieStr;
+  callParams.realIP = DEFAULT_CN_IP;
 
   try {
     const result = await apiFn(callParams);

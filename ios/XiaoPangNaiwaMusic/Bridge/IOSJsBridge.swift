@@ -6,6 +6,15 @@ import WebKit
 /// iOS WKWebView <-> Swift 桥接层
 /// 在文档启动前注入与 Android 完全一致的 window.AlgerAndroid 接口，使前后端双端 100% 同源共享
 final class IOSJsBridge: NSObject, WKScriptMessageHandler {
+    private static let defaultKnownSecretKeys: [String] = [
+        "cloud_sync_github_token",
+        "cloud_sync_webdav_password",
+        "cloud_sync_quick_code",
+        "netease_auth_cookie",
+        "bilibili_auth_cookie",
+        "qqmusic_auth_cookie"
+    ]
+
     private let prefs: AppPrefs
     private let ncmClient: NeteaseApiClient
     private let unblockEngine: MusicUnblockEngine
@@ -13,6 +22,8 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
     private let audioManager: AudioPlayerManager
     private let storageManager: LocalMusicAndDownloadManager
     private let secureStore = SecureKeychainStore()
+    private let secretKeysLock = NSLock()
+    private var trackedSecretKeys: Set<String> = Set(IOSJsBridge.defaultKnownSecretKeys)
 
     private let onStatusBarStyle: (Bool) -> Void
     private let onOpenExternalUrl: (String) -> Void
@@ -20,6 +31,8 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
     private let onPickTextFile: (@escaping ([String: Any]?) -> Void) -> Void
     private let onPickLocalAudioSources: (@escaping ([String: Any]) -> Void) -> Void
     private let onShareOrSaveImage: (String, Data, @escaping ([String: Any]) -> Void) -> Void
+    private let onRefreshUserScripts: (() -> Void)?
+    private let onAudioCacheSync: (() -> Void)?
     private let callbackDispatcher: (String, Bool, String) -> Void
 
     private let asyncQueue = DispatchQueue(label: "com.xiaopang.naiwamusic.ios.bridge", attributes: .concurrent)
@@ -39,6 +52,8 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         onShareOrSaveImage: @escaping (String, Data, @escaping ([String: Any]) -> Void) -> Void = { _, _, cb in
             cb(["success": false, "error": "Unsupported"])
         },
+        onRefreshUserScripts: (() -> Void)? = nil,
+        onAudioCacheSync: (() -> Void)? = nil,
         callbackDispatcher: @escaping (String, Bool, String) -> Void
     ) {
         self.prefs = prefs
@@ -53,6 +68,8 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         self.onPickTextFile = onPickTextFile
         self.onPickLocalAudioSources = onPickLocalAudioSources
         self.onShareOrSaveImage = onShareOrSaveImage
+        self.onRefreshUserScripts = onRefreshUserScripts
+        self.onAudioCacheSync = onAudioCacheSync
         self.callbackDispatcher = callbackDispatcher
         super.init()
     }
@@ -69,16 +86,13 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         ]
         let statusData = (try? JSONSerialization.data(withJSONObject: statusDict)) ?? Data("{}".utf8)
         let statusJson = String(data: statusData, encoding: .utf8) ?? "{}"
+        let audioStateJson = audioManager.getStateJson()
         let activeTrackJson = audioManager.getActiveTrackJson()
         let initialExternalAudio = isAudioOutputExternal() ? "true" : "false"
-        let preloadedSecrets = secureStore.preloadKnownSecrets([
-            "cloud_sync_github_token",
-            "cloud_sync_webdav_password",
-            "cloud_sync_quick_code",
-            "netease_auth_cookie",
-            "bilibili_auth_cookie",
-            "qqmusic_auth_cookie"
-        ])
+        secretKeysLock.lock()
+        let keysSnapshot = Array(trackedSecretKeys)
+        secretKeysLock.unlock()
+        let preloadedSecrets = secureStore.preloadKnownSecrets(keysSnapshot)
         let secretsData = (try? JSONSerialization.data(withJSONObject: preloadedSecrets)) ?? Data("{}".utf8)
         let secretsJson = String(data: secretsData, encoding: .utf8) ?? "{}"
 
@@ -97,7 +111,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
           window.__ALGER_CAPABILITIES__ = _capabilities;
           var _serverCfg = \(cfgJson);
           var _localStatus = \(statusJson);
-          var _audioState = { instanceId: 0, position: 0, duration: 0, playing: false };
+          var _audioState = \(audioStateJson);
           var _activeTrack = \(activeTrackJson);
           var _audioOutputExternal = \(initialExternalAudio);
           var _secureSecrets = \(secretsJson);
@@ -132,15 +146,56 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
               post('invokeAsync', { callbackId: callbackId, action: action, payloadJson: payloadJson });
             },
             audioLoad: function(payloadJson) {
+              try {
+                var parsed = JSON.parse(payloadJson || '{}');
+                if (parsed && typeof parsed === 'object') {
+                  var hasId = parsed.songId !== undefined && parsed.songId !== null && String(parsed.songId) !== '';
+                  var hasUrl = typeof parsed.url === 'string' && parsed.url.length > 0;
+                  if (hasId && hasUrl) {
+                    _activeTrack = {
+                      hasActiveTrack: true,
+                      instanceId: Number(parsed.instanceId) || 0,
+                      index: _activeTrack && typeof _activeTrack.index === 'number' ? _activeTrack.index : 0,
+                      songId: String(parsed.songId),
+                      url: String(parsed.url),
+                      title: String(parsed.title || '未知歌曲'),
+                      artist: String(parsed.artist || ''),
+                      album: String(parsed.album || ''),
+                      cover: String(parsed.cover || ''),
+                      position: Number(parsed.seekTime) || 0,
+                      duration: Number(parsed.durationSec) || 0,
+                      playing: Boolean(parsed.autoplay),
+                      isFm: Boolean(_activeTrack && _activeTrack.isFm)
+                    };
+                  }
+                  _audioState = {
+                    instanceId: Number(parsed.instanceId) || (_audioState && _audioState.instanceId) || 0,
+                    position: Number(parsed.seekTime) || 0,
+                    duration: Number(parsed.durationSec) || (_audioState && _audioState.duration) || 0,
+                    playing: Boolean(parsed.autoplay)
+                  };
+                }
+              } catch (e) {}
               post('audioLoad', { json: payloadJson });
             },
             audioPlay: function() {
+              _audioState.playing = true;
+              if (_activeTrack && _activeTrack.hasActiveTrack) _activeTrack.playing = true;
               post('audioPlay', {});
             },
             audioPause: function() {
+              _audioState.playing = false;
+              if (_activeTrack && _activeTrack.hasActiveTrack) _activeTrack.playing = false;
               post('audioPause', {});
             },
             audioStop: function() {
+              _activeTrack = { hasActiveTrack: false };
+              _audioState = {
+                instanceId: (_audioState && _audioState.instanceId) || 0,
+                position: 0,
+                duration: (_audioState && _audioState.duration) || 0,
+                playing: false
+              };
               post('audioStop', {});
             },
             audioSeek: function(posSec) {
@@ -220,7 +275,12 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
           };
 
           window.__algerUpdateIosStateCache = function(stateObj) {
-            if (stateObj) _audioState = Object.assign(_audioState, stateObj);
+            if (stateObj && typeof stateObj === 'object') _audioState = Object.assign(_audioState, stateObj);
+          };
+          window.__algerUpdateIosActiveTrack = function(trackObj) {
+            if (trackObj && typeof trackObj === 'object') {
+              _activeTrack = Object.assign({}, trackObj);
+            }
           };
           window.__algerUpdateIosAudioOutputExternal = function(isExternal) {
             _audioOutputExternal = Boolean(isExternal);
@@ -240,6 +300,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         case "setServerConfig":
             if let json = payload["json"] as? String {
                 _ = prefs.saveServerConfigFromJson(json, localPort: httpServer.port, localToken: httpServer.authToken)
+                notifyRefreshUserScripts()
             }
         case "invokeAsync":
             let callbackId = (payload["callbackId"] as? String) ?? ""
@@ -250,6 +311,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             if let json = payload["json"] as? String,
                let obj = parseJsonDict(json) {
                 audioManager.loadAndPrepare(payload: obj)
+                notifyAudioCacheSync()
             }
         case "audioPlay":
             audioManager.play()
@@ -257,6 +319,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             audioManager.pause()
         case "audioStop":
             audioManager.stop()
+            notifyAudioCacheSync()
         case "audioSeek":
             let pos = (payload["position"] as? Double) ?? 0
             audioManager.seekTo(seconds: pos)
@@ -295,12 +358,17 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
         case "secureSetSecret":
             let key = (payload["key"] as? String) ?? ""
             let value = (payload["value"] as? String) ?? ""
+            recordTrackedSecretKey(key)
             _ = secureStore.setSecret(key: key, value: value)
+            notifyRefreshUserScripts()
         case "secureRemoveSecret":
             let key = (payload["key"] as? String) ?? ""
             _ = secureStore.removeSecret(key: key)
+            notifyRefreshUserScripts()
         case "clearNeteaseCookies":
-            clearNativeNeteaseCookies(completion: nil)
+            clearNativeNeteaseCookies { [weak self] in
+                self?.notifyRefreshUserScripts()
+            }
         default:
             break
         }
@@ -452,7 +520,9 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             case "secure-set-secret":
                 let sKey = (payload["key"] as? String) ?? ""
                 let sVal = (payload["value"] as? String) ?? ""
+                self.recordTrackedSecretKey(sKey)
                 let ok = self.secureStore.setSecret(key: sKey, value: sVal)
+                self.notifyRefreshUserScripts()
                 self.callbackDispatcher(callbackId, true, ok ? "true" : "false")
             case "secure-get-secret":
                 let sKey = (payload["key"] as? String) ?? ""
@@ -461,6 +531,7 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             case "secure-remove-secret":
                 let sKey = (payload["key"] as? String) ?? ""
                 let ok = self.secureStore.removeSecret(key: sKey)
+                self.notifyRefreshUserScripts()
                 self.callbackDispatcher(callbackId, true, ok ? "true" : "false")
             case "get-downloads-path":
                 self.callbackDispatcher(callbackId, true, self.jsonQuote(self.storageManager.getDownloadDir().path))
@@ -497,8 +568,9 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
                     }
                 }
             case "clear-netease-cookies":
-                self.clearNativeNeteaseCookies {
-                    self.callbackDispatcher(callbackId, true, "true")
+                self.clearNativeNeteaseCookies { [weak self] in
+                    self?.notifyRefreshUserScripts()
+                    self?.callbackDispatcher(callbackId, true, "true")
                 }
             default:
                 self.callbackDispatcher(callbackId, true, "null")
@@ -621,6 +693,32 @@ final class IOSJsBridge: NSObject, WKScriptMessageHandler {
             isCustomLx: isCustomLx
         )
         callbackDispatcher(callbackId, true, jsonString(resp))
+    }
+
+    private func recordTrackedSecretKey(_ key: String) {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        secretKeysLock.lock()
+        trackedSecretKeys.insert(trimmed)
+        secretKeysLock.unlock()
+    }
+
+    private func notifyRefreshUserScripts() {
+        guard let handler = onRefreshUserScripts else { return }
+        if Thread.isMainThread {
+            handler()
+        } else {
+            DispatchQueue.main.async(execute: handler)
+        }
+    }
+
+    private func notifyAudioCacheSync() {
+        guard let handler = onAudioCacheSync else { return }
+        if Thread.isMainThread {
+            handler()
+        } else {
+            DispatchQueue.main.async(execute: handler)
+        }
     }
 
     private func parseJsonDict(_ text: String) -> [String: Any]? {
