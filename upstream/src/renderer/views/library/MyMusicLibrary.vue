@@ -495,13 +495,14 @@
               class="flex items-center gap-3 p-3 rounded-2xl bg-white/85 dark:bg-[#131316] border border-slate-200/70 dark:border-white/[0.08] hover:bg-white dark:hover:bg-[#1C1C22] transition-all cursor-pointer"
               @click="openCloudPlaylist(item)"
             >
-              <div class="w-12 h-12 rounded-xl overflow-hidden bg-slate-100 dark:bg-[#1C1C22] flex items-center justify-center flex-shrink-0">
-                <img
-                  v-if="item.coverImgUrl || item.picUrl"
-                  :src="getImgUrl(item.coverImgUrl || item.picUrl, '100y100')"
-                  class="w-full h-full object-cover"
+              <div class="w-12 h-12 rounded-xl overflow-hidden flex-shrink-0">
+                <playlist-cover
+                  :src="item.coverImgUrl || item.picUrl"
+                  size="100y100"
+                  :alt="item.name"
+                  :seed="item.id || item.name"
+                  compact
                 />
-                <i v-else class="ri-disc-line text-xl text-slate-400"></i>
               </div>
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-1.5 min-w-0">
@@ -551,6 +552,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { getUserPlaylist } from '@/api/user';
 import { navigateToMusicList } from '@/components/common/MusicListNavigator';
 import MultiPlatformAccountsCard from '@/components/account/MultiPlatformAccountsCard.vue';
+import PlaylistCover from '@/components/common/PlaylistCover.vue';
 import TrackOriginTag from '@/components/common/TrackOriginTag.vue';
 import CrossPlatformImportModal from '@/components/playlist/CrossPlatformImportModal.vue';
 import { useFavoriteStore } from '@/store/modules/favorite';

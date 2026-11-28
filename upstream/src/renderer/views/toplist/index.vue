@@ -41,13 +41,12 @@
               <div
                 class="relative aspect-square overflow-hidden bg-gradient-to-br from-sky-100 via-amber-50 to-orange-100 dark:from-slate-800 dark:to-slate-900"
               >
-                <img
-                  :src="getImgUrl(item.coverImgUrl, '400y400')"
+                <playlist-cover
+                  :src="item.coverImgUrl"
+                  size="400y400"
                   :alt="item.name"
-                  class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
-                  loading="lazy"
-                  decoding="async"
-                  referrerpolicy="no-referrer"
+                  :seed="item.id || item.name"
+                  img-class="transition-transform duration-500 group-hover:scale-105"
                 />
 
                 <!-- Update Frequency Badge -->
@@ -93,7 +92,8 @@ import { useRouter } from 'vue-router';
 
 import { getToplist } from '@/api/list';
 import { navigateToMusicList } from '@/components/common/MusicListNavigator';
-import { calculateAnimationDelay, formatNumber, getImgUrl } from '@/utils';
+import PlaylistCover from '@/components/common/PlaylistCover.vue';
+import { calculateAnimationDelay, formatNumber } from '@/utils';
 
 defineOptions({
   name: 'Toplist'

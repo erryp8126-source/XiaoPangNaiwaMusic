@@ -59,6 +59,9 @@ class NeteaseApiClient(private val prefs: AppPrefs) {
             }
             return slice
         }
+
+        internal fun normalizePlaylistParam(raw: String?, fallback: String): String =
+            raw?.trim()?.takeIf { it.isNotEmpty() } ?: fallback
     }
 
     private val gson = Gson()
@@ -231,8 +234,8 @@ class NeteaseApiClient(private val prefs: AppPrefs) {
                 val res = ncmRequest(
                     "/api/playlist/list",
                     mapOf(
-                        "cat" to (params["cat"] ?: "全部"),
-                        "order" to (params["order"] ?: "hot"),
+                        "cat" to normalizePlaylistParam(params["cat"], "全部"),
+                        "order" to normalizePlaylistParam(params["order"], "hot"),
                         "limit" to intParam(params, "limit", 50),
                         "offset" to intParam(params, "offset", 0),
                         "total" to true
@@ -245,7 +248,7 @@ class NeteaseApiClient(private val prefs: AppPrefs) {
             "/top/playlist/highquality" -> ncmRequest(
                 "/api/playlist/highquality/list",
                 mapOf(
-                    "cat" to (params["cat"] ?: "全部"),
+                    "cat" to normalizePlaylistParam(params["cat"], "全部"),
                     "limit" to intParam(params, "limit", 50),
                     "lasttime" to longParam(params, "before", 0L),
                     "total" to true

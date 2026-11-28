@@ -30,10 +30,11 @@
                   <div
                     class="cover-container relative w-44 h-44 md:w-64 md:h-64 rounded-[26px] overflow-hidden shadow-2xl ring-4 ring-white/80 dark:ring-white/15"
                   >
-                    <n-image
-                      :src="getImgUrl(getCoverImgUrl, '500y500')"
-                      class="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
-                      preview-disabled
+                    <playlist-cover
+                      :src="getCoverImgUrl"
+                      size="500y500"
+                      :alt="name"
+                      img-class="transition-transform duration-700 group-hover:scale-105"
                     />
                     <!-- Play overlay on cover -->
                     <div
@@ -356,6 +357,7 @@ import {
   updatePlaylistTracks
 } from '@/api/music';
 import PlayBottom from '@/components/common/PlayBottom.vue';
+import PlaylistCover from '@/components/common/PlaylistCover.vue';
 import SongItem from '@/components/common/SongItem.vue';
 import { useDownload } from '@/hooks/useDownload';
 import { useScrollTitle } from '@/hooks/useScrollTitle';
@@ -366,6 +368,7 @@ import { SongResult } from '@/types/music';
 import { calculateAnimationDelay, getImgUrl, isElectron, isMobile } from '@/utils';
 import { triggerHaptic } from '@/utils/androidBridge';
 import { getLoginErrorMessage, hasPermission } from '@/utils/auth';
+import { isKnownBlankCoverUrl } from '@/utils/imageUrl';
 import { isOfflineQuietError } from '@/utils/playbackFeedback';
 
 defineOptions({
@@ -512,7 +515,7 @@ const total = computed(() => {
 
 const getCoverImgUrl = computed(() => {
   const coverImgUrl = listInfo.value?.coverImgUrl || listInfo.value?.picUrl;
-  if (coverImgUrl) return coverImgUrl;
+  if (coverImgUrl && !isKnownBlankCoverUrl(coverImgUrl)) return coverImgUrl;
   const song = songList.value[0];
   return song?.picUrl || song?.al?.picUrl || song?.album?.picUrl || '';
 });

@@ -8,13 +8,13 @@
     <div
       class="relative aspect-square overflow-hidden rounded-[20px] bg-sky-100/70 dark:bg-[#131316] shadow-naiwa-sm ring-1 ring-white/80 dark:ring-white/[0.08] transition-all duration-300 ease-out group-hover:shadow-xl"
     >
-      <img
-        ref="coverRef"
-        :src="getImgUrl(cover, '512y512')"
-        class="h-full w-full object-cover transition-transform duration-700 ease-out group-hover:scale-105"
-        loading="lazy"
+      <playlist-cover
+        :src="cover"
+        size="512y512"
         :alt="title"
+        :seed="title"
         crossorigin="anonymous"
+        img-class="transition-transform duration-700 ease-out group-hover:scale-105"
         @load="extractColor"
       />
 
@@ -103,7 +103,8 @@
 import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 
-import { formatNumber, getImgUrl } from '@/utils';
+import PlaylistCover from '@/components/common/PlaylistCover.vue';
+import { formatNumber } from '@/utils';
 import { getImageBackground } from '@/utils/linearColor';
 
 interface Track {
@@ -136,7 +137,6 @@ defineEmits<{
 }>();
 
 const { t } = useI18n();
-const coverRef = ref<HTMLImageElement | null>(null);
 const backgroundGradient = ref(
   'linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.6) 50%, transparent 100%)'
 );
@@ -160,8 +160,7 @@ const overlayStyle = computed(() => ({
   background: backgroundGradient.value
 }));
 
-const extractColor = async () => {
-  const img = coverRef.value;
+const extractColor = async (img?: HTMLImageElement | null) => {
   if (!img) return;
 
   try {

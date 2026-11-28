@@ -5924,3 +5924,70 @@ test("Boot stability: lazy musicDB avoids top-level await TDZ crash and MainActi
   assert.match(mainActivityKt, /webView\.clearCache\(true\)/);
   assert.match(mainActivityKt, /index\.html\?v=\$\{curVersionCode\}_\$\{lastUpdateTime\}/);
 });
+
+test("Playlist cover placeholder & blank cat normalization: filters solid-gray/empty covers and avoids stale cat=''", async () => {
+  const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), "utf8");
+
+  const imageUrlMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/imageUrl.ts")).href
+  );
+  assert.equal(typeof imageUrlMod.isKnownBlankCoverUrl, "function");
+  assert.equal(imageUrlMod.isKnownBlankCoverUrl(""), true);
+  assert.equal(imageUrlMod.isKnownBlankCoverUrl("   "), true);
+  assert.equal(imageUrlMod.isKnownBlankCoverUrl(null), true);
+  assert.equal(imageUrlMod.isKnownBlankCoverUrl(undefined), true);
+  assert.equal(
+    imageUrlMod.isKnownBlankCoverUrl(
+      "http://p4.music.126.net/WsW5v606UdMxVzSWYWCvSw==/109951166327265012.jpg"
+    ),
+    true
+  );
+  assert.equal(
+    imageUrlMod.isKnownBlankCoverUrl(
+      "https://p1.music.126.net/WsW5v606UdMxVzSWYWCvSw==/109951166327265012.jpg?param=400y400"
+    ),
+    true
+  );
+  assert.equal(
+    imageUrlMod.isKnownBlankCoverUrl("https://p1.music.126.net/abc/109951174100331187.jpg"),
+    false
+  );
+
+  const lightAssetPath = path.join(
+    repoRoot,
+    "upstream/src/renderer/assets/playlist-cover-light.jpg"
+  );
+  const darkAssetPath = path.join(
+    repoRoot,
+    "upstream/src/renderer/assets/playlist-cover-dark.jpg"
+  );
+  assert.equal(fs.existsSync(lightAssetPath), true, "Expected playlist-cover-light.jpg to exist");
+  assert.equal(fs.existsSync(darkAssetPath), true, "Expected playlist-cover-dark.jpg to exist");
+
+  const coverCompPath = path.join(
+    repoRoot,
+    "upstream/src/renderer/components/common/PlaylistCover.vue"
+  );
+  assert.equal(fs.existsSync(coverCompPath), true, "Expected PlaylistCover.vue to exist");
+  const coverComp = read("upstream/src/renderer/components/common/PlaylistCover.vue");
+  assert.match(coverComp, /@error="handleError"/);
+  assert.match(coverComp, /playlist-cover-light\.jpg/);
+  assert.match(coverComp, /playlist-cover-dark\.jpg/);
+  assert.match(coverComp, /\bdark:hidden\b/);
+  assert.match(coverComp, /\bdark:block\b/);
+  assert.doesNotMatch(coverComp, /:global\(\.dark\)/);
+
+  const listVue = read("upstream/src/renderer/views/list/index.vue");
+  assert.match(listVue, /<playlist-cover\b/);
+  assert.match(listVue, /type === DEFAULT_CAT \? '全部' : type/);
+
+  const musicListPageVue = read("upstream/src/renderer/views/music/MusicListPage.vue");
+  assert.match(musicListPageVue, /<playlist-cover\b/);
+  assert.match(musicListPageVue, /isKnownBlankCoverUrl/);
+
+  const ncmKt = read("android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/NeteaseApiClient.kt");
+  assert.match(ncmKt, /normalizePlaylistParam\(params\["cat"\],\s*"全部"\)/);
+
+  const ncmSwift = read("ios/XiaoPangNaiwaMusic/Server/NeteaseApiClient.swift");
+  assert.match(ncmSwift, /nonBlankParam\(params,\s*"cat",\s*fallback:\s*"全部"\)/);
+});

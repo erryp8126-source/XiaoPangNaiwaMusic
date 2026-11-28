@@ -45,13 +45,12 @@
           <div
             class="relative aspect-square overflow-hidden bg-gradient-to-br from-sky-100 via-amber-50 to-orange-100 dark:from-slate-800 dark:via-slate-800 dark:to-slate-900"
           >
-            <img
-              :src="getImgUrl(item.picUrl || item.coverImgUrl, '400y400')"
+            <playlist-cover
+              :src="item.picUrl || item.coverImgUrl"
+              size="400y400"
               :alt="item.name"
-              class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
-              loading="lazy"
-              decoding="async"
-              referrerpolicy="no-referrer"
+              :seed="item.id || item.name"
+              img-class="transition-transform duration-500 group-hover:scale-105"
             />
 
             <!-- 底部轻渐变，保证角落角标清晰 -->
@@ -119,10 +118,11 @@ import { useRoute, useRouter } from 'vue-router';
 
 import { getPlaylistCategory } from '@/api/home';
 import { getListByCat } from '@/api/list';
-import StickyTabPage from '@/components/common/StickyTabPage.vue';
 import { navigateToMusicList } from '@/components/common/MusicListNavigator';
+import PlaylistCover from '@/components/common/PlaylistCover.vue';
+import StickyTabPage from '@/components/common/StickyTabPage.vue';
 import type { IPlayListSort } from '@/types/playlist';
-import { calculateAnimationDelay, formatNumber, getImgUrl } from '@/utils';
+import { calculateAnimationDelay, formatNumber } from '@/utils';
 
 defineOptions({
   name: 'List'
@@ -169,7 +169,7 @@ const loadList = async (type: string, isLoadMore = false) => {
 
   try {
     const params = {
-      cat: type === DEFAULT_CAT ? '' : type,
+      cat: type === DEFAULT_CAT ? '全部' : type,
       limit: TOTAL_ITEMS,
       offset: page.value * TOTAL_ITEMS
     };

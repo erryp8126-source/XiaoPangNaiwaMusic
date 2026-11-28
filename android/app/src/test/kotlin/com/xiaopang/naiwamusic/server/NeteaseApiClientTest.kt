@@ -32,4 +32,13 @@ class NeteaseApiClientTest {
         val negativeLimitSlice = NeteaseApiClient.slicePlaylistTrackIds(trackIds, rawOffset = 0, rawLimit = -5)
         assertTrue(negativeLimitSlice.isEmpty())
     }
+
+    @Test
+    fun normalizePlaylistParamFallsBackForNullEmptyAndWhitespace() {
+        assertEquals("全部", NeteaseApiClient.normalizePlaylistParam(null, "全部"))
+        assertEquals("全部", NeteaseApiClient.normalizePlaylistParam("", "全部"))
+        assertEquals("全部", NeteaseApiClient.normalizePlaylistParam("   ", "全部"))
+        assertEquals("hot", NeteaseApiClient.normalizePlaylistParam("  ", "hot"))
+        assertEquals("华语", NeteaseApiClient.normalizePlaylistParam(" 华语 ", "全部"))
+    }
 }

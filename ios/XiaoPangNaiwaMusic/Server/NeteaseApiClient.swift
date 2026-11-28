@@ -175,8 +175,8 @@ final class NeteaseApiClient {
             return ncmRequest("/api/playlist/catalogue", rawData: [:], queryParams: params, defaultCrypto: "eapi")
         case "/top/playlist":
             let res = ncmRequest("/api/playlist/list", rawData: [
-                "cat": params["cat"] ?? "全部",
-                "order": params["order"] ?? "hot",
+                "cat": nonBlankParam(params, "cat", fallback: "全部"),
+                "order": nonBlankParam(params, "order", fallback: "hot"),
                 "limit": intParam(params, "limit", 50),
                 "offset": intParam(params, "offset", 0),
                 "total": true
@@ -184,7 +184,7 @@ final class NeteaseApiClient {
             return NcmApiResponse(status: res.status, body: res.body.replacingOccurrences(of: "avatarImgId_str", with: "avatarImgIdStr"), cookies: res.cookies)
         case "/top/playlist/highquality":
             return ncmRequest("/api/playlist/highquality/list", rawData: [
-                "cat": params["cat"] ?? "全部",
+                "cat": nonBlankParam(params, "cat", fallback: "全部"),
                 "limit": intParam(params, "limit", 50),
                 "lasttime": int64Param(params, "before", 0),
                 "total": true
@@ -856,5 +856,12 @@ final class NeteaseApiClient {
     private func int64Param(_ params: [String: String], _ key: String, _ defaultVal: Int64) -> Int64 {
         guard let s = params[key], let d = Double(s) else { return defaultVal }
         return Int64(d)
+    }
+
+    private func nonBlankParam(_ params: [String: String], _ key: String, fallback: String) -> String {
+        guard let raw = params[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return fallback
+        }
+        return raw
     }
 }

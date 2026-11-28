@@ -37,6 +37,17 @@ export function upgradeExternalHttpToHttps(rawUrl: string | undefined | null): s
   return trimmed;
 }
 
+const KNOWN_BLANK_COVER_PATTERNS = [
+  /\/109951166327265012(?:\.[a-z0-9]+)?(?:[?#]|$)/i
+];
+
+export function isKnownBlankCoverUrl(rawUrl: string | undefined | null): boolean {
+  if (!rawUrl || typeof rawUrl !== 'string') return true;
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return true;
+  return KNOWN_BLANK_COVER_PATTERNS.some((re) => re.test(trimmed));
+}
+
 export function normalizeImgUrl(url: string | undefined, size: string = ''): string {
   const safeUrl = upgradeExternalHttpToHttps(url);
   if (!safeUrl) return '';

@@ -190,11 +190,12 @@
                 >
                   <!-- Cover -->
                   <div class="relative aspect-square overflow-hidden rounded-2xl shadow-lg">
-                    <n-image
-                      :src="getImgUrl(item.coverImgUrl, '300y300')"
-                      lazy
-                      preview-disabled
-                      class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                    <playlist-cover
+                      :src="item.coverImgUrl || item.picUrl"
+                      size="300y300"
+                      :alt="item.name"
+                      :seed="item.id || item.name"
+                      img-class="transition-transform duration-500 group-hover:scale-105"
                     />
                     <!-- Play Count Overlay -->
                     <div
@@ -287,6 +288,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { getUserDetail, getUserPlaylist, getUserRecord } from '@/api/user';
 import { navigateToMusicList } from '@/components/common/MusicListNavigator';
 import PlayBottom from '@/components/common/PlayBottom.vue';
+import PlaylistCover from '@/components/common/PlaylistCover.vue';
 import SongItem from '@/components/common/SongItem.vue';
 import { usePlayerStore } from '@/store/modules/player';
 import type { IUserDetail } from '@/types/user';
