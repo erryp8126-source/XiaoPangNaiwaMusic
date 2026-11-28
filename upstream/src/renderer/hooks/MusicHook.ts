@@ -2,7 +2,6 @@ import { cloneDeep } from 'lodash';
 import { createDiscreteApi } from 'naive-ui';
 import { computed, type ComputedRef, nextTick, onUnmounted, ref, watch } from 'vue';
 
-import useIndexedDB from '@/hooks/IndexDBHook';
 import { audioService } from '@/services/audioService';
 import { playbackRequestManager } from '@/services/playbackRequestManager';
 import type { usePlayerStore } from '@/store';
@@ -524,17 +523,7 @@ export const textColors = ref<any>(getTextColors());
 export let playMusic: ComputedRef<SongResult>;
 export let artistList: ComputedRef<Artist[]>;
 
-export const musicDB = await useIndexedDB(
-  'musicDB',
-  [
-    { name: 'music', keyPath: 'id' },
-    { name: 'music_lyric', keyPath: 'id' },
-    { name: 'api_cache', keyPath: 'id' },
-    { name: 'music_url_cache', keyPath: 'id' },
-    { name: 'music_failed_cache', keyPath: 'id' }
-  ],
-  3
-);
+export { musicDB } from '@/hooks/musicDB';
 
 // 键盘事件处理器，在初始化后设置
 const setupKeyboardListeners = () => {

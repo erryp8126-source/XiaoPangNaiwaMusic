@@ -1,6 +1,6 @@
 import { cloneDeep } from 'lodash';
 
-import { musicDB } from '@/hooks/MusicHook';
+import { musicDB } from '@/hooks/musicDB';
 import { SongSourceConfigManager } from '@/services/SongSourceConfigManager';
 import { useSettingsStore } from '@/store';
 import { usePlatformAccountsStore } from '@/store/modules/platformAccounts';

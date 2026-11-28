@@ -381,20 +381,27 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val curVersionCode = runCatching {
-            androidx.core.content.pm.PackageInfoCompat.getLongVersionCode(
-                packageManager.getPackageInfo(packageName, 0)
-            )
-        }.getOrDefault(0L)
+        val pkgInfo = runCatching { packageManager.getPackageInfo(packageName, 0) }.getOrNull()
+        val curVersionCode = pkgInfo?.let {
+            runCatching { androidx.core.content.pm.PackageInfoCompat.getLongVersionCode(it) }.getOrNull()
+        } ?: 0L
+        val lastUpdateTime = pkgInfo?.lastUpdateTime ?: 0L
+        val installSignature = "$curVersionCode:$lastUpdateTime"
         val webMetaPrefs = getSharedPreferences("alger_webview_meta", MODE_PRIVATE)
         val lastVersionCode = webMetaPrefs.getLong("last_version_code", -1L)
-        if (curVersionCode > 0L && curVersionCode != lastVersionCode) {
-            // 覆盖升级新版 APK 时自动清掉 WebView 旧版 JS/HTML 缓存（绝不影响 localStorage 里的历史与收藏）
+        val lastInstallSignature = webMetaPrefs.getString("last_install_signature", null)
+        if ((curVersionCode > 0L && curVersionCode != lastVersionCode) ||
+            (lastUpdateTime > 0L && installSignature != lastInstallSignature)
+        ) {
+            // 覆盖升级新版 APK（含同版本号热修复覆盖安装）时自动清掉 WebView 旧版 JS/HTML 缓存（绝不影响 localStorage 里的历史与收藏）
             webView.clearCache(true)
-            webMetaPrefs.edit().putLong("last_version_code", curVersionCode).apply()
+            webMetaPrefs.edit()
+                .putLong("last_version_code", curVersionCode)
+                .putString("last_install_signature", installSignature)
+                .apply()
         }
 
-        webView.loadUrl("https://appassets.androidplatform.net/assets/www/index.html?v=$curVersionCode")
+        webView.loadUrl("https://appassets.androidplatform.net/assets/www/index.html?v=${curVersionCode}_${lastUpdateTime}")
     }
 
     private fun isSystemNetworkOnline(): Boolean {

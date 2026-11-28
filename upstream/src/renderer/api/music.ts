@@ -1,4 +1,4 @@
-import { musicDB } from '@/hooks/MusicHook';
+import { musicDB } from '@/hooks/musicDB';
 import { useSettingsStore, useUserStore } from '@/store';
 import type { ILyric } from '@/types/lyric';
 import type { SongResult } from '@/types/music';

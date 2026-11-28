@@ -5895,3 +5895,32 @@ test("Batch 3 [H-12..H-15, H-17, H-19, H-22, H-23, L-03]: cross-platform iOS par
   assert.match(requestTs, /redactSensitiveErrorForLog/);
   assert.doesNotMatch(requestTs, /console\.error\(\s*['"]error['"]\s*,\s*error\s*\)/);
 });
+
+test("Boot stability: lazy musicDB avoids top-level await TDZ crash and MainActivity busts same-version WebView cache", () => {
+  const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), "utf8");
+  const musicDbPath = path.join(repoRoot, "upstream/src/renderer/hooks/musicDB.ts");
+  assert.equal(fs.existsSync(musicDbPath), true, "Expected lazy musicDB.ts module to exist");
+  const musicDbTs = read("upstream/src/renderer/hooks/musicDB.ts");
+  assert.match(musicDbTs, /export function getMusicDB\(/);
+  assert.match(musicDbTs, /export const musicDB\s*=/);
+  assert.doesNotMatch(musicDbTs, /\bawait\s+useIndexedDB\b/);
+  assert.doesNotMatch(musicDbTs, /^(?:export\s+)?(?:const|let|var)\s+[^=\n]+=\s*await\b/m);
+
+  const musicHookTs = read("upstream/src/renderer/hooks/MusicHook.ts");
+  assert.doesNotMatch(musicHookTs, /\bawait\s+useIndexedDB\b/);
+  assert.match(musicHookTs, /export\s*\{\s*musicDB\s*\}\s*from\s*['"]@\/hooks\/musicDB['"]/);
+
+  const musicParserTs = read("upstream/src/renderer/api/musicParser.ts");
+  assert.match(musicParserTs, /import\s*\{\s*musicDB\s*\}\s*from\s*['"]@\/hooks\/musicDB['"]/);
+  assert.doesNotMatch(musicParserTs, /from\s*['"]@\/hooks\/MusicHook['"]/);
+
+  const musicApiTs = read("upstream/src/renderer/api/music.ts");
+  assert.match(musicApiTs, /import\s*\{\s*musicDB\s*\}\s*from\s*['"]@\/hooks\/musicDB['"]/);
+  assert.doesNotMatch(musicApiTs, /from\s*['"]@\/hooks\/MusicHook['"]/);
+
+  const mainActivityKt = read("android/app/src/main/kotlin/com/xiaopang/naiwamusic/MainActivity.kt");
+  assert.match(mainActivityKt, /lastUpdateTime/);
+  assert.match(mainActivityKt, /last_install_signature/);
+  assert.match(mainActivityKt, /webView\.clearCache\(true\)/);
+  assert.match(mainActivityKt, /index\.html\?v=\$\{curVersionCode\}_\$\{lastUpdateTime\}/);
+});
