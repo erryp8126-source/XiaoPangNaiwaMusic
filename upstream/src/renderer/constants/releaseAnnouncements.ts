@@ -123,6 +123,14 @@ export const RELEASE_ANNOUNCEMENTS: readonly ReleaseAnnouncement[] = [
           {
             title: '账号切换与退出登录增强',
             detail: '支持更顺滑地切换账号或安全退出登录，并在退出时同步清理原生会话 Cookie'
+          },
+          {
+            title: '网易云快捷登录与 B 站 / QQ 音乐独立绑定',
+            detail: '新增手机号短信验证码登录及二维码保存相册 / 一键唤起客户端；支持 B 站扫码与 QQ 音乐扫码或手动 Cookie 独立绑定、收藏夹/歌单导入与音源解析增强，解绑绝不影响网易云主账号'
+          },
+          {
+            title: '跨平台歌单导入（分享链接 / 纯文本）',
+            detail: '可在「我的音乐 → 歌单」粘贴汽水 / QQ / 酷狗 / 酷我 / 网易云分享链接或纯文本列表，并发控速防串歌匹配并预览确认，一键生成自建歌单且自动参与云同步'
           }
         ]
       },
@@ -147,6 +155,10 @@ export const RELEASE_ANNOUNCEMENTS: readonly ReleaseAnnouncement[] = [
           {
             title: 'SSRF、分级限流与发布健康门禁',
             detail: '强化服务端与 LX 请求公网地址/重定向安全校验、云同步接口分级限流，以及生产发布健康检查'
+          },
+          {
+            title: 'HTTP 301 会话核验防误退与冷启动恢复',
+            detail: '遇 HTTP 301 先通过防并发会话核验确认有效态，避免网络波动或启动竞态误清空登录态；Android 冷启动优先从安全加密区恢复 Cookie，并完善多平台绑定与外链导入的 SSRF 白名单拦截与日志脱敏'
           }
         ]
       }
