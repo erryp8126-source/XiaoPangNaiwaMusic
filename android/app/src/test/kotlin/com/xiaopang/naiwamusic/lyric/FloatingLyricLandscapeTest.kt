@@ -244,4 +244,55 @@ class FloatingLyricLandscapeTest {
             )
         )
     }
+
+    @Test
+    fun lyricTrackStateClearsStaleYrcAndDoesNotFreezeOnTrackSwitch() {
+        val state = FloatingLyricManager.LyricTrackState()
+        val yrcSongA = listOf(
+            LyricLine(
+                startMs = 0L,
+                durationMs = 2000L,
+                text = "Song A line 1",
+                words = listOf(WordSegment(0L, 1000L, 6))
+            )
+        )
+        val jsSongA = listOf(LyricLine(startMs = 0L, durationMs = 2000L, text = "Song A JS fallback"))
+        val jsSongB = listOf(LyricLine(startMs = 0L, durationMs = 2500L, text = "Song B first line"))
+
+        val initA = state.onTrackChanged("1001", "Song A", "Artist A")
+        assertTrue(initA.trackChanged)
+        assertTrue(initA.shouldFetchNativeLyrics)
+        assertTrue(state.applyNativeLyrics("1001", yrcSongA))
+        assertEquals("1001", state.lyricLinesSongId)
+
+        // Same-song JS lines must NOT downgrade existing YRC for Song A
+        assertFalse(state.applyJsLyrics("1001", "Song A", jsSongA))
+        assertEquals("1001", state.lyricLinesSongId)
+        assertEquals("Song A line 1", state.lyricLines.first().text)
+
+        // Switching to Song B where JS sync arrives BEFORE onNativeTrackChanged must NOT freeze on Song A YRC
+        assertTrue(state.applyJsLyrics("2002", "Song B", jsSongB))
+        assertEquals("2002", state.lyricLinesSongId)
+        assertEquals("Song B first line", state.lyricLines.first().text)
+
+        // Subsequent onNativeTrackChanged for Song B preserves Song B's JS lines and still requests native YRC upgrade
+        val settleB = state.onTrackChanged("2002", "Song B", "Artist B")
+        assertFalse(settleB.trackChanged)
+        assertTrue(settleB.shouldFetchNativeLyrics)
+        assertEquals("2002", state.lyricLinesSongId)
+        assertEquals("Song B first line", state.lyricLines.first().text)
+
+        // Switching to Song C when onNativeTrackChanged runs first clears Song B lyrics immediately
+        val switchC = state.onTrackChanged("3003", "Song C", "Artist C")
+        assertTrue(switchC.trackChanged)
+        assertTrue(switchC.shouldFetchNativeLyrics)
+        assertEquals("", state.lyricLinesSongId)
+        assertTrue(state.lyricLines.isEmpty())
+        assertEquals("Song C", state.fallbackTopText)
+
+        // Late native lyric callback from Song A must be rejected after switching to Song C
+        assertFalse(state.applyNativeLyrics("1001", yrcSongA))
+        assertEquals("", state.lyricLinesSongId)
+        assertTrue(state.lyricLines.isEmpty())
+    }
 }

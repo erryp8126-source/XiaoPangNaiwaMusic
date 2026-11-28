@@ -68,6 +68,7 @@ type WorkerInvokeErrorMessage = {
 type WorkerHttpRequestMessage = {
   type: 'http-request';
   requestId: string;
+  callId?: string;
   url: string;
   options: any;
 };
@@ -89,7 +90,7 @@ type WorkerToRunnerMessage =
 type PendingInvocation = {
   resolve: (value: any) => void;
   reject: (error: Error) => void;
-  timeoutId: number;
+  timeoutId: ReturnType<typeof setTimeout>;
 };
 
 const LOCAL_SERVER_DEFAULT_PORT = '30488';
@@ -165,9 +166,7 @@ const isBlockedIpv6 = (host: string): boolean => {
   if (isLoopback) return true; // ::1
 
   const isV4Mapped = h.slice(0, 5).every((v) => v === 0) && h[5] === 0xffff;
-  const isV4Compat = h.slice(0, 6).every((v) => v === 0);
-  const isNat64 = h[0] === 0x0064 && h[1] === 0xff9b && h.slice(2, 6).every((v) => v === 0);
-  if (isV4Mapped || isV4Compat || isNat64) {
+  if (isV4Mapped) {
     const v4: [number, number, number, number] = [
       (h[6] >> 8) & 0xff,
       h[6] & 0xff,
@@ -176,6 +175,21 @@ const isBlockedIpv6 = (host: string): boolean => {
     ];
     return isBlockedIpv4(v4);
   }
+
+  // IPv4-compatible ::/96 & SIIT ::ffff:0:0:0/96
+  if (h.slice(0, 6).every((v) => v === 0)) return true;
+  if (h.slice(0, 4).every((v) => v === 0) && h[4] === 0xffff && h[5] === 0) return true;
+  // Discard-Only 100::/64
+  if (h[0] === 0x0100 && h[1] === 0 && h[2] === 0 && h[3] === 0) return true;
+  // NAT64 well-known 64:ff9b::/96 & local-use 64:ff9b:1::/48
+  if (h[0] === 0x0064 && h[1] === 0xff9b && h.slice(2, 6).every((v) => v === 0)) return true;
+  if (h[0] === 0x0064 && h[1] === 0xff9b && h[2] === 0x0001) return true;
+  // Teredo 2001::/32, Benchmarking 2001:2::/48, Documentation 2001:db8::/32
+  if (h[0] === 0x2001 && h[1] === 0x0000) return true;
+  if (h[0] === 0x2001 && h[1] === 0x0002 && h[2] === 0x0000) return true;
+  if (h[0] === 0x2001 && h[1] === 0x0db8) return true;
+  // 6to4 2002::/16
+  if (h[0] === 0x2002) return true;
 
   if ((h[0] & 0xfe00) === 0xfc00) return true; // fc00::/7 ULA
   if ((h[0] & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
@@ -278,6 +292,84 @@ export const assertSafeLxRequestUrl = (rawUrl: string): string => {
 };
 
 /**
+ * 安全解析可能返回 API 端点的落雪音频地址：
+ * - 入口、Redirect Location 与 JSON 提取出的真实音频地址均强制经过 assertSafeLxRequestUrl 校验
+ * - 强制 credentials: 'omit' 与 redirect: 'manual' 逐跳校验，阻断内网/回环/云元数据 SSRF
+ */
+export const resolveSafeLxAudioUrl = async (
+  rawUrl: string,
+  fetchImpl: typeof fetch = fetch,
+  maxRedirects = 3
+): Promise<string> => {
+  const initialSafeUrl = assertSafeLxRequestUrl(rawUrl);
+  const isApiEndpoint =
+    initialSafeUrl.includes('/api/') ||
+    (initialSafeUrl.includes('?') && initialSafeUrl.includes('type=url'));
+
+  if (!isApiEndpoint) {
+    return initialSafeUrl;
+  }
+
+  try {
+    const headResp = await fetchImpl(initialSafeUrl, {
+      method: 'HEAD',
+      redirect: 'manual',
+      credentials: 'omit'
+    });
+
+    if (headResp.status >= 300 && headResp.status < 400) {
+      const location = headResp.headers.get('Location')?.trim();
+      if (location) {
+        const resolved = new URL(location, initialSafeUrl).toString();
+        return assertSafeLxRequestUrl(resolved);
+      }
+    }
+
+    let currentUrl = initialSafeUrl;
+    for (let hop = 0; hop <= maxRedirects; hop++) {
+      const getResp = await fetchImpl(currentUrl, {
+        redirect: 'manual',
+        credentials: 'omit'
+      });
+
+      if (getResp.status >= 300 && getResp.status < 400) {
+        const location = getResp.headers.get('Location')?.trim();
+        if (!location) break;
+        if (hop >= maxRedirects) {
+          throw new Error(`Blocked LX redirect loop exceeding ${maxRedirects} hops`);
+        }
+        const nextUrl = new URL(location, currentUrl).toString();
+        currentUrl = assertSafeLxRequestUrl(nextUrl);
+        continue;
+      }
+
+      const contentType = getResp.headers.get('Content-Type') || '';
+      if (contentType.includes('audio/') || contentType.includes('application/octet-stream')) {
+        return assertSafeLxRequestUrl(getResp.url || currentUrl);
+      }
+
+      if (contentType.includes('application/json') || contentType.includes('text/json')) {
+        const json = await getResp.json();
+        const audioUrl = json?.url || json?.data?.url || json?.audio_url || json?.link || json?.src;
+        if (audioUrl && typeof audioUrl === 'string') {
+          const resolvedAudio = new URL(audioUrl, currentUrl).toString();
+          return assertSafeLxRequestUrl(resolvedAudio);
+        }
+      }
+
+      return currentUrl;
+    }
+
+    return currentUrl;
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Blocked')) {
+      throw error;
+    }
+    return initialSafeUrl;
+  }
+};
+
+/**
  * 解析脚本头部注释中的元信息
  */
 export const parseScriptInfo = (script: string): LxScriptInfo => {
@@ -337,19 +429,19 @@ export class LxMusicSourceRunner {
 
   private worker: Worker | null = null;
   private pendingInvocations = new Map<string, PendingInvocation>();
+  private invocationFallbackUrls = new Map<string, string>();
   private pendingHttpCancels = new Map<string, () => void>();
   private callSequence = 0;
 
   private initResolver: ((data: LxInitedData) => void) | null = null;
   private initRejecter: ((error: Error) => void) | null = null;
-  private initTimeoutId: number | null = null;
+  private initTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  private readonly workerFactory?: () => Worker;
 
-  // 临时存储最后一次 HTTP 请求返回的音乐 URL（用于脚本返回 undefined 时的后备）
-  private lastMusicUrl: string | null = null;
-
-  constructor(script: string) {
+  constructor(script: string, workerFactory?: () => Worker) {
     this.script = script;
     this.scriptInfo = parseScriptInfo(script);
+    this.workerFactory = workerFactory;
   }
 
   /**
@@ -371,9 +463,11 @@ export class LxMusicSourceRunner {
       return this.worker;
     }
 
-    const worker = new Worker(new URL('./workers/lxScriptSandbox.worker.ts', import.meta.url), {
-      type: 'module'
-    });
+    const worker = this.workerFactory
+      ? this.workerFactory()
+      : new Worker(new URL('./workers/lxScriptSandbox.worker.ts', import.meta.url), {
+          type: 'module'
+        });
 
     worker.onmessage = (event: MessageEvent<WorkerToRunnerMessage>) => {
       this.handleWorkerMessage(event.data);
@@ -486,14 +580,21 @@ export class LxMusicSourceRunner {
   }
 
   private handleWorkerHttpRequest(message: WorkerHttpRequestMessage) {
+    const ownerCallId = message.callId;
     const cancel = this.handleHttpRequest(
       message.url,
       message.options,
       (error: Error | null, response: any, body: any) => {
         this.pendingHttpCancels.delete(message.requestId);
 
-        if (body && typeof body.url === 'string') {
-          this.lastMusicUrl = body.url;
+        if (
+          ownerCallId &&
+          this.pendingInvocations.has(ownerCallId) &&
+          body &&
+          typeof body.url === 'string' &&
+          body.url.trim()
+        ) {
+          this.invocationFallbackUrls.set(ownerCallId, body.url.trim());
         }
 
         this.postToWorker({
@@ -509,30 +610,67 @@ export class LxMusicSourceRunner {
     this.pendingHttpCancels.set(message.requestId, cancel);
   }
 
-  private async invokeRequest(payload: any, timeoutMs = 20000): Promise<any> {
+  private terminateWorker(error: Error) {
+    this.pendingHttpCancels.forEach((cancel) => {
+      try {
+        cancel();
+      } catch {
+        // ignore
+      }
+    });
+    this.pendingHttpCancels.clear();
+    this.invocationFallbackUrls.clear();
+
+    if (this.worker) {
+      this.worker.terminate();
+      this.worker = null;
+    }
+    this.initialized = false;
+    this.initPromise = null;
+    this.rejectAllInvocations(error);
+  }
+
+  private async invokeRequestWithFallback(
+    payload: any,
+    timeoutMs = 20000
+  ): Promise<{ result: any; fallbackUrl: string | null }> {
     if (!this.initialized) {
       throw new Error('脚本尚未初始化');
     }
 
     const callId = `call_${Date.now()}_${this.callSequence++}`;
-    return await new Promise((resolve, reject) => {
-      const timeoutId = window.setTimeout(() => {
-        this.pendingInvocations.delete(callId);
-        reject(new Error('脚本请求超时'));
-      }, timeoutMs);
+    try {
+      const result = await new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          this.pendingInvocations.delete(callId);
+          const timeoutErr = new Error('脚本请求超时');
+          this.terminateWorker(timeoutErr);
+          reject(timeoutErr);
+        }, timeoutMs);
 
-      this.pendingInvocations.set(callId, {
-        resolve,
-        reject,
-        timeoutId
+        this.pendingInvocations.set(callId, {
+          resolve,
+          reject,
+          timeoutId
+        });
+
+        this.postToWorker({
+          type: 'invoke-request',
+          callId,
+          payload
+        });
       });
 
-      this.postToWorker({
-        type: 'invoke-request',
-        callId,
-        payload
-      });
-    });
+      const fallbackUrl = this.invocationFallbackUrls.get(callId) || null;
+      return { result, fallbackUrl };
+    } finally {
+      this.invocationFallbackUrls.delete(callId);
+    }
+  }
+
+  private async invokeRequest(payload: any, timeoutMs = 20000): Promise<any> {
+    const { result } = await this.invokeRequestWithFallback(payload, timeoutMs);
+    return result;
   }
 
   /**
@@ -550,8 +688,10 @@ export class LxMusicSourceRunner {
     this.initPromise = new Promise<LxInitedData>((resolve, reject) => {
       this.initResolver = resolve;
       this.initRejecter = reject;
-      this.initTimeoutId = window.setTimeout(() => {
-        this.rejectInitialization(new Error('脚本初始化超时'));
+      this.initTimeoutId = setTimeout(() => {
+        const timeoutErr = new Error('脚本初始化超时');
+        this.rejectInitialization(timeoutErr);
+        this.terminateWorker(timeoutErr);
       }, 10000);
     });
 
@@ -586,10 +726,11 @@ export class LxMusicSourceRunner {
 
     console.log(`[LxMusicRunner] HTTP 请求: ${options.method || 'GET'} ${safeUrl}`);
 
-    const timeout = options.timeout || 30000;
+    const timeout = options?.timeout || 30000;
     const requestId = `lx_http_${Date.now()}_${Math.random().toString(36).substring(7)}`;
 
-    const hasMainProcessHttp = typeof window.api?.lxMusicHttpRequest === 'function';
+    const hasMainProcessHttp =
+      typeof window !== 'undefined' && typeof window.api?.lxMusicHttpRequest === 'function';
 
     if (hasMainProcessHttp) {
       window.api
@@ -652,7 +793,7 @@ export class LxMusicSourceRunner {
       fetchOptions.body = formData;
     }
 
-    const timeoutId = window.setTimeout(() => {
+    const timeoutId = setTimeout(() => {
       controller.abort();
     }, timeout);
 
@@ -726,7 +867,7 @@ export class LxMusicSourceRunner {
     }
 
     try {
-      const result = await this.invokeRequest({
+      const { result, fallbackUrl } = await this.invokeRequestWithFallback({
         source,
         action: 'musicUrl',
         info: {
@@ -743,15 +884,14 @@ export class LxMusicSourceRunner {
       }
 
       if (typeof url !== 'string' || !url) {
-        if (this.lastMusicUrl) {
-          url = this.lastMusicUrl;
-          this.lastMusicUrl = null;
+        if (fallbackUrl) {
+          url = fallbackUrl;
         } else {
           throw new Error(result?.message || result?.msg || '获取音乐 URL 失败');
         }
       }
 
-      return url;
+      return assertSafeLxRequestUrl(url);
     } catch (error) {
       console.error('[LxMusicRunner] 获取音乐 URL 失败:', error);
       throw error;
@@ -848,7 +988,7 @@ export class LxMusicSourceRunner {
     this.initialized = false;
     this.initPromise = null;
     this.sources = {};
-    this.lastMusicUrl = null;
+    this.invocationFallbackUrls.clear();
   }
 }
 

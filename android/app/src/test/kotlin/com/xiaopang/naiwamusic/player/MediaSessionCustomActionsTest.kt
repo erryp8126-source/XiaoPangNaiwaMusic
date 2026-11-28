@@ -46,4 +46,36 @@ class MediaSessionCustomActionsTest {
             MusicPlaybackService.resolveLyricIconRes(false)
         )
     }
+
+    @Test
+    fun appendCoverSizeParamRespectsExistingQueryParamsAndLocalCovers() {
+        assertEquals(
+            "https://p1.music.126.net/cover.jpg?param=300y300",
+            MusicPlaybackService.appendCoverSizeParam(
+                "https://p1.music.126.net/cover.jpg",
+                isLocalCover = false
+            )
+        )
+        assertEquals(
+            "https://p1.music.126.net/cover.jpg?imageView=1&param=300y300",
+            MusicPlaybackService.appendCoverSizeParam(
+                "https://p1.music.126.net/cover.jpg?imageView=1",
+                isLocalCover = false
+            )
+        )
+        assertEquals(
+            "https://p1.music.126.net/cover.jpg?param=500y500",
+            MusicPlaybackService.appendCoverSizeParam(
+                "https://p1.music.126.net/cover.jpg?param=500y500",
+                isLocalCover = false
+            )
+        )
+        assertEquals(
+            "http://127.0.0.1:30488/local-cover?path=abc",
+            MusicPlaybackService.appendCoverSizeParam(
+                "http://127.0.0.1:30488/local-cover?path=abc",
+                isLocalCover = true
+            )
+        )
+    }
 }

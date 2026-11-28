@@ -44,6 +44,25 @@ class EmbeddedHttpServer(
         )
         private val CONTENT_AUDIO_MEDIA_REGEX = Regex("^content://media/external/audio/media/\\d+$")
         private val CONTENT_ALBUM_ART_REGEX = Regex("^content://media/external/audio/albumart(?:/\\d+)?$")
+
+        internal fun resolveHttpStatus(statusCode: Int): Response.IStatus {
+            val safeCode = if (statusCode in 100..599) statusCode else 500
+            Response.Status.lookup(safeCode)?.let { return it }
+            val reason = when (safeCode) {
+                422 -> "Unprocessable Entity"
+                429 -> "Too Many Requests"
+                502 -> "Bad Gateway"
+                503 -> "Service Unavailable"
+                504 -> "Gateway Timeout"
+                else -> "Status $safeCode"
+            }
+            return object : Response.IStatus {
+                override fun getRequestStatus(): Int = safeCode
+                override fun getDescription(): String = "$safeCode $reason"
+            }
+        }
+
+        internal fun extractRawLocalPath(params: Map<String, String>): String? = params["path"]
     }
 
     private val gson = Gson()
@@ -161,7 +180,7 @@ class EmbeddedHttpServer(
         val params = collectParams(session)
         params.remove("token")
         val (statusCode, body) = platformAuthProxy.handle(uri, params)
-        val status = Response.Status.lookup(statusCode) ?: Response.Status.OK
+        val status = resolveHttpStatus(statusCode)
         return newFixedLengthResponse(status, "application/json; charset=utf-8", body)
     }
 
@@ -169,7 +188,7 @@ class EmbeddedHttpServer(
         val params = collectParams(session)
         params.remove("token")
         val (statusCode, body) = externalPlaylistParser.handle(params)
-        val status = Response.Status.lookup(statusCode) ?: Response.Status.OK
+        val status = resolveHttpStatus(statusCode)
         return newFixedLengthResponse(status, "application/json; charset=utf-8", body)
     }
 
@@ -182,7 +201,7 @@ class EmbeddedHttpServer(
         }
 
         val apiRes = ncmClient.dispatch(uri, params)
-        val status = Response.Status.lookup(apiRes.status) ?: Response.Status.OK
+        val status = resolveHttpStatus(apiRes.status)
         val resp = newFixedLengthResponse(status, "application/json; charset=utf-8", apiRes.body)
         if (apiRes.cookies.isNotEmpty()) {
             apiRes.cookies.forEach { c -> resp.addHeader("Set-Cookie", c) }
@@ -276,7 +295,7 @@ class EmbeddedHttpServer(
 
         // 2. 仅允许从合法音频文件或 MediaStore 音频 URI 提取内嵌封面
         if (!pathStr.isNullOrBlank()) {
-            val decoded = runCatching { URLDecoder.decode(pathStr, "UTF-8") }.getOrDefault(pathStr)
+            val decoded = pathStr
             val retriever = MediaMetadataRetriever()
             try {
                 if (decoded.startsWith("content://")) {
@@ -319,8 +338,8 @@ class EmbeddedHttpServer(
 
     private fun handleLocalFile(session: IHTTPSession): Response {
         val params = collectParams(session)
-        val rawPath = params["path"] ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "Missing path")
-        val decoded = runCatching { URLDecoder.decode(rawPath, "UTF-8") }.getOrDefault(rawPath)
+        val decoded = extractRawLocalPath(params)
+            ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "Missing path")
 
         val mime = guessAudioMime(decoded)
         val rangeHeader = session.headers["range"]

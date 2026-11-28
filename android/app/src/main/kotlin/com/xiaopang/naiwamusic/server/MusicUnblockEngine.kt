@@ -7,11 +7,13 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import okhttp3.FormBody
+import okhttp3.Headers
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import java.io.ByteArrayOutputStream
 import java.net.URI
 import java.net.URLEncoder
 import java.util.Locale
@@ -37,6 +39,154 @@ class MusicUnblockEngine internal constructor(
         internal const val SHORT_TRACK_DURATION_THRESHOLD_MS = 30_000L
         internal const val MIN_CANDIDATE_PASS_SCORE = 35
         internal const val REJECT_CANDIDATE_SCORE = Int.MIN_VALUE
+        internal const val MAX_PROXY_RESPONSE_BYTES = 6 * 1024 * 1024 // 6 MB 上限，防恶意流触发 OOM
+        internal const val MAX_UNBLOCK_TEXT_BYTES = 4 * 1024 * 1024 // 4 MB 文本读取上限
+        internal const val MIN_PROXY_TIMEOUT_MS = 1_000L
+        internal const val MAX_PROXY_TIMEOUT_MS = 60_000L
+
+        internal fun clampProxyTimeoutMs(timeoutMs: Long): Long =
+            timeoutMs.coerceIn(MIN_PROXY_TIMEOUT_MS, MAX_PROXY_TIMEOUT_MS)
+
+        internal fun readBoundedResponseText(
+            resp: Response,
+            maxBytes: Int,
+            throwOnOverflow: Boolean = true
+        ): String {
+            val body = resp.body ?: return ""
+            val contentLength = body.contentLength()
+            if (throwOnOverflow && contentLength > maxBytes.toLong()) {
+                throw IllegalStateException("Response body exceeds $maxBytes byte limit")
+            }
+            val out = ByteArrayOutputStream()
+            val buf = ByteArray(8192)
+            var totalRead = 0
+            body.byteStream().use { input ->
+                while (true) {
+                    val read = input.read(buf)
+                    if (read == -1) break
+                    if (totalRead + read > maxBytes) {
+                        if (throwOnOverflow) {
+                            throw IllegalStateException("Response body exceeds $maxBytes byte limit")
+                        }
+                        val remaining = maxBytes - totalRead
+                        if (remaining > 0) {
+                            out.write(buf, 0, remaining)
+                        }
+                        break
+                    }
+                    out.write(buf, 0, read)
+                    totalRead += read
+                }
+            }
+            val charset = runCatching { body.contentType()?.charset(Charsets.UTF_8) }.getOrNull() ?: Charsets.UTF_8
+            return out.toString(charset.name())
+        }
+
+        internal fun serializeResponseHeaders(headers: Headers): JsonObject {
+            val respHeaders = JsonObject()
+            for (name in headers.names()) {
+                val values = headers.values(name)
+                val lowerName = name.lowercase(Locale.ROOT)
+                if (values.size > 1) {
+                    val arr = JsonArray()
+                    values.forEach { arr.add(it) }
+                    respHeaders.add(lowerName, arr)
+                } else if (values.size == 1) {
+                    respHeaders.addProperty(lowerName, values[0])
+                }
+            }
+            return respHeaders
+        }
+
+        private fun nextNonWhitespaceChar(text: String, startIdx: Int): Char? {
+            var idx = startIdx
+            while (idx < text.length) {
+                val ch = text[idx]
+                if (!ch.isWhitespace()) return ch
+                idx++
+            }
+            return null
+        }
+
+        private fun convertSingleQuotedJsonToStandard(raw: String): String {
+            val sb = StringBuilder(raw.length)
+            var inDoubleQuote = false
+            var inSingleQuote = false
+            var escaped = false
+            var i = 0
+            while (i < raw.length) {
+                val ch = raw[i]
+                if (inDoubleQuote) {
+                    sb.append(ch)
+                    if (escaped) {
+                        escaped = false
+                    } else if (ch == '\\') {
+                        escaped = true
+                    } else if (ch == '"') {
+                        inDoubleQuote = false
+                    }
+                } else if (inSingleQuote) {
+                    if (escaped) {
+                        if (ch == '\'') {
+                            sb.append('\'')
+                        } else {
+                            sb.append('\\').append(ch)
+                        }
+                        escaped = false
+                    } else if (ch == '\\') {
+                        escaped = true
+                    } else if (ch == '"') {
+                        sb.append("\\\"")
+                    } else if (ch == '\'') {
+                        val nextNonWs = nextNonWhitespaceChar(raw, i + 1)
+                        val isClosingDelimiter =
+                            nextNonWs == null ||
+                                nextNonWs == ',' ||
+                                nextNonWs == ':' ||
+                                nextNonWs == '}' ||
+                                nextNonWs == ']'
+                        if (isClosingDelimiter) {
+                            inSingleQuote = false
+                            sb.append('"')
+                        } else {
+                            sb.append('\'')
+                        }
+                    } else {
+                        sb.append(ch)
+                    }
+                } else {
+                    when (ch) {
+                        '"' -> {
+                            inDoubleQuote = true
+                            sb.append(ch)
+                        }
+                        '\'' -> {
+                            inSingleQuote = true
+                            sb.append('"')
+                        }
+                        else -> sb.append(ch)
+                    }
+                }
+                i++
+            }
+            return sb.toString()
+        }
+
+        internal fun parseKuwoSearchJson(rawBody: String): JsonObject? {
+            val trimmed = rawBody.trim()
+            if (trimmed.isEmpty()) return null
+            val direct = runCatching {
+                val el = JsonParser.parseString(trimmed)
+                if (el.isJsonObject) el.asJsonObject else null
+            }.getOrNull()
+            if (direct != null) return direct
+
+            val normalized = convertSingleQuotedJsonToStandard(trimmed)
+            return runCatching {
+                val el = JsonParser.parseString(normalized)
+                if (el.isJsonObject) el.asJsonObject else null
+            }.getOrNull()
+        }
         private const val MAX_SEARCH_CANDIDATES = 8
         private const val MAX_PROBING_CANDIDATES = 3
         private val HEAD_FALLBACK_CODES = setOf(400, 403, 405, 501)
@@ -497,8 +647,7 @@ class MusicUnblockEngine internal constructor(
         val searchUrl =
             "http://search.kuwo.cn/r.s?all=$q&ft=music&rformat=json&encoding=utf8&pcjson=1&vipver=1&pn=0&rn=$MAX_SEARCH_CANDIDATES"
         val body = httpGetText(searchUrl, mapOf("User-Agent" to DEFAULT_UA)) ?: return null
-        val root = runCatching { JsonParser.parseString(body.replace("'", "\"")).asJsonObject }.getOrNull()
-            ?: return null
+        val root = parseKuwoSearchJson(body) ?: return null
         val list = root.getAsJsonArray("abslist") ?: return null
         if (list.size() == 0) return null
 
@@ -839,7 +988,7 @@ class MusicUnblockEngine internal constructor(
                 SafeHttpGuard.AUDIO_AND_PROXY_ALLOWED_DOMAINS
             ).use { resp ->
                 if (!resp.isSuccessful) return null
-                resp.body?.string()
+                readBoundedResponseText(resp, MAX_UNBLOCK_TEXT_BYTES, throwOnOverflow = true)
             }
         } catch (_: Exception) {
             null
@@ -871,10 +1020,11 @@ class MusicUnblockEngine internal constructor(
                 else "Blocked non-allowlisted or unsafe proxy URL"
             )
         }
+        val safeTimeoutMs = clampProxyTimeoutMs(timeoutMs)
         val customClient = client.newBuilder()
-            .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
-            .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
-            .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+            .connectTimeout(safeTimeoutMs, TimeUnit.MILLISECONDS)
+            .readTimeout(safeTimeoutMs, TimeUnit.MILLISECONDS)
+            .writeTimeout(safeTimeoutMs, TimeUnit.MILLISECONDS)
             .followRedirects(false)
             .followSslRedirects(false)
             .dns(
@@ -924,11 +1074,8 @@ class MusicUnblockEngine internal constructor(
             )
         }
         respBlock.use { resp ->
-            val rawText = resp.body?.string() ?: ""
-            val respHeaders = JsonObject()
-            resp.headers.names().forEach { name ->
-                respHeaders.addProperty(name.lowercase(), resp.header(name))
-            }
+            val rawText = readBoundedResponseText(resp, MAX_PROXY_RESPONSE_BYTES, throwOnOverflow = true)
+            val respHeaders = serializeResponseHeaders(resp.headers)
 
             val parsedBody: JsonElement = runCatching {
                 val trimmed = rawText.trim()

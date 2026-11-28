@@ -55,15 +55,23 @@ export const OUTBOUND_AUDIO_ALLOWED_DOMAINS = new Set([
   "joox.com",
 ]);
 
-export const PLATFORM_AUTH_ALLOWED_DOMAINS = new Set([
+export const BILIBILI_AUTH_ALLOWED_DOMAINS = new Set([
   "passport.bilibili.com",
   "api.bilibili.com",
+]);
+
+export const QQ_AUTH_ALLOWED_DOMAINS = new Set([
   "ssl.ptlogin2.qq.com",
   "ptlogin2.qq.com",
   "u.y.qq.com",
   "c.y.qq.com",
   "y.qq.com",
   "graph.qq.com",
+]);
+
+export const PLATFORM_AUTH_ALLOWED_DOMAINS = new Set([
+  ...BILIBILI_AUTH_ALLOWED_DOMAINS,
+  ...QQ_AUTH_ALLOWED_DOMAINS,
 ]);
 
 export const EXTERNAL_PLAYLIST_ALLOWED_DOMAINS = new Set([
@@ -104,18 +112,83 @@ export function isPublicIPv4(ip: string): boolean {
   return true;
 }
 
+function parseIPv6Hextets(rawIp: string): number[] | null {
+  const addr = rawIp.split("%")[0]?.trim().toLowerCase() || "";
+  if (!addr) return null;
+  const doubleColonParts = addr.split("::");
+  if (doubleColonParts.length > 2) return null;
+
+  const parseSegmentList = (segStr: string, allowEmbeddedIpv4: boolean): number[] | null => {
+    if (!segStr) return [];
+    const parts = segStr.split(":");
+    const out: number[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (!part) return null;
+      if (part.includes(".")) {
+        if (!allowEmbeddedIpv4 || i !== parts.length - 1) return null;
+        const octets = part.split(".");
+        if (octets.length !== 4) return null;
+        const nums = octets.map((o) => (/^\d{1,3}$/.test(o) ? Number(o) : NaN));
+        if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+        out.push((nums[0] << 8) | nums[1], (nums[2] << 8) | nums[3]);
+      } else {
+        if (!/^[0-9a-f]{1,4}$/.test(part)) return null;
+        out.push(parseInt(part, 16));
+      }
+    }
+    return out;
+  };
+
+  if (doubleColonParts.length === 1) {
+    const groups = parseSegmentList(doubleColonParts[0], true);
+    return groups && groups.length === 8 ? groups : null;
+  }
+
+  const head = parseSegmentList(doubleColonParts[0], false);
+  const tail = parseSegmentList(doubleColonParts[1], true);
+  if (!head || !tail) return null;
+  const zeroFill = 8 - (head.length + tail.length);
+  if (zeroFill < 1) return null;
+  return [...head, ...new Array<number>(zeroFill).fill(0), ...tail];
+}
+
 export function isPublicIPv6(ip: string): boolean {
   const normalized = ip.trim().toLowerCase().replace(/^\[|\]$/g, "").split("%")[0];
   if (!normalized || net.isIPv6(normalized) === false) return false;
-  if (normalized === "::" || normalized === "::1") return false;
-  if (normalized.startsWith("::ffff:")) {
-    const mapped = normalized.slice(7);
-    if (net.isIPv4(mapped)) return isPublicIPv4(mapped);
+  const h = parseIPv6Hextets(normalized);
+  if (!h) return false;
+
+  // ::/128 (unspecified) & ::1/128 (loopback)
+  if (h.every((v) => v === 0)) return false;
+  if (h.slice(0, 7).every((v) => v === 0) && h[7] === 1) return false;
+
+  // ::ffff:0:0/96 (IPv4-mapped IPv6, including WHATWG hex form ::ffff:7f00:1)
+  if (h.slice(0, 5).every((v) => v === 0) && h[5] === 0xffff) {
+    const ipv4 = `${(h[6] >> 8) & 0xff}.${h[6] & 0xff}.${(h[7] >> 8) & 0xff}.${h[7] & 0xff}`;
+    return isPublicIPv4(ipv4);
   }
-  const firstHextet = parseInt(normalized.split(":")[0] || "0", 16);
-  if ((firstHextet & 0xfe00) === 0xfc00) return false; // fc00::/7 ULA
-  if ((firstHextet & 0xffc0) === 0xfe80) return false; // fe80::/10 link-local
-  if ((firstHextet & 0xff00) === 0xff00) return false; // ff00::/8 multicast
+
+  // ::/96 (IPv4-compatible IPv6, e.g. ::127.0.0.1 / ::7f00:1)
+  if (h.slice(0, 6).every((v) => v === 0)) return false;
+  // ::ffff:0:0:0/96 (SIIT IPv4-translated)
+  if (h.slice(0, 4).every((v) => v === 0) && h[4] === 0xffff && h[5] === 0) return false;
+  // 100::/64 (Discard-Only)
+  if (h[0] === 0x0100 && h[1] === 0 && h[2] === 0 && h[3] === 0) return false;
+  // 64:ff9b::/96 (NAT64 well-known) & 64:ff9b:1::/48 (NAT64 local-use)
+  if (h[0] === 0x0064 && h[1] === 0xff9b && h.slice(2, 6).every((v) => v === 0)) return false;
+  if (h[0] === 0x0064 && h[1] === 0xff9b && h[2] === 0x0001) return false;
+  // 2001::/32 (Teredo), 2001:2::/48 (Benchmarking), 2001:db8::/32 (Documentation)
+  if (h[0] === 0x2001 && h[1] === 0x0000) return false;
+  if (h[0] === 0x2001 && h[1] === 0x0002 && h[2] === 0x0000) return false;
+  if (h[0] === 0x2001 && h[1] === 0x0db8) return false;
+  // 2002::/16 (6to4)
+  if (h[0] === 0x2002) return false;
+
+  if ((h[0] & 0xfe00) === 0xfc00) return false; // fc00::/7 ULA
+  if ((h[0] & 0xffc0) === 0xfe80) return false; // fe80::/10 link-local
+  if ((h[0] & 0xffc0) === 0xfec0) return false; // fec0::/10 site-local
+  if ((h[0] & 0xff00) === 0xff00) return false; // ff00::/8 multicast
   return true;
 }
 
@@ -194,14 +267,16 @@ function isDisallowedAudioContentType(contentType: string | null): boolean {
 export interface SafeFetchOptions {
   allowedSuffixes?: Set<string>;
   allowAnyPublicHost?: boolean;
+  requireHttps?: boolean;
   maxRedirects?: number;
   dnsLookup?: (hostname: string) => Promise<Array<{ address: string; family: number }>>;
   fetchImpl?: typeof fetch;
+  onResponse?: (resp: Response, url: URL) => void;
 }
 
 export async function validateOutboundUrl(
   rawUrl: string,
-  options: Pick<SafeFetchOptions, "allowedSuffixes" | "allowAnyPublicHost" | "dnsLookup"> = {}
+  options: Pick<SafeFetchOptions, "allowedSuffixes" | "allowAnyPublicHost" | "requireHttps" | "dnsLookup"> = {}
 ): Promise<URL> {
   let parsed: URL;
   try {
@@ -209,7 +284,11 @@ export async function validateOutboundUrl(
   } catch {
     throw new Error(`SSRF blocked: invalid URL "${rawUrl}"`);
   }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+  if (options.requireHttps === true) {
+    if (parsed.protocol !== "https:") {
+      throw new Error(`SSRF blocked: disallowed non-HTTPS scheme "${parsed.protocol}"`);
+    }
+  } else if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`SSRF blocked: disallowed scheme "${parsed.protocol}"`);
   }
 
@@ -271,6 +350,8 @@ export async function safeFetchWithRedirects(
       headers: currentHeaders,
       redirect: "manual",
     });
+    const currentParsed = new URL(currentUrl);
+    options.onResponse?.(resp, currentParsed);
 
     if (!REDIRECT_STATUS_CODES.has(resp.status)) {
       return resp;
@@ -285,11 +366,14 @@ export async function safeFetchWithRedirects(
       return resp;
     }
 
-    const prevHost = new URL(currentUrl).hostname.toLowerCase();
     const resolvedNext = new URL(location, currentUrl).toString();
     const validatedNext = await validateOutboundUrl(resolvedNext, options);
 
-    if (validatedNext.hostname.toLowerCase() !== prevHost) {
+    const sameOrigin =
+      validatedNext.hostname.toLowerCase() === currentParsed.hostname.toLowerCase() &&
+      validatedNext.protocol === currentParsed.protocol &&
+      validatedNext.port === currentParsed.port;
+    if (!sameOrigin) {
       currentHeaders = new Headers(currentHeaders);
       currentHeaders.delete("authorization");
       currentHeaders.delete("cookie");
@@ -1338,12 +1422,24 @@ async function renderQrPngDataUrl(text: string): Promise<string> {
   }
 }
 
-async function fetchPlatformSafe(
+async function fetchBilibiliAuthSafe(
   rawUrl: string,
   init: RequestInit = {}
 ): Promise<Response> {
   return safeFetchWithRedirects(rawUrl, init, {
-    allowedSuffixes: PLATFORM_AUTH_ALLOWED_DOMAINS,
+    allowedSuffixes: BILIBILI_AUTH_ALLOWED_DOMAINS,
+    requireHttps: true,
+    maxRedirects: 3,
+  });
+}
+
+async function fetchQqAuthSafe(
+  rawUrl: string,
+  init: RequestInit = {}
+): Promise<Response> {
+  return safeFetchWithRedirects(rawUrl, init, {
+    allowedSuffixes: QQ_AUTH_ALLOWED_DOMAINS,
+    requireHttps: true,
     maxRedirects: 3,
   });
 }
@@ -1359,7 +1455,7 @@ async function handlePlatformBind(
   };
   try {
     if (apiPath === "/bind/bilibili/qr/generate") {
-      const resp = await fetchPlatformSafe(
+      const resp = await fetchBilibiliAuthSafe(
         "https://passport.bilibili.com/x/passport-login/web/qrcode/generate",
         { headers: { "User-Agent": BIND_BROWSER_UA, Referer: "https://www.bilibili.com/" } }
       );
@@ -1387,7 +1483,7 @@ async function handlePlatformBind(
           { status: 400, headers: noStoreHeaders }
         );
       }
-      const resp = await fetchPlatformSafe(
+      const resp = await fetchBilibiliAuthSafe(
         `https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key=${encodeURIComponent(qrKey)}`,
         { headers: { "User-Agent": BIND_BROWSER_UA, Referer: "https://www.bilibili.com/" } }
       );
@@ -1434,7 +1530,7 @@ async function handlePlatformBind(
           );
         }
         const cookieStr = formatJarCookie(filtered);
-        const navResp = await fetchPlatformSafe("https://api.bilibili.com/x/web-interface/nav", {
+        const navResp = await fetchBilibiliAuthSafe("https://api.bilibili.com/x/web-interface/nav", {
           headers: { "User-Agent": BIND_BROWSER_UA, Referer: "https://www.bilibili.com/", Cookie: cookieStr },
         });
         const navJson: any = await navResp.json().catch(() => ({}));
@@ -1462,7 +1558,7 @@ async function handlePlatformBind(
       if (!cookie) {
         return Response.json({ code: 401, message: "B 站尚未绑定" }, { status: 401, headers: noStoreHeaders });
       }
-      const navResp = await fetchPlatformSafe("https://api.bilibili.com/x/web-interface/nav", {
+      const navResp = await fetchBilibiliAuthSafe("https://api.bilibili.com/x/web-interface/nav", {
         headers: { "User-Agent": BIND_BROWSER_UA, Referer: "https://www.bilibili.com/", Cookie: cookie },
       });
       const navJson: any = await navResp.json().catch(() => ({}));
@@ -1497,7 +1593,7 @@ async function handlePlatformBind(
           { status: 400, headers: noStoreHeaders }
         );
       }
-      const resp = await fetchPlatformSafe(
+      const resp = await fetchBilibiliAuthSafe(
         `https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=${encodeURIComponent(uid)}&type=2`,
         { headers: { "User-Agent": BIND_BROWSER_UA, Referer: "https://www.bilibili.com/", Cookie: cookie } }
       );
@@ -1522,7 +1618,7 @@ async function handlePlatformBind(
           { status: 400, headers: noStoreHeaders }
         );
       }
-      const resp = await fetchPlatformSafe(
+      const resp = await fetchBilibiliAuthSafe(
         `https://api.bilibili.com/x/v3/fav/resource/list?media_id=${encodeURIComponent(mediaId)}&pn=${pn}&ps=${ps}&platform=web`,
         { headers: { "User-Agent": BIND_BROWSER_UA, Referer: "https://www.bilibili.com/", Cookie: cookie } }
       );
@@ -1558,7 +1654,7 @@ async function handlePlatformBind(
       };
       if (cookie) reqHeaders.Cookie = cookie;
       if (cid <= 0) {
-        const viewResp = await fetchPlatformSafe(
+        const viewResp = await fetchBilibiliAuthSafe(
           `https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`,
           { headers: reqHeaders }
         );
@@ -1568,7 +1664,7 @@ async function handlePlatformBind(
       if (cid <= 0) {
         return Response.json({ code: 404, message: "未找到 B 站分 P 信息" }, { status: 200, headers: noStoreHeaders });
       }
-      const playResp = await fetchPlatformSafe(
+      const playResp = await fetchBilibiliAuthSafe(
         `https://api.bilibili.com/x/player/playurl?bvid=${encodeURIComponent(bvid)}&cid=${cid}&qn=80&fnval=16&fourk=1`,
         { headers: reqHeaders }
       );
@@ -1601,7 +1697,7 @@ async function handlePlatformBind(
     }
 
     if (apiPath === "/bind/qq/qr/generate") {
-      const resp = await fetchPlatformSafe(
+      const resp = await fetchQqAuthSafe(
         `https://ssl.ptlogin2.qq.com/ptqrshow?appid=716027609&e=2&l=M&s=3&d=72&v=4&t=${Math.random()}&daid=383&pt_3rd_aid=100497308`,
         { headers: { "User-Agent": BIND_BROWSER_UA, Referer: "https://xui.ptlogin2.qq.com/" } }
       );
@@ -1623,15 +1719,15 @@ async function handlePlatformBind(
 
     if (apiPath === "/bind/qq/qr/poll") {
       const qrsig = String(params.qrsig || "").trim();
-      if (!qrsig) {
+      if (!qrsig || /[;\s\u0000-\u001f\u007f]/.test(qrsig)) {
         return Response.json(
-          { code: 400, status: "error", message: "缺少 qrsig" },
+          { code: 400, status: "error", message: "缺少或非法的 qrsig" },
           { status: 400, headers: noStoreHeaders }
         );
       }
       const ptqrtoken = computeBindQqPtqrToken(qrsig);
       const u1 = encodeURIComponent("https://y.qq.com/n/ryqq/profile");
-      const pollResp = await fetchPlatformSafe(
+      const pollResp = await fetchQqAuthSafe(
         `https://ssl.ptlogin2.qq.com/ptqrlogin?u1=${u1}&ptqrtoken=${ptqrtoken}&ptredirect=1&h=1&t=1&g=1&from_ui=1&ptlang=2052&action=0-0-${Date.now()}&js_ver=23090814&js_type=1&login_sig=&pt_uistyle=40&aid=716027609&daid=383&pt_3rd_aid=100497308&`,
         {
           headers: {
@@ -1650,26 +1746,33 @@ async function handlePlatformBind(
           { status: 200, headers: noStoreHeaders }
         );
       }
-      let nextUrl: string | null = parsed.redirectUrl;
-      for (let hop = 0; hop < 5 && nextUrl; hop++) {
-        await validateOutboundUrl(nextUrl, { allowedSuffixes: PLATFORM_AUTH_ALLOWED_DOMAINS });
+      if (parsed.redirectUrl) {
         const curJar = filterJarByKeys(parseRawCookiesIntoJar(collected), QQ_COOKIE_WHITELIST);
-        const hopResp = await fetch(nextUrl, {
-          method: "GET",
-          redirect: "manual",
-          headers: {
-            "User-Agent": BIND_BROWSER_UA,
-            Referer: "https://y.qq.com/",
-            ...(Object.keys(curJar).length > 0 ? { Cookie: formatJarCookie(curJar) } : {}),
-          },
-        });
-        collected.push(...getSetCookieHeaders(hopResp.headers));
-        if ([301, 302, 307, 308].includes(hopResp.status)) {
-          const loc = hopResp.headers.get("location")?.trim();
-          nextUrl = loc ? new URL(loc, nextUrl).toString() : null;
-        } else {
-          nextUrl = null;
+        let sendInitialCookie = false;
+        try {
+          sendInitialCookie = new URL(parsed.redirectUrl).hostname.toLowerCase() === "ssl.ptlogin2.qq.com";
+        } catch {
+          sendInitialCookie = false;
         }
+        await safeFetchWithRedirects(
+          parsed.redirectUrl,
+          {
+            method: "GET",
+            headers: {
+              "User-Agent": BIND_BROWSER_UA,
+              Referer: "https://y.qq.com/",
+              ...(sendInitialCookie && Object.keys(curJar).length > 0 ? { Cookie: formatJarCookie(curJar) } : {}),
+            },
+          },
+          {
+            allowedSuffixes: QQ_AUTH_ALLOWED_DOMAINS,
+            requireHttps: true,
+            maxRedirects: 5,
+            onResponse: (hopResp) => {
+              collected.push(...getSetCookieHeaders(hopResp.headers));
+            },
+          }
+        );
       }
       const finalJar = filterJarByKeys(parseRawCookiesIntoJar(collected), QQ_COOKIE_WHITELIST);
       const uid = normalizeBindQqUin(finalJar.uin || finalJar.p_uin);
@@ -1715,7 +1818,7 @@ async function handlePlatformBind(
       let nickname = `QQ 音乐用户 ${uid}`;
       let avatar = `https://q1.qlogo.cn/g?b=qq&nk=${uid}&s=140`;
       try {
-        const resp = await fetchPlatformSafe(
+        const resp = await fetchQqAuthSafe(
           `https://c.y.qq.com/rsc/fcgi-bin/fcg_get_profile_homepage.fcg?cid=205360838&ct=20&userid=${encodeURIComponent(uid)}&reqfrom=1&format=json&inCharset=utf8&outCharset=utf-8`,
           { headers: { "User-Agent": BIND_BROWSER_UA, Referer: "https://y.qq.com/", Cookie: normalizedCookie } }
         );
@@ -1749,7 +1852,7 @@ async function handlePlatformBind(
           { status: 401, headers: noStoreHeaders }
         );
       }
-      const resp = await fetchPlatformSafe(
+      const resp = await fetchQqAuthSafe(
         `https://c.y.qq.com/rsc/fcgi-bin/fcg_user_created_diss?hostuin=${encodeURIComponent(uid)}&sin=0&size=50&r=${Date.now()}&g_tk=5381&loginUin=${encodeURIComponent(uid)}&format=json&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq.json&needNewCode=0`,
         { headers: { "User-Agent": BIND_BROWSER_UA, Referer: "https://y.qq.com/", Cookie: normalizedCookie } }
       );
@@ -1774,7 +1877,7 @@ async function handlePlatformBind(
       if (!tid) {
         return Response.json({ code: 400, message: "缺少歌单 ID" }, { status: 400, headers: noStoreHeaders });
       }
-      const resp = await fetchPlatformSafe(
+      const resp = await fetchQqAuthSafe(
         `https://c.y.qq.com/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg?type=1&json=1&utf8=1&onlysong=0&new_format=1&disstid=${encodeURIComponent(tid)}&g_tk=5381&loginUin=${encodeURIComponent(uid)}&hostUin=0&format=json&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq.json&needNewCode=0`,
         { headers: { "User-Agent": BIND_BROWSER_UA, Referer: "https://y.qq.com/", Cookie: normalizedCookie } }
       );
@@ -1819,7 +1922,7 @@ async function handlePlatformBind(
       if (!songName || !uid || !normalizedCookie) {
         return Response.json({ code: 404, message: "缺少歌曲名或 QQ 音乐凭据" }, { status: 200, headers: noStoreHeaders });
       }
-      const searchResp = await fetchPlatformSafe("https://u.y.qq.com/cgi-bin/musicu.fcg", {
+      const searchResp = await fetchQqAuthSafe("https://u.y.qq.com/cgi-bin/musicu.fcg", {
         method: "POST",
         headers: {
           "User-Agent": BIND_BROWSER_UA,
@@ -1842,7 +1945,7 @@ async function handlePlatformBind(
       if (!firstMid) {
         return Response.json({ code: 404, message: "QQ 音乐未匹配到可用曲目" }, { status: 200, headers: noStoreHeaders });
       }
-      const vkeyResp = await fetchPlatformSafe("https://u.y.qq.com/cgi-bin/musicu.fcg", {
+      const vkeyResp = await fetchQqAuthSafe("https://u.y.qq.com/cgi-bin/musicu.fcg", {
         method: "POST",
         headers: {
           "User-Agent": BIND_BROWSER_UA,

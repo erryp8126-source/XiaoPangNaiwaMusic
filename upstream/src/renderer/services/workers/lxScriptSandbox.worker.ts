@@ -48,6 +48,7 @@ type HostInvokeErrorMessage = {
 type HostHttpRequestMessage = {
   type: 'http-request';
   requestId: string;
+  callId?: string;
   url: string;
   options: any;
 };
@@ -69,6 +70,7 @@ type HostWorkerMessage =
 let requestHandler: ((data: any) => Promise<any>) | null = null;
 let initialized = false;
 let requestCounter = 0;
+const activeCallIds = new Set<string>();
 
 const pendingHttpCallbacks = new Map<
   string,
@@ -87,25 +89,43 @@ const postLog = (level: HostLogMessage['level'], ...args: any[]) => {
   });
 };
 
-const hardenGlobalScope = () => {
-  const blockedKeys: Array<keyof typeof globalThis> = [
-    'fetch',
-    'XMLHttpRequest',
-    'WebSocket',
-    'EventSource'
-  ] as any;
+export const BLOCKED_LX_SANDBOX_GLOBALS = [
+  'fetch',
+  'XMLHttpRequest',
+  'WebSocket',
+  'EventSource',
+  'indexedDB',
+  'caches',
+  'BroadcastChannel',
+  'importScripts'
+] as const;
 
-  blockedKeys.forEach((key) => {
-    try {
-      Object.defineProperty(globalThis, key, {
-        configurable: true,
-        writable: false,
-        value: undefined
-      });
-    } catch {
-      // ignore
+export const hardenGlobalScope = (target: any = globalThis) => {
+  const targets: any[] = [];
+  let cur: any = target;
+  while (cur && cur !== Object.prototype) {
+    targets.push(cur);
+    cur = Object.getPrototypeOf(cur);
+  }
+
+  for (const key of BLOCKED_LX_SANDBOX_GLOBALS) {
+    for (const obj of targets) {
+      const desc = Object.getOwnPropertyDescriptor(obj, key);
+      if (obj !== target && !desc) continue;
+      if (desc && desc.configurable === false && desc.writable === false && desc.value === undefined) {
+        continue;
+      }
+      try {
+        Object.defineProperty(obj, key, {
+          configurable: false,
+          writable: false,
+          value: undefined
+        });
+      } catch {
+        // ignore non-configurable host properties
+      }
     }
-  });
+  }
 };
 
 const createLxApi = (scriptInfo: LxScriptInfo) => {
@@ -145,10 +165,12 @@ const createLxApi = (scriptInfo: LxScriptInfo) => {
       callback: (err: Error | null, resp: any, body: any) => void
     ) => {
       const requestId = `wreq_${Date.now()}_${requestCounter++}`;
+      const ownerCallId = activeCallIds.size === 1 ? Array.from(activeCallIds)[0] : undefined;
       pendingHttpCallbacks.set(requestId, callback);
       postToHost({
         type: 'http-request',
         requestId,
+        callId: ownerCallId,
         url,
         options
       });
@@ -242,6 +264,7 @@ const resetWorkerState = () => {
   requestHandler = null;
   initialized = false;
   pendingHttpCallbacks.clear();
+  activeCallIds.clear();
   requestCounter = 0;
 };
 
@@ -283,6 +306,7 @@ const resolveInvocation = async (callId: string, payload: any) => {
     return;
   }
 
+  activeCallIds.add(callId);
   try {
     const result = await requestHandler(payload);
     postToHost({
@@ -296,41 +320,45 @@ const resolveInvocation = async (callId: string, payload: any) => {
       callId,
       message: error instanceof Error ? error.message : String(error)
     });
+  } finally {
+    activeCallIds.delete(callId);
   }
 };
 
-self.onmessage = async (event: MessageEvent<WorkerHostMessage>) => {
-  const message = event.data;
+if (typeof self !== 'undefined') {
+  self.onmessage = async (event: MessageEvent<WorkerHostMessage>) => {
+    const message = event.data;
 
-  switch (message.type) {
-    case 'initialize':
-      try {
-        await initializeScript(message.script, message.scriptInfo);
-      } catch (error) {
-        postToHost({
-          type: 'script-error',
-          message: error instanceof Error ? error.message : String(error)
-        });
+    switch (message.type) {
+      case 'initialize':
+        try {
+          await initializeScript(message.script, message.scriptInfo);
+        } catch (error) {
+          postToHost({
+            type: 'script-error',
+            message: error instanceof Error ? error.message : String(error)
+          });
+        }
+        break;
+
+      case 'invoke-request':
+        await resolveInvocation(message.callId, message.payload);
+        break;
+
+      case 'http-response': {
+        const callback = pendingHttpCallbacks.get(message.requestId);
+        if (!callback) return;
+        pendingHttpCallbacks.delete(message.requestId);
+        if (message.error) {
+          callback(new Error(message.error), null, null);
+        } else {
+          callback(null, message.response, message.body);
+        }
+        break;
       }
-      break;
 
-    case 'invoke-request':
-      await resolveInvocation(message.callId, message.payload);
-      break;
-
-    case 'http-response': {
-      const callback = pendingHttpCallbacks.get(message.requestId);
-      if (!callback) return;
-      pendingHttpCallbacks.delete(message.requestId);
-      if (message.error) {
-        callback(new Error(message.error), null, null);
-      } else {
-        callback(null, message.response, message.body);
-      }
-      break;
+      default:
+        break;
     }
-
-    default:
-      break;
-  }
-};
+  };
+}

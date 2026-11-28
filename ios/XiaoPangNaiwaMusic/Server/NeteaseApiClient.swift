@@ -565,13 +565,17 @@ final class NeteaseApiClient {
               let trackIds = playlist["trackIds"] as? [[String: Any]] else {
             return detail
         }
-        let limit = intParam(params, "limit", 1000)
-        let offset = intParam(params, "offset", 0)
-        let end = min(trackIds.count, offset + limit)
+        let safeLimit = min(max(intParam(params, "limit", 1000), 0), 1000)
+        let safeOffset = max(intParam(params, "offset", 0), 0)
+        let end = safeOffset >= trackIds.count
+            ? safeOffset
+            : min(trackIds.count, safeOffset + min(safeLimit, trackIds.count - safeOffset))
         var slice = [String]()
-        if offset < end {
-            for i in offset..<end {
-                if let tid = trackIds[i]["id"] {
+        if safeOffset < end {
+            for i in safeOffset..<end {
+                guard let rawId = trackIds[i]["id"], !(rawId is NSNull) else { continue }
+                let tid = String(describing: rawId).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !tid.isEmpty && tid.allSatisfy({ $0 >= "0" && $0 <= "9" }) {
                     slice.append("{\"id\":\(tid)}")
                 }
             }

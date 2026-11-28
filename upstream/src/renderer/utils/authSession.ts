@@ -48,6 +48,101 @@ export interface Http301SessionGuardDeps {
   expiredCooldownMs?: number;
 }
 
+export interface AuthRequestConfigLike {
+  method?: string;
+  params?: Record<string, any>;
+  data?: any;
+  skip301Guard?: boolean;
+  noRetry?: boolean;
+  timeout?: number;
+}
+
+/**
+ * 构造 301 会话二次核验专用请求配置：
+ * - 显式跳过 301 守卫防重入递归（skip301Guard: true）
+ * - 绝不附带 noLogin: true，确保请求拦截器携带当前 MUSIC_U Token 供后端核验真实登录态
+ */
+export function buildLoginStatusVerifyConfig(): {
+  noRetry: true;
+  skip301Guard: true;
+  timeout: number;
+} {
+  return {
+    noRetry: true,
+    skip301Guard: true,
+    timeout: 8000
+  };
+}
+
+/**
+ * 向请求配置安全注入网易云登录 Cookie：
+ * - 仅在未设置 noLogin / noCookie 时注入
+ * - 对 POST 重试时已被 Axios 序列化的 JSON 字符串 body 先还原为对象，避免 `{ ...jsonStr }` 按字符展开破坏请求体
+ */
+export function attachAuthCookieToRequestConfig<T extends AuthRequestConfigLike>(
+  config: T,
+  token: string | null | undefined
+): T {
+  const cleanToken = typeof token === 'string' ? token : '';
+  if (!cleanToken || config.params?.noLogin === true || config.params?.noCookie === true) {
+    return config;
+  }
+
+  const method = String(config.method || 'get').toLowerCase();
+  if (method !== 'post') {
+    const params =
+      config.params && typeof config.params === 'object' ? { ...config.params } : {};
+    if (params.cookie === undefined) {
+      params.cookie = cleanToken;
+    }
+    config.params = params;
+    return config;
+  }
+
+  const rawData = config.data;
+  if (rawData === undefined || rawData === null) {
+    config.data = { cookie: cleanToken };
+    return config;
+  }
+
+  if (typeof rawData === 'string') {
+    const trimmed = rawData.trim();
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          config.data =
+            parsed.cookie !== undefined ? parsed : { ...parsed, cookie: cleanToken };
+        }
+      } catch {
+        // 非法或非 JSON 对象字符串，保持原值不按字符展开
+      }
+    }
+    return config;
+  }
+
+  if (typeof URLSearchParams !== 'undefined' && rawData instanceof URLSearchParams) {
+    if (!rawData.has('cookie')) {
+      rawData.set('cookie', cleanToken);
+    }
+    return config;
+  }
+
+  if (typeof FormData !== 'undefined' && rawData instanceof FormData) {
+    if (!rawData.has('cookie')) {
+      rawData.append('cookie', cleanToken);
+    }
+    return config;
+  }
+
+  if (typeof rawData === 'object' && !Array.isArray(rawData)) {
+    config.data =
+      rawData.cookie !== undefined ? rawData : { ...rawData, cookie: cleanToken };
+  }
+
+  return config;
+}
+
 export function hasNeteaseUserCookie(raw: string | null | undefined): boolean {
   const clean = typeof raw === 'string' ? raw.trim() : '';
   if (!clean) return false;
@@ -231,9 +326,11 @@ export function createHttp301SessionGuard(deps: Http301SessionGuardDeps) {
   const handle301 = async (options?: {
     url?: string;
     noLogin?: boolean;
+    skip301Guard?: boolean;
   }): Promise<Session301ActionResult> => {
     const cleanUrl = String(options?.url || '');
     if (
+      options?.skip301Guard === true ||
       options?.noLogin === true ||
       cleanUrl.includes('/login/status') ||
       cleanUrl.includes('/logout')

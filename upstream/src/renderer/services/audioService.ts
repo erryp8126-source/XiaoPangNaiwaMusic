@@ -14,6 +14,16 @@ import {
 import { isAutoplayBlockedError } from '@/utils/launchPolicy';
 import { isOfflineQuietError, notifyPlaybackBufferingRetry } from '@/utils/playbackFeedback';
 
+export const isPlaybackCancelledError = (err: unknown): boolean =>
+  Boolean((err as any)?.isCancelled || (err as any)?.name === 'PlaybackCancelledError');
+
+const createPlaybackCancelledError = (): Error => {
+  const err = new Error('Playback request cancelled');
+  err.name = 'PlaybackCancelledError';
+  (err as any).isCancelled = true;
+  return err;
+};
+
 class AudioService {
   private currentSound: Howl | null = null;
   private pendingSound: Howl | null = null;
@@ -70,6 +80,8 @@ class AudioService {
   private operationLockStartTime: number = 0;
   private operationLockId: string = '';
   private favoriteToggleInFlight = false;
+  private playGeneration = 0;
+  private pendingRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     if (isAndroid()) {
@@ -569,6 +581,30 @@ class AudioService {
     localStorage.removeItem('audioOperationLock');
   }
 
+  private clearPendingRetryTimer(): void {
+    if (this.pendingRetryTimer !== null) {
+      clearTimeout(this.pendingRetryTimer);
+      this.pendingRetryTimer = null;
+    }
+  }
+
+  private getPersistedUserVolume(): number {
+    try {
+      const raw = localStorage.getItem('volume');
+      if (raw === null || raw === '') return 1;
+      const parsed = parseFloat(raw);
+      return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : 1;
+    } catch {
+      return 1;
+    }
+  }
+
+  private getEffectiveWebVolume(userVolume: number = this.getPersistedUserVolume()): number {
+    const clamped = Math.max(0, Math.min(1, userVolume));
+    const normFactor = this.volumeNormalizationEnabled ? 0.86 : 1.0;
+    return Math.max(0, Math.min(1, clamped * normFactor));
+  }
+
   // 播放控制相关
   public play(
     url: string,
@@ -604,9 +640,12 @@ class AudioService {
       return Promise.reject(new Error('缺少必要参数: url和track'));
     }
 
+    this.clearPendingRetryTimer();
+    const generation = ++this.playGeneration;
+
     // Android 原生 Media3 ExoPlayer 后台播放路径
     if (isAndroid()) {
-      return this.playNativeAndroid(url, track, isPlay, seekTime).finally(() => {
+      return this.playNativeAndroid(url, track, isPlay, seekTime, generation).finally(() => {
         this.releaseOperationLock();
       });
     }
@@ -632,6 +671,12 @@ class AudioService {
 
       const tryPlay = async () => {
         try {
+          if (generation !== this.playGeneration) {
+            this.releaseOperationLock();
+            reject(createPlaybackCancelledError());
+            return;
+          }
+
           console.log('audioService: 开始创建音频对象');
 
           // 确保 Howler 上下文已初始化
@@ -660,6 +705,12 @@ class AudioService {
             ]);
           }
 
+          if (generation !== this.playGeneration) {
+            this.releaseOperationLock();
+            reject(createPlaybackCancelledError());
+            return;
+          }
+
           // 非热切换模式下，先停止并清理现有的音频实例
           if (!isHotSwap && this.currentSound) {
             console.log('audioService: 停止并清理现有的音频实例');
@@ -677,6 +728,11 @@ class AudioService {
           if (!isHotSwap) {
             console.log('audioService: 清理 EQ');
             await this.disposeEQ(true);
+            if (generation !== this.playGeneration) {
+              this.releaseOperationLock();
+              reject(createPlaybackCancelledError());
+              return;
+            }
           }
 
           // 如果不是热切换，立即更新 currentTrack
@@ -685,24 +741,21 @@ class AudioService {
           }
 
           let newSound: Howl;
+          const initialHowlVolume = isElectron ? 1 : this.getEffectiveWebVolume();
 
           if (existingSound) {
             console.log('audioService: 使用预加载的 Howl 对象');
             newSound = existingSound;
-            // 确保 volume 和 rate 正确
-            newSound.volume(1); // 内部 volume 设为 1，由 Howler.masterGain 控制实际音量
+            // Electron 端由 Howler/gainNode 统一控制，Web/PWA 按用户持久化音量与归一化比例设置
+            newSound.volume(initialHowlVolume);
             newSound.rate(this.playbackRate);
-
-            // 重新绑定事件监听器，因为 PreloadService 可能没有绑定这些
-            // 注意：Howler 允许重复绑定，但最好先清理（如果无法清理，就直接绑定，Howler 是 EventEmitter）
-            // 这里我们假设 existingSound 是干净的或者我们只绑定我们需要关心的
           } else {
             console.log('audioService: 创建新的 Howl 对象');
             newSound = new Howl({
               src: [url],
               html5: true,
               autoplay: false,
-              volume: 1, // 禁用 Howler.js 音量控制
+              volume: initialHowlVolume,
               rate: this.playbackRate,
               format: ['mp3', 'aac']
             });
@@ -716,6 +769,18 @@ class AudioService {
 
             newSound.on('loaderror', (_, error) => {
               this.emit('buffering', false);
+              if (generation !== this.playGeneration) {
+                try {
+                  newSound.stop();
+                  newSound.unload();
+                } catch {
+                  // ignore
+                }
+                if (this.pendingSound === newSound) this.pendingSound = null;
+                this.releaseOperationLock();
+                reject(createPlaybackCancelledError());
+                return;
+              }
               console.error('Audio load error:', error);
               this.emit('loaderror', { track, error });
               if (retryCount < maxRetries && !existingSound) {
@@ -725,7 +790,16 @@ class AudioService {
                 notifyPlaybackBufferingRetry(track?.name, {
                   isOffline: isOfflineQuietError(error)
                 });
-                setTimeout(tryPlay, 1000 * retryCount);
+                this.clearPendingRetryTimer();
+                this.pendingRetryTimer = setTimeout(() => {
+                  this.pendingRetryTimer = null;
+                  if (generation !== this.playGeneration) {
+                    this.releaseOperationLock();
+                    reject(createPlaybackCancelledError());
+                    return;
+                  }
+                  void tryPlay();
+                }, 1000 * retryCount);
               } else {
                 this.emit('url_expired', track);
                 this.releaseOperationLock();
@@ -735,6 +809,19 @@ class AudioService {
             });
 
             newSound.on('playerror', (_, error) => {
+              if (generation !== this.playGeneration) {
+                this.emit('buffering', false);
+                try {
+                  newSound.stop();
+                  newSound.unload();
+                } catch {
+                  // ignore
+                }
+                if (this.pendingSound === newSound) this.pendingSound = null;
+                this.releaseOperationLock();
+                reject(createPlaybackCancelledError());
+                return;
+              }
               // 网页版 / Safari PWA 自动播放被浏览器策略拦截（NotAllowedError）：静默停在待播态，绝不重试也不报错
               if (isAutoplayBlockedError(error)) {
                 this.emit('buffering', false);
@@ -757,7 +844,16 @@ class AudioService {
                 notifyPlaybackBufferingRetry(track?.name, {
                   isOffline: isOfflineQuietError(error)
                 });
-                setTimeout(tryPlay, 1000 * retryCount);
+                this.clearPendingRetryTimer();
+                this.pendingRetryTimer = setTimeout(() => {
+                  this.pendingRetryTimer = null;
+                  if (generation !== this.playGeneration) {
+                    this.releaseOperationLock();
+                    reject(createPlaybackCancelledError());
+                    return;
+                  }
+                  void tryPlay();
+                }, 1000 * retryCount);
               } else {
                 this.emit('url_expired', track);
                 this.releaseOperationLock();
@@ -768,9 +864,22 @@ class AudioService {
 
             const onLoaded = async () => {
               try {
+                if (generation !== this.playGeneration) {
+                  try {
+                    newSound.stop();
+                    newSound.unload();
+                  } catch {
+                    // ignore
+                  }
+                  if (this.pendingSound === newSound) this.pendingSound = null;
+                  reject(createPlaybackCancelledError());
+                  return;
+                }
+
                 // 如果是热切换，现在执行切换逻辑
                 if (isHotSwap) {
                   console.log('audioService: 执行无缝切换');
+                  const previousSound = this.currentSound;
 
                   // 1. 获取当前播放进度或使用指定的 seekTime
                   let targetPos = 0;
@@ -778,9 +887,9 @@ class AudioService {
                     // 如果有指定的 seekTime（如恢复播放进度），优先使用
                     targetPos = seekTime;
                     console.log(`audioService: 使用指定的 seekTime: ${seekTime}s`);
-                  } else if (this.currentSound) {
+                  } else if (previousSound) {
                     // 否则同步当前进度
-                    targetPos = this.currentSound.seek() as number;
+                    targetPos = previousSound.seek() as number;
                   }
 
                   // 2. 同步新音频进度
@@ -789,35 +898,55 @@ class AudioService {
                   // 3. 初始化新音频的 EQ
                   await this.disposeEQ(true);
                   await this.setupEQ(newSound);
+                  if (generation !== this.playGeneration) {
+                    try {
+                      newSound.stop();
+                      newSound.unload();
+                    } catch {
+                      // ignore
+                    }
+                    if (this.pendingSound === newSound) this.pendingSound = null;
+                    reject(createPlaybackCancelledError());
+                    return;
+                  }
 
-                  // 4. 播放新音频
+                  // 4. 先解绑旧实例并提升新实例为 currentSound，再触发播放，确保 play 回调命中新实例
+                  if (previousSound) {
+                    previousSound.off();
+                  }
+                  this.currentSound = newSound;
+                  this.currentTrack = track;
+                  this.pendingSound = null;
+
                   if (isPlay) {
                     newSound.play();
                   }
 
-                  // 5. 停止旧音频
-                  if (this.currentSound) {
-                    this.currentSound.stop();
-                    this.currentSound.unload();
+                  // 5. 停止并卸载旧音频
+                  if (previousSound && previousSound !== newSound) {
+                    previousSound.stop();
+                    previousSound.unload();
                   }
-
-                  // 6. 更新引用
-                  this.currentSound = newSound;
-                  this.currentTrack = track;
-                  this.pendingSound = null;
 
                   console.log(`audioService: 无缝切换完成，进度同步至 ${targetPos}s`);
                 } else {
                   // 普通加载逻辑
                   await this.setupEQ(newSound);
+                  if (generation !== this.playGeneration) {
+                    try {
+                      newSound.stop();
+                      newSound.unload();
+                    } catch {
+                      // ignore
+                    }
+                    reject(createPlaybackCancelledError());
+                    return;
+                  }
                   this.currentSound = newSound;
                 }
 
-                // 重新应用已保存的音量
-                const savedVolume = localStorage.getItem('volume');
-                if (savedVolume) {
-                  this.applyVolume(parseFloat(savedVolume));
-                }
+                // 重新应用已保存的音量（结合响度平滑系数）
+                this.applyVolume(this.getPersistedUserVolume());
 
                 if (this.currentSound) {
                   try {
@@ -876,7 +1005,6 @@ class AudioService {
           }
 
           // 设置音频事件监听 (play, pause, end, seek)
-          // ... (保持原有的事件监听逻辑不变，但需要确保绑定到 newSound)
           const soundInstance = newSound;
           if (soundInstance) {
             // 清除旧的监听器以防重复
@@ -887,9 +1015,9 @@ class AudioService {
 
             soundInstance.on('play', () => {
               if (this.currentSound === soundInstance) {
-                if (!isAndroid()) {
-                  const targetVol = this.volumeNormalizationEnabled ? 0.86 : 1.0;
-                  if (this.crossfadeEnabled && this.crossfadeDurationSec > 0) {
+                if (!isAndroid() && !this.gainNode) {
+                  const targetVol = this.getEffectiveWebVolume();
+                  if (this.crossfadeEnabled && this.crossfadeDurationSec > 0 && targetVol > 0.02) {
                     const fadeMs = Math.round(this.crossfadeDurationSec * 1000);
                     soundInstance.volume(0.02);
                     soundInstance.fade(0.02, targetVol, fadeMs);
@@ -929,7 +1057,7 @@ class AudioService {
         }
       };
 
-      tryPlay();
+      void tryPlay();
     }).finally(() => {
       // 无论成功或失败都解除操作锁
       this.releaseOperationLock();
@@ -951,9 +1079,14 @@ class AudioService {
         crossfadeDurationSec: this.crossfadeDurationSec,
         volumeNormalizationEnabled: this.volumeNormalizationEnabled
       });
-    } else if (this.currentSound) {
-      const target = this.volumeNormalizationEnabled ? 0.86 : 1.0;
-      this.currentSound.volume(target);
+    } else {
+      const effectiveVol = this.getEffectiveWebVolume();
+      if (this.gainNode && this.context) {
+        this.gainNode.gain.cancelScheduledValues(this.context.currentTime);
+        this.gainNode.gain.setValueAtTime(effectiveVol, this.context.currentTime);
+      } else if (this.currentSound) {
+        this.currentSound.volume(effectiveVol);
+      }
     }
   }
 
@@ -961,10 +1094,16 @@ class AudioService {
     url: string,
     track: SongResult,
     isPlay: boolean,
-    seekTime: number
+    seekTime: number,
+    generation: number
   ): Promise<Howl> {
     return new Promise<Howl>((resolve, reject) => {
       try {
+        if (generation !== this.playGeneration) {
+          reject(createPlaybackCancelledError());
+          return;
+        }
+
         if (this.currentSound) {
           try {
             this.currentSound.off('play');
@@ -984,8 +1123,7 @@ class AudioService {
         }
 
         this.currentTrack = track;
-        const savedVolume = parseFloat(localStorage.getItem('volume') || '1');
-        const initialVol = Number.isNaN(savedVolume) ? 1 : Math.max(0, Math.min(1, savedVolume));
+        const initialVol = this.getPersistedUserVolume();
 
         // 仅在平台声明支持硬件 EQ 时预先同步 EQ 状态，避免 iOS 等不支持端发起无效桥接调用
         if (getNativeCapabilities().supportsEq) {
@@ -1003,6 +1141,7 @@ class AudioService {
           src: [url],
           track,
           autoplay: isPlay,
+          deferLoad: true,
           seekTime: seekTime > 0 ? seekTime : 0,
           volume: initialVol,
           rate: this.playbackRate
@@ -1022,17 +1161,20 @@ class AudioService {
           reject(err);
         };
 
-        this.bindNativeSoundEvents(nativeSound, track, finishReject);
+        this.bindNativeSoundEvents(nativeSound, track, finishReject, generation);
 
         nativeSound.once('load', () => {
-          if ((this.currentSound as any) !== nativeSound) {
-            finishResolve();
+          if (generation !== this.playGeneration || (this.currentSound as any) !== nativeSound) {
+            finishReject(createPlaybackCancelledError());
             return;
           }
           this.emit('buffering', false);
           this.emit('load');
           finishResolve();
         });
+
+        // 先绑定事件再触发原生加载，避免空 URL / 桥接同步报错时丢失 loaderror 导致 Promise 永久挂起
+        nativeSound.activateAndLoad(isPlay);
       } catch (e: any) {
         this.emit('buffering', false);
         reject(e instanceof Error ? e : new Error(String(e)));
@@ -1043,7 +1185,8 @@ class AudioService {
   private bindNativeSoundEvents(
     nativeSound: NativeHowl,
     track: SongResult,
-    onErrorReject?: (err: Error) => void
+    onErrorReject?: (err: Error) => void,
+    generation?: number
   ): void {
     nativeSound.on('buffering', (_id: any, buffering: boolean) => {
       if ((this.currentSound as any) === nativeSound) {
@@ -1053,15 +1196,27 @@ class AudioService {
 
     nativeSound.on('loaderror', (_id: any, error: any) => {
       this.emit('buffering', false);
-      this.emit('loaderror', { track, error });
-      this.emit('url_expired', track);
+      if (generation !== undefined && generation !== this.playGeneration) {
+        onErrorReject?.(createPlaybackCancelledError());
+        return;
+      }
+      if ((this.currentSound as any) === nativeSound) {
+        this.emit('loaderror', { track, error });
+        this.emit('url_expired', track);
+      }
       onErrorReject?.(new Error(typeof error === 'string' ? error : '音频加载失败'));
     });
 
     nativeSound.on('playerror', (_id: any, error: any) => {
       this.emit('buffering', false);
-      this.emit('playerror', { track, error });
-      this.emit('url_expired', track);
+      if (generation !== undefined && generation !== this.playGeneration) {
+        onErrorReject?.(createPlaybackCancelledError());
+        return;
+      }
+      if ((this.currentSound as any) === nativeSound) {
+        this.emit('playerror', { track, error });
+        this.emit('url_expired', track);
+      }
       onErrorReject?.(new Error(typeof error === 'string' ? error : '音频播放失败'));
     });
 
@@ -1106,6 +1261,9 @@ class AudioService {
     },
     track: SongResult
   ): Howl {
+    this.clearPendingRetryTimer();
+    ++this.playGeneration;
+
     if (this.currentSound) {
       try {
         this.currentSound.off('play');
@@ -1121,8 +1279,7 @@ class AudioService {
     }
 
     this.currentTrack = track;
-    const savedVolume = parseFloat(localStorage.getItem('volume') || '1');
-    const initialVol = Number.isNaN(savedVolume) ? 1 : Math.max(0, Math.min(1, savedVolume));
+    const initialVol = this.getPersistedUserVolume();
 
     const nativeSound = new NativeHowl({
       src: [payload.url || ''],
@@ -1154,6 +1311,8 @@ class AudioService {
   }
 
   stop() {
+    this.clearPendingRetryTimer();
+    ++this.playGeneration;
     // 强制重置操作锁并继续执行
     this.forceResetOperationLock();
 
@@ -1406,24 +1565,26 @@ class AudioService {
   // 新的音量调节方法
   private applyVolume(volume: number) {
     // 确保值在0到1之间
-    const normalizedVolume = Math.max(0, Math.min(1, volume));
-
-    // 使用线性缩放音量
-    const linearVolume = normalizedVolume;
+    const linearVolume = Math.max(0, Math.min(1, Number.isFinite(volume) ? volume : 1));
+    const outputVolume = isAndroid() ? linearVolume : this.getEffectiveWebVolume(linearVolume);
 
     // 将音量应用到所有相关节点
-    if (this.gainNode) {
+    if (this.gainNode && this.context) {
       // 立即设置音量
-      this.gainNode.gain.cancelScheduledValues(this.context!.currentTime);
-      this.gainNode.gain.setValueAtTime(linearVolume, this.context!.currentTime);
+      this.gainNode.gain.cancelScheduledValues(this.context.currentTime);
+      this.gainNode.gain.setValueAtTime(outputVolume, this.context.currentTime);
     } else {
-      this.currentSound?.volume(linearVolume);
+      this.currentSound?.volume(outputVolume);
     }
 
-    // 保存值
-    localStorage.setItem('volume', linearVolume.toString());
+    // 保存用户设置的原始音量
+    try {
+      localStorage.setItem('volume', linearVolume.toString());
+    } catch {
+      // ignore storage errors
+    }
 
-    console.log('Volume applied (linear):', linearVolume);
+    console.log('Volume applied (linear):', linearVolume, 'effective:', outputVolume);
   }
 
   // 添加方法检查当前音频是否在加载状态

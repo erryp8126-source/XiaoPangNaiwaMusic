@@ -341,4 +341,73 @@ class MusicUnblockEngineTest {
         )
         assertFalse(defaultEngine.checkAudioUrlReachable("https://other.sycdn.kuwo.cn/resource/audition/123.mp3"))
     }
+
+    @Test
+    fun `clamps proxy timeoutMs bounds caps response text size and preserves multi-value headers`() {
+        assertEquals(1_000L, MusicUnblockEngine.clampProxyTimeoutMs(0L))
+        assertEquals(1_000L, MusicUnblockEngine.clampProxyTimeoutMs(-500L))
+        assertEquals(15_000L, MusicUnblockEngine.clampProxyTimeoutMs(15_000L))
+        assertEquals(60_000L, MusicUnblockEngine.clampProxyTimeoutMs(600_000L))
+        assertEquals(6 * 1024 * 1024, MusicUnblockEngine.MAX_PROXY_RESPONSE_BYTES)
+        assertEquals(4 * 1024 * 1024, MusicUnblockEngine.MAX_UNBLOCK_TEXT_BYTES)
+
+        server.createContext("/bounded-overflow") { ex ->
+            val payload = ByteArray(128) { 'A'.code.toByte() }
+            ex.responseHeaders.add("Content-Type", "text/plain")
+            ex.sendResponseHeaders(200, payload.size.toLong())
+            ex.responseBody.write(payload)
+            ex.close()
+        }
+        server.createContext("/multi-headers") { ex ->
+            val payload = "hello".toByteArray(Charsets.UTF_8)
+            ex.responseHeaders.add("Set-Cookie", "sid=1; Path=/")
+            ex.responseHeaders.add("Set-Cookie", "csrf=2; HttpOnly")
+            ex.responseHeaders.add("X-Single", "only-one")
+            ex.sendResponseHeaders(200, payload.size.toLong())
+            ex.responseBody.write(payload)
+            ex.close()
+        }
+
+        localClient.newCall(okhttp3.Request.Builder().url("$baseUrl/bounded-overflow").get().build()).execute().use { resp ->
+            var threw = false
+            try {
+                MusicUnblockEngine.readBoundedResponseText(resp, maxBytes = 16, throwOnOverflow = true)
+            } catch (_: IllegalStateException) {
+                threw = true
+            }
+            assertTrue("Expected readBoundedResponseText to throw on oversized payload", threw)
+        }
+
+        localClient.newCall(okhttp3.Request.Builder().url("$baseUrl/bounded-overflow").get().build()).execute().use { resp ->
+            val clipped = MusicUnblockEngine.readBoundedResponseText(resp, maxBytes = 16, throwOnOverflow = false)
+            assertEquals(16, clipped.length)
+        }
+
+        localClient.newCall(okhttp3.Request.Builder().url("$baseUrl/multi-headers").get().build()).execute().use { resp ->
+            val headersJson = MusicUnblockEngine.serializeResponseHeaders(resp.headers)
+            assertTrue(headersJson.get("set-cookie").isJsonArray)
+            val cookies = headersJson.getAsJsonArray("set-cookie")
+            assertEquals(2, cookies.size())
+            assertEquals("sid=1; Path=/", cookies[0].asString)
+            assertEquals("csrf=2; HttpOnly", cookies[1].asString)
+            assertEquals("only-one", headersJson.get("x-single").asString)
+        }
+    }
+
+    @Test
+    fun `parseKuwoSearchJson handles English apostrophes in both standard and single-quoted JSON`() {
+        val standardJson = """{"abslist":[{"SONGNAME":"It's My Life","ARTIST":"Bon Jovi","MUSICRID":"MUSIC_101"}]}"""
+        val parsedStandard = MusicUnblockEngine.parseKuwoSearchJson(standardJson)!!
+        assertEquals(
+            "It's My Life",
+            parsedStandard.getAsJsonArray("abslist")[0].asJsonObject.get("SONGNAME").asString
+        )
+
+        val singleQuoted = "{'abslist':[{'SONGNAME':'It's My Life','ARTIST':'Bon Jovi','NOTE':'Rock \'n\' Roll','MUSICRID':'MUSIC_102'}]}"
+        val parsedSingle = MusicUnblockEngine.parseKuwoSearchJson(singleQuoted)!!
+        val item = parsedSingle.getAsJsonArray("abslist")[0].asJsonObject
+        assertEquals("It's My Life", item.get("SONGNAME").asString)
+        assertEquals("Bon Jovi", item.get("ARTIST").asString)
+        assertEquals("Rock 'n' Roll", item.get("NOTE").asString)
+    }
 }

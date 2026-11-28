@@ -36,6 +36,7 @@ export class NativeHowl {
     autoplay?: boolean;
     seekTime?: number;
     attachOnly?: boolean;
+    deferLoad?: boolean;
     fixedInstanceId?: number;
     initialPosition?: number;
     initialPlaying?: boolean;
@@ -84,7 +85,7 @@ export class NativeHowl {
       this.loadedEmitted = true;
       this._position = Math.max(0, options.initialPosition || 0);
       this._playing = Boolean(options.initialPlaying);
-    } else {
+    } else if (!options.deferLoad) {
       this.activateAndLoad(Boolean(options.autoplay));
     }
   }

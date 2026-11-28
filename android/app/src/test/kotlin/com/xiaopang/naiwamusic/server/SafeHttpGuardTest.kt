@@ -112,4 +112,42 @@ class SafeHttpGuardTest {
             assertTrue("Expected custom LX Dns to block $host", threw)
         }
     }
+
+    @Test
+    fun blocksIpv6TransitionAndEmbeddedIpv4SsrfRangesAndEnforcesRequireHttps() {
+        val v4MappedLoopbackHex = InetAddress.getByAddress(
+            byteArrayOf(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, -1, 127, 0, 0, 1)
+        )
+        val v4MappedMetadataHex = InetAddress.getByAddress(
+            byteArrayOf(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1, -1, -87, -2, -87, -2)
+        )
+        assertFalse("Expected ::ffff:7f00:1 to be blocked", SafeHttpGuard.isPublicAddress(v4MappedLoopbackHex))
+        assertFalse("Expected ::ffff:a9fe:a9fe to be blocked", SafeHttpGuard.isPublicAddress(v4MappedMetadataHex))
+
+        val blockedIpv6Literals = listOf(
+            "::127.0.0.1",
+            "::ffff:0:127.0.0.1",
+            "64:ff9b::127.0.0.1",
+            "64:ff9b:1::1",
+            "2001::1",
+            "2001:2::1",
+            "2001:db8::1",
+            "2002:7f00:1::",
+            "fec0::1",
+            "100::1",
+            "0:0:0:0:0:0:0:1"
+        )
+        for (ip in blockedIpv6Literals) {
+            val addr = InetAddress.getByName(ip)
+            assertFalse("Expected transition/reserved IPv6 $ip to be blocked", SafeHttpGuard.isPublicAddress(addr))
+        }
+
+        val publicIpv6 = InetAddress.getByName("2606:4700:4700::1111")
+        assertTrue("Expected public IPv6 2606:4700:4700::1111 to be allowed", SafeHttpGuard.isPublicAddress(publicIpv6))
+
+        assertFalse(SafeHttpGuard.validateCustomLxUrlAndResolve("http://[64:ff9b::127.0.0.1]:30488/song/url"))
+        assertFalse(SafeHttpGuard.validatePublicHttpUrlAndResolve("http://[::ffff:7f00:1]/song/url"))
+        assertFalse(SafeHttpGuard.validateUrlAndResolve("http://ssl.ptlogin2.qq.com/ptqrlogin", SafeHttpGuard.QQ_AUTH_ALLOWED_DOMAINS, requireHttps = true))
+        assertTrue(SafeHttpGuard.validateUrlSyntax("https://ssl.ptlogin2.qq.com/ptqrlogin", SafeHttpGuard.QQ_AUTH_ALLOWED_DOMAINS, requireHttps = true) != null)
+    }
 }

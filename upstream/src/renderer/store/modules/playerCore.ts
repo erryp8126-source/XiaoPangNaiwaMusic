@@ -4,7 +4,7 @@ import { computed, ref } from 'vue';
 
 import { getParsingMusicUrl } from '@/api/music';
 import { useLyrics, useSongDetail } from '@/hooks/usePlayerHooks';
-import { audioService } from '@/services/audioService';
+import { audioService, isPlaybackCancelledError } from '@/services/audioService';
 import { playbackRequestManager } from '@/services/playbackRequestManager';
 import { preloadService } from '@/services/preloadService';
 import { SongSourceConfigManager } from '@/services/SongSourceConfigManager';
@@ -47,6 +47,8 @@ const isOfflineNow = (): boolean => {
   }
 };
 
+export type PlayMusicOutcome = 'playing' | 'cancelled' | 'failed' | 'autoplay-blocked';
+
 /**
  * 核心播放控制 Store
  * 负责：播放/暂停、当前歌曲、音频URL、音量、播放速度、全屏状态
@@ -68,6 +70,7 @@ export const usePlayerCoreStore = defineStore(
     const isBuffering = ref(false); // 切歌解析或原生播放器缓冲中
     const lastPlaybackError = ref('');
     const lastFailureCode = ref<string>('');
+    const lastPlaybackOutcome = ref<'idle' | PlayMusicOutcome>('idle');
 
     // 音频输出设备
     const audioOutputDeviceId = ref<string>(
@@ -411,9 +414,12 @@ export const usePlayerCoreStore = defineStore(
     };
 
     /**
-     * 核心播放处理函数
+     * 核心播放处理函数（显式区分成功 / 被新切歌取消 / 失败 / 浏览器自动播放拦截）
      */
-    const handlePlayMusic = async (music: SongResult, shouldPlay: boolean = true) => {
+    const handlePlayMusicWithOutcome = async (
+      music: SongResult,
+      shouldPlay: boolean = true
+    ): Promise<PlayMusicOutcome> => {
       // 如果是新歌曲，重置已尝试的音源和重试计数
       if (music.id !== playMusic.value.id) {
         SongSourceConfigManager.clearTriedSources(music.id);
@@ -440,13 +446,15 @@ export const usePlayerCoreStore = defineStore(
       // 验证请求是否仍然有效
       if (!playbackRequestManager.isRequestValid(requestId)) {
         console.log(`[handlePlayMusic] 请求已失效: ${requestId}`);
-        return false;
+        lastPlaybackOutcome.value = 'cancelled';
+        return 'cancelled';
       }
 
       // 激活请求
       if (!playbackRequestManager.activateRequest(requestId)) {
         console.log(`[handlePlayMusic] 无法激活请求: ${requestId}`);
-        return false;
+        lastPlaybackOutcome.value = 'cancelled';
+        return 'cancelled';
       }
 
       const originalMusic = { ...music };
@@ -473,7 +481,8 @@ export const usePlayerCoreStore = defineStore(
       // 在更新状态前再次验证请求
       if (!playbackRequestManager.isRequestValid(requestId)) {
         console.log(`[handlePlayMusic] 加载歌词/背景色后请求已失效: ${requestId}`);
-        return false;
+        lastPlaybackOutcome.value = 'cancelled';
+        return 'cancelled';
       }
 
       // 设置歌词和背景色
@@ -555,14 +564,18 @@ export const usePlayerCoreStore = defineStore(
         // 在获取详情后再次验证请求
         if (!playbackRequestManager.isRequestValid(requestId)) {
           console.log(`[handlePlayMusic] 获取歌曲详情后请求已失效: ${requestId}`);
-          playbackRequestManager.failRequest(requestId);
-          return false;
+          lastPlaybackOutcome.value = 'cancelled';
+          return 'cancelled';
         }
 
         updatedPlayMusic.lyric = lyrics;
 
         // 若所有音源均未能返回有效播放地址，立即结束 loading 并给出清晰原因，杜绝无限转圈
         if (!updatedPlayMusic.playMusicUrl || !String(updatedPlayMusic.playMusicUrl).trim()) {
+          if (!playbackRequestManager.isRequestValid(requestId)) {
+            lastPlaybackOutcome.value = 'cancelled';
+            return 'cancelled';
+          }
           const isLocal = Boolean(originalMusic.playMusicUrl?.startsWith('local://'));
           const offlineNow = isOfflineNow();
           const diagnosis = classifyPlaybackFailure({
@@ -581,11 +594,16 @@ export const usePlayerCoreStore = defineStore(
             isLocal
           });
           playbackRequestManager.failRequest(requestId);
-          return false;
+          lastPlaybackOutcome.value = 'failed';
+          return 'failed';
         }
 
         // 统一补齐播放音源/音质元数据，并在原生缓存命中时标注「本地缓存」
         const { useSettingsStore } = await import('./settings');
+        if (!playbackRequestManager.isRequestValid(requestId)) {
+          lastPlaybackOutcome.value = 'cancelled';
+          return 'cancelled';
+        }
         const settingsStore = useSettingsStore();
         const currentQuality = settingsStore.setData?.musicQuality || 'higher';
         const isLocalUrl = Boolean(updatedPlayMusic.playMusicUrl?.startsWith('local://'));
@@ -640,7 +658,9 @@ export const usePlayerCoreStore = defineStore(
             );
             if (idx !== -1) {
               setTimeout(() => {
-                playlistStore.preloadNextSongs(idx);
+                if (playbackRequestManager.isRequestValid(requestId)) {
+                  playlistStore.preloadNextSongs(idx);
+                }
               }, 3000);
             }
           }
@@ -650,24 +670,49 @@ export const usePlayerCoreStore = defineStore(
 
         try {
           const result = await playAudio(requestId);
+          if (!playbackRequestManager.isRequestValid(requestId)) {
+            lastPlaybackOutcome.value = 'cancelled';
+            return 'cancelled';
+          }
 
           if (result) {
             // 播放成功，清除 isFirstPlay 标记，避免暂停时被误判为新歌
             playMusic.value.isFirstPlay = false;
             playbackRequestManager.completeRequest(requestId);
-            return true;
+            lastPlaybackOutcome.value = 'playing';
+            return 'playing';
           } else {
+            if (lastPlaybackOutcome.value === 'autoplay-blocked') {
+              playbackRequestManager.failRequest(requestId);
+              return 'autoplay-blocked';
+            }
             playbackRequestManager.failRequest(requestId);
-            return false;
+            lastPlaybackOutcome.value = 'failed';
+            return 'failed';
           }
         } catch (error) {
           isBuffering.value = false;
+          if (isPlaybackCancelledError(error) || !playbackRequestManager.isRequestValid(requestId)) {
+            lastPlaybackOutcome.value = 'cancelled';
+            return 'cancelled';
+          }
+          if (isAutoplayBlockedError(error)) {
+            lastPlaybackOutcome.value = 'autoplay-blocked';
+            playbackRequestManager.failRequest(requestId);
+            return 'autoplay-blocked';
+          }
           console.error('自动播放音频失败:', error);
           playbackRequestManager.failRequest(requestId);
-          return false;
+          lastPlaybackOutcome.value = 'failed';
+          return 'failed';
         }
       } catch (error) {
         isBuffering.value = false;
+        if (isPlaybackCancelledError(error) || !playbackRequestManager.isRequestValid(requestId)) {
+          console.info(`[handlePlayMusic] 切歌请求已被新切歌取消: ${requestId}`);
+          lastPlaybackOutcome.value = 'cancelled';
+          return 'cancelled';
+        }
         if (isAutoplayBlockedError(error)) {
           console.info('[handlePlayMusic] Browser autoplay blocked, staying paused ready-to-play');
           if (playMusic.value) {
@@ -676,7 +721,8 @@ export const usePlayerCoreStore = defineStore(
           setIsPlay(false);
           userPlayIntent.value = false;
           playbackRequestManager.failRequest(requestId);
-          return false;
+          lastPlaybackOutcome.value = 'autoplay-blocked';
+          return 'autoplay-blocked';
         }
         console.error('处理播放音乐失败:', error);
         const isLocal = Boolean(originalMusic.playMusicUrl?.startsWith('local://'));
@@ -697,9 +743,13 @@ export const usePlayerCoreStore = defineStore(
           playMusic.value.playLoading = false;
         }
         playbackRequestManager.failRequest(requestId);
-
-        return false;
+        lastPlaybackOutcome.value = 'failed';
+        return 'failed';
       }
+    };
+
+    const handlePlayMusic = async (music: SongResult, shouldPlay: boolean = true): Promise<boolean> => {
+      return (await handlePlayMusicWithOutcome(music, shouldPlay)) === 'playing';
     };
 
     /**
@@ -798,6 +848,9 @@ export const usePlayerCoreStore = defineStore(
         return newSound;
       } catch (error) {
         isBuffering.value = false;
+        if (isPlaybackCancelledError(error) || (requestId && !playbackRequestManager.isRequestValid(requestId))) {
+          throw error;
+        }
         if (isAutoplayBlockedError(error)) {
           console.info('[playAudio] Browser autoplay blocked, staying paused ready-to-play');
           if (playMusic.value) {
@@ -805,6 +858,7 @@ export const usePlayerCoreStore = defineStore(
           }
           setIsPlay(false);
           userPlayIntent.value = false;
+          lastPlaybackOutcome.value = 'autoplay-blocked';
           return null;
         }
         console.error('播放音频失败:', error);
@@ -1297,6 +1351,7 @@ export const usePlayerCoreStore = defineStore(
       isBuffering,
       lastPlaybackError,
       lastFailureCode,
+      lastPlaybackOutcome,
       audioOutputDeviceId,
       availableAudioDevices,
 
@@ -1315,6 +1370,7 @@ export const usePlayerCoreStore = defineStore(
       increaseVolume,
       decreaseVolume,
       handlePlayMusic,
+      handlePlayMusicWithOutcome,
       playAudio,
       handlePause,
       checkPlaybackState,

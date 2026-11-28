@@ -4,7 +4,12 @@ import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability
 import { useUserStore } from '@/store/modules/user';
 import { getAndroidApiBaseUrl, getAndroidLocalAuthToken, isAndroid } from '@/utils/androidBridge';
 import { ensureAndroidAuthRestoredSync } from '@/utils/auth';
-import { createHttp301SessionGuard, SESSION_EXPIRED_TOAST_TEXT } from '@/utils/authSession';
+import {
+  attachAuthCookieToRequestConfig,
+  buildLoginStatusVerifyConfig,
+  createHttp301SessionGuard,
+  SESSION_EXPIRED_TOAST_TEXT
+} from '@/utils/authSession';
 import { showFloatingToast } from '@/utils/shortcutToast';
 
 import { getSetData, isElectron, isMobile } from '.';
@@ -15,6 +20,7 @@ let setData: any = null;
 interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
   retryCount?: number;
   noRetry?: boolean;
+  skip301Guard?: boolean;
 }
 
 const DEFAULT_CLOUD_WEB_API = 'https://xiaopang-naiwa-music.netlify.app/api';
@@ -89,16 +95,7 @@ request.interceptors.request.use(
       ensureAndroidAuthRestoredSync();
     }
     const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
-    if (token && config.params?.noLogin !== true && config.params?.noCookie !== true) {
-      if (config.method !== 'post') {
-        config.params.cookie = config.params.cookie !== undefined ? config.params.cookie : token;
-      } else {
-        config.data = {
-          ...config.data,
-          cookie: config.data?.cookie !== undefined ? config.data.cookie : token
-        };
-      }
-    }
+    attachAuthCookieToRequestConfig(config, token);
     if (isElectron) {
       const proxyConfig = setData?.proxyConfig;
       if (proxyConfig?.enable && ['http', 'https'].includes(proxyConfig?.protocol)) {
@@ -132,11 +129,7 @@ const isClientOfflineNow = (): boolean => {
 
 const session301Guard = createHttp301SessionGuard({
   verifySession: () =>
-    request.get('/login/status', {
-      params: { noLogin: true },
-      noRetry: true,
-      timeout: 8000
-    } as CustomAxiosRequestConfig),
+    request.get('/login/status', buildLoginStatusVerifyConfig() as CustomAxiosRequestConfig),
   hasActiveAuthSession: () => {
     try {
       if (typeof localStorage !== 'undefined' && Boolean(localStorage.getItem('token'))) {
@@ -199,10 +192,15 @@ request.interceptors.response.use(
     }
 
     // 处理 301 状态码：先加防重入锁调用 /login/status 核验，防止冷启动竞态或单次波动误登出
-    if (error.response?.status === 301 && config.params?.noLogin !== true) {
+    if (
+      error.response?.status === 301 &&
+      config.skip301Guard !== true &&
+      config.params?.noLogin !== true
+    ) {
       const guardResult = await session301Guard.handle301({
         url: String(config.url || ''),
-        noLogin: config.params?.noLogin === true
+        noLogin: config.params?.noLogin === true,
+        skip301Guard: config.skip301Guard === true
       });
       if (guardResult.action === 'logged-out') {
         console.warn(`[request] HTTP 301 确认会话失效 (${guardResult.reason})，已清理登录态`);

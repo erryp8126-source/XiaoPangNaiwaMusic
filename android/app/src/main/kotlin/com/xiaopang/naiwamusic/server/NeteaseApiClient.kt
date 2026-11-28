@@ -35,6 +35,30 @@ class NeteaseApiClient(private val prefs: AppPrefs) {
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.90 Safari/537.36"
 
         private val SPECIAL_CODES = setOf(201, 302, 400, 502, 800, 801, 802, 803)
+
+        internal fun slicePlaylistTrackIds(
+            trackIds: JsonArray,
+            rawOffset: Int,
+            rawLimit: Int
+        ): List<String> {
+            val safeOffset = rawOffset.coerceAtLeast(0)
+            val safeLimit = rawLimit.coerceIn(0, 1000)
+            val end = minOf(trackIds.size().toLong(), safeOffset.toLong() + safeLimit.toLong()).toInt()
+            if (safeOffset >= end) return emptyList()
+
+            val slice = ArrayList<String>(end - safeOffset)
+            for (i in safeOffset until end) {
+                val el = trackIds[i]
+                if (el == null || !el.isJsonObject) continue
+                val idEl = el.asJsonObject.get("id")
+                if (idEl == null || idEl.isJsonNull || !idEl.isJsonPrimitive) continue
+                val tid = idEl.asString.trim()
+                if (tid.isNotEmpty() && tid.all { it in '0'..'9' }) {
+                    slice.add("{\"id\":$tid}")
+                }
+            }
+            return slice
+        }
     }
 
     private val gson = Gson()
@@ -775,15 +799,16 @@ class NeteaseApiClient(private val prefs: AppPrefs) {
         )
         val root = runCatching { JsonParser.parseString(detail.body).asJsonObject }.getOrNull()
             ?: return detail
-        val trackIds = root.getAsJsonObject("playlist")?.getAsJsonArray("trackIds") ?: return detail
+        val trackIds = root.get("playlist")
+            ?.takeIf { it.isJsonObject }
+            ?.asJsonObject
+            ?.get("trackIds")
+            ?.takeIf { it.isJsonArray }
+            ?.asJsonArray
+            ?: return detail
         val limit = intParam(params, "limit", 1000)
         val offset = intParam(params, "offset", 0)
-        val slice = mutableListOf<String>()
-        val end = minOf(trackIds.size(), offset + limit)
-        for (i in offset until end) {
-            val tid = trackIds[i].asJsonObject.get("id")?.asString ?: continue
-            slice.add("{\"id\":$tid}")
-        }
+        val slice = slicePlaylistTrackIds(trackIds, offset, limit)
         val c = "[" + slice.joinToString(",") + "]"
         return ncmRequest("/api/v3/song/detail", mapOf("c" to c), params, "eapi")
     }

@@ -142,7 +142,7 @@ export class CacheManager {
   /**
    * 清除指定歌曲的失败缓存
    */
-  static clearFailedCache(id: number): void {
+  static clearFailedCache(id: number | string): void {
     const keysToDelete: string[] = [];
     failedCacheMap.forEach((_, key) => {
       if (key.startsWith(`${id}_`)) {
@@ -158,10 +158,10 @@ export class CacheManager {
   /**
    * 清除指定歌曲的所有缓存
    */
-  static async clearMusicCache(id: number): Promise<void> {
+  static async clearMusicCache(id: number | string): Promise<void> {
     try {
       // 清除URL缓存
-      await deleteData('music_url_cache', id);
+      await deleteData('music_url_cache', id as any);
       console.log(`清除歌曲 ${id} 的URL缓存`);
 
       // 清除失败缓存 - 同时清理内存失败缓存与历史 IndexedDB 记录

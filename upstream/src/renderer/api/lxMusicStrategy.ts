@@ -4,7 +4,12 @@
  * 实现 MusicSourceStrategy 接口，作为落雪音源的解析入口
  */
 
-import { getLxMusicRunner, initLxMusicRunner } from '@/services/LxMusicSourceRunner';
+import {
+  assertSafeLxRequestUrl,
+  getLxMusicRunner,
+  initLxMusicRunner,
+  resolveSafeLxAudioUrl
+} from '@/services/LxMusicSourceRunner';
 import { useSettingsStore } from '@/store';
 import type { LxMusicInfo, LxQuality, LxSourceKey } from '@/types/lxMusic';
 import { LX_SOURCE_NAMES, QUALITY_TO_LX } from '@/types/lxMusic';
@@ -18,67 +23,7 @@ import { CacheManager } from './musicParser';
  * 一些音源脚本返回的是 API 端点，需要额外请求才能获取真实音频 URL
  */
 const resolveAudioUrl = async (url: string): Promise<string> => {
-  try {
-    // 检查是否看起来像 API 端点（包含 /api/ 且有查询参数）
-    const isApiEndpoint = url.includes('/api/') || (url.includes('?') && url.includes('type=url'));
-
-    if (!isApiEndpoint) {
-      // 看起来像直接的音频 URL，直接返回
-      return url;
-    }
-
-    console.log('[LxMusicStrategy] 检测到 API 端点，尝试解析真实 URL:', url);
-
-    // 尝试获取真实 URL
-    const response = await fetch(url, {
-      method: 'HEAD',
-      redirect: 'manual' // 不自动跟随重定向
-    });
-
-    // 检查是否是重定向
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('Location');
-      if (location) {
-        console.log('[LxMusicStrategy] API 返回重定向 URL:', location);
-        return location;
-      }
-    }
-
-    // 如果 HEAD 请求没有重定向，尝试 GET 请求
-    const getResponse = await fetch(url, {
-      redirect: 'follow'
-    });
-
-    // 检查 Content-Type
-    const contentType = getResponse.headers.get('Content-Type') || '';
-
-    // 如果是音频类型，返回最终 URL
-    if (contentType.includes('audio/') || contentType.includes('application/octet-stream')) {
-      console.log('[LxMusicStrategy] 解析到音频 URL:', getResponse.url);
-      return getResponse.url;
-    }
-
-    // 如果是 JSON，尝试解析
-    if (contentType.includes('application/json') || contentType.includes('text/json')) {
-      const json = await getResponse.json();
-      console.log('[LxMusicStrategy] API 返回 JSON:', json);
-
-      // 尝试从 JSON 中提取 URL（常见字段）
-      const audioUrl = json.url || json.data?.url || json.audio_url || json.link || json.src;
-      if (audioUrl && typeof audioUrl === 'string') {
-        console.log('[LxMusicStrategy] 从 JSON 中提取音频 URL:', audioUrl);
-        return audioUrl;
-      }
-    }
-
-    // 如果都不是，返回原始 URL（可能直接可用）
-    console.warn('[LxMusicStrategy] 无法解析 API 端点，返回原始 URL');
-    return url;
-  } catch (error) {
-    console.error('[LxMusicStrategy] URL 解析失败:', error);
-    // 解析失败时返回原始 URL
-    return url;
-  }
+  return resolveSafeLxAudioUrl(url);
 };
 
 /**
@@ -240,13 +185,15 @@ export class LxMusicStrategy {
         return null;
       }
 
-      console.log('[LxMusicStrategy] 脚本返回 URL:', rawUrl.substring(0, 80) + '...');
+      // 校验脚本返回 URL 并解析可能是 API 端点的链接，最后再做安全核验与 https 升级
+      const safeRawUrl = assertSafeLxRequestUrl(rawUrl);
+      console.log('[LxMusicStrategy] 脚本返回 URL:', safeRawUrl.substring(0, 80) + '...');
 
-      // 解析可能是 API 端点的 URL，并将网易云 http 直链升级为 https 防止混合内容拦截
-      const rawResolvedUrl = await resolveAudioUrl(rawUrl);
-      const resolvedUrl = rawResolvedUrl
+      const rawResolvedUrl = await resolveAudioUrl(safeRawUrl);
+      const upgradedUrl = rawResolvedUrl
         ? rawResolvedUrl.replace(/^http:\/\/([^/]*\.126\.net\/)/i, 'https://$1')
         : rawResolvedUrl;
+      const resolvedUrl = upgradedUrl ? assertSafeLxRequestUrl(upgradedUrl) : '';
 
       if (!resolvedUrl) {
         console.log('[LxMusicStrategy] URL 解析失败');

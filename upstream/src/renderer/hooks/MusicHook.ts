@@ -1499,9 +1499,46 @@ export const initAudioListeners = async () => {
   }
 };
 
-// 监听URL过期事件，自动重新获取URL并恢复播放
+const MAX_URL_EXPIRED_RETRIES = 2;
+const urlExpiredRetryMap = new Map<string, number>();
+let urlExpiredInFlightTrackId: string | null = null;
+
+audioService.on('play', () => {
+  try {
+    const activeId = getPlayerStore().playMusic?.id;
+    if (activeId !== undefined && activeId !== null && String(activeId).trim()) {
+      urlExpiredRetryMap.delete(String(activeId));
+    }
+  } catch {
+    // ignore before store init
+  }
+});
+
+// 监听URL过期事件，自动清理损坏缓存、重新获取URL并恢复播放（限单曲重试次数且不误清空本地歌曲）
 audioService.on('url_expired', async (expiredTrack) => {
   if (!expiredTrack) return;
+
+  let store: ReturnType<typeof getPlayerStore>;
+  try {
+    store = getPlayerStore();
+  } catch {
+    return;
+  }
+
+  const expiredId =
+    expiredTrack.id !== undefined && expiredTrack.id !== null ? String(expiredTrack.id) : '';
+  const activeId =
+    store.playMusic?.id !== undefined && store.playMusic?.id !== null
+      ? String(store.playMusic.id)
+      : '';
+  if (!expiredId || !activeId || expiredId !== activeId) {
+    return;
+  }
+
+  const isLocal = Boolean(
+    expiredTrack.playMusicUrl?.startsWith('local://') ||
+      store.playMusic?.playMusicUrl?.startsWith('local://')
+  );
 
   let isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
   let isOfflinePlayable = false;
@@ -1519,25 +1556,69 @@ audioService.on('url_expired', async (expiredTrack) => {
     return;
   }
 
-  console.log('检测到URL过期事件，准备重新获取URL', expiredTrack.name);
+  // 本地曲目不可通过网络重取，提示文件不可用且保留 local:// 路径
+  if (isLocal) {
+    notifyPlaybackUnavailable(expiredTrack.name, {
+      isOffline,
+      isLocal: true
+    });
+    return;
+  }
+
+  if (urlExpiredInFlightTrackId === expiredId) {
+    return;
+  }
+
+  const prevRetries = urlExpiredRetryMap.get(expiredId) || 0;
+  if (prevRetries >= MAX_URL_EXPIRED_RETRIES) {
+    console.warn(
+      `[MusicHook] 曲目 ${expiredTrack.name} (${expiredId}) URL 过期重试已达上限 (${MAX_URL_EXPIRED_RETRIES})`
+    );
+    notifyPlaybackUnavailable(expiredTrack.name, {
+      isOffline,
+      isLocal: false
+    });
+    return;
+  }
+
+  urlExpiredRetryMap.set(expiredId, prevRetries + 1);
+  urlExpiredInFlightTrackId = expiredId;
+  console.log(
+    `检测到URL过期事件，准备清理缓存并重新获取URL (${prevRetries + 1}/${MAX_URL_EXPIRED_RETRIES})`,
+    expiredTrack.name
+  );
   notifyPlaybackBufferingRetry(expiredTrack.name, { isOffline });
 
   try {
-    // 使用 handlePlayMusic 重新播放，它会自动处理 URL 获取和状态跟踪
-    // 我们将 isFirstPlay 设为 true 以强制获取新 URL
+    const { CacheManager } = await import('@/api/musicParser');
+    await CacheManager.clearMusicCache(expiredTrack.id);
+
+    const latestActiveId =
+      store.playMusic?.id !== undefined && store.playMusic?.id !== null
+        ? String(store.playMusic.id)
+        : '';
+    if (latestActiveId !== expiredId) {
+      return;
+    }
+
     const trackToPlay = {
       ...expiredTrack,
       isFirstPlay: true,
-      playMusicUrl: undefined
+      playMusicUrl: undefined,
+      expiredAt: undefined
     };
 
-    await getPlayerStore().handlePlayMusic(trackToPlay, getPlayerStore().play);
+    await store.handlePlayMusic(trackToPlay, store.play);
   } catch (error) {
     console.error('处理URL过期事件失败:', error);
     notifyPlaybackUnavailable(expiredTrack.name, {
       isOffline,
-      isLocal: Boolean(expiredTrack.playMusicUrl?.startsWith('local://'))
+      isLocal: false
     });
+  } finally {
+    if (urlExpiredInFlightTrackId === expiredId) {
+      urlExpiredInFlightTrackId = null;
+    }
   }
 });
 

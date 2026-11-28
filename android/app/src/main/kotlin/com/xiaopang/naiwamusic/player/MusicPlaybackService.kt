@@ -161,6 +161,17 @@ class MusicPlaybackService : MediaSessionService() {
             return if (isEnabled) R.drawable.ic_media_lyric_on else R.drawable.ic_media_lyric_off
         }
 
+        internal fun appendCoverSizeParam(coverUrl: String, isLocalCover: Boolean): String {
+            if (isLocalCover || !coverUrl.startsWith("http") || coverUrl.contains("param=")) {
+                return coverUrl
+            }
+            val hashIdx = coverUrl.indexOf('#')
+            val base = if (hashIdx >= 0) coverUrl.substring(0, hashIdx) else coverUrl
+            val fragment = if (hashIdx >= 0) coverUrl.substring(hashIdx) else ""
+            val separator = if (base.contains('?')) "&" else "?"
+            return "${base}${separator}param=300y300$fragment"
+        }
+
         private val pendingActions = mutableListOf<(MusicPlaybackService) -> Unit>()
         private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
 
@@ -502,7 +513,13 @@ class MusicPlaybackService : MediaSessionService() {
             exoPlayer.release()
         }
         if (!isAppInForeground) {
-            FloatingLyricManager.activeInstance?.release()
+            FloatingLyricManager.activeInstance?.let { mgr ->
+                if (mgr.hasAttachedActivity()) {
+                    mgr.suspendForServiceStop()
+                } else {
+                    mgr.release()
+                }
+            }
         }
         serviceScope.cancel()
         instance = null
@@ -677,6 +694,7 @@ class MusicPlaybackService : MediaSessionService() {
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 if (audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
                     initHardwareEqualizer(audioSessionId)
+                    initLoudnessEnhancer(audioSessionId)
                 }
             }
 
@@ -1365,6 +1383,7 @@ class MusicPlaybackService : MediaSessionService() {
         currentArtist = artist
         currentAlbum = album
         currentCoverUrl = cover
+        currentArtworkBitmap = null
         currentPlayUrl = url
         nativeQueueIndex = queueIndex
         isNativeManagedTrack = true
@@ -1775,6 +1794,7 @@ class MusicPlaybackService : MediaSessionService() {
         currentArtist = item.artist
         currentAlbum = item.album
         currentCoverUrl = item.cover
+        currentArtworkBitmap = null
         currentPlayUrl = url
         shortAudioRetryJob?.cancel()
         shortAudioRetryJob = null
@@ -1934,107 +1954,157 @@ class MusicPlaybackService : MediaSessionService() {
 
     fun loadAndPrepare(payload: JsonObject) {
         uiHandler.post {
-            cancelNativeAutoAdvance()
-            pendingTrackSyncJson = null
-            isNativeManagedTrack = false
-            nativeConsecutiveFails = 0
+            runCatching {
+                cancelNativeAutoAdvance()
+                pendingTrackSyncJson = null
+                isNativeManagedTrack = false
+                nativeConsecutiveFails = 0
 
-            val url = payload.get("url")?.asString ?: ""
-            if (url.isBlank()) {
-                emitAudioEvent("loaderror", "Empty URL")
-                return@post
-            }
-
-            currentInstanceId = payload.get("instanceId")?.asInt ?: (currentInstanceId + 1)
-            currentSongId = payload.get("songId")?.takeIf { !it.isJsonNull }?.asString ?: ""
-            currentTitle = payload.get("title")?.asString?.ifBlank { "未知歌曲" } ?: "未知歌曲"
-            currentArtist = payload.get("artist")?.asString ?: ""
-            currentAlbum = payload.get("album")?.asString ?: ""
-            currentCoverUrl = payload.get("cover")?.asString ?: ""
-            currentPlayUrl = url
-            val payloadFav = payload.get("isFavorite")?.takeIf { !it.isJsonNull }?.asBoolean
-            syncFavoriteStateForTrack(payloadFav)
-            FloatingLyricManager.activeInstance?.onNativeTrackChanged(currentSongId, currentTitle, currentArtist)
-            ListeningStatsTracker.onTrackChanged(
-                this,
-                currentSongId,
-                currentTitle,
-                currentArtist,
-                currentCoverUrl,
-                false
-            )
-            prequeuedForInstanceId = 0
-            prequeuedNextSongId = ""
-            val autoplay = payload.get("autoplay")?.asBoolean ?: false
-            userPaused = !autoplay
-            isTransitioningTrack = autoplay
-            if (autoplay) {
-                acquireTransitionWakeLock(30_000L)
-            }
-            if (currentSongId.isNotBlank() && nativeQueue.isNotEmpty()) {
-                val matchedIdx = nativeQueue.indexOfFirst { it.id == currentSongId }
-                if (matchedIdx != -1) {
-                    nativeQueueIndex = matchedIdx
+                val url = payload.get("url")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asString
+                    ?.trim()
+                    ?: ""
+                if (url.isBlank()) {
+                    emitAudioEvent("loaderror", "Empty URL")
+                    return@post
                 }
-            }
-            val volume = payload.get("volume")?.asFloat ?: desiredUserVolume
-            val rate = payload.get("rate")?.asFloat ?: 1.0f
-            val initialSeekSec = payload.get("seekTime")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0
-            val expectedDurSec = payload.get("durationSec")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0
-            payload.get("crossfadeMs")?.takeIf { !it.isJsonNull }?.asLong?.let {
-                latestCrossfadeMs = it.coerceIn(0L, 3000L)
-            }
-            payload.get("volumeNormalization")?.takeIf { !it.isJsonNull }?.asBoolean?.let {
-                latestVolumeNormalization = it
-            }
-            crossfadeDurationMs = latestCrossfadeMs
-            volumeNormalizationEnabled = latestVolumeNormalization
-            desiredUserVolume = volume.coerceIn(0f, 1f)
-            applyLoudnessNormalization()
 
-            hasNotifiedLoaded = false
-            cancelVolumeFade()
-            resetShortAudioRetryIfTrackChanged(
-                currentSongId,
-                currentTitle,
-                currentArtist,
-                (expectedDurSec * 1000.0).toLong()
-            )
+                currentInstanceId = payload.get("instanceId")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asInt
+                    ?: (currentInstanceId + 1)
+                currentSongId = payload.get("songId")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asString
+                    ?: ""
+                currentTitle = payload.get("title")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asString
+                    ?.ifBlank { "未知歌曲" }
+                    ?: "未知歌曲"
+                currentArtist = payload.get("artist")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asString
+                    ?: ""
+                currentAlbum = payload.get("album")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asString
+                    ?: ""
+                currentCoverUrl = payload.get("cover")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asString
+                    ?: ""
+                currentArtworkBitmap = null
+                currentPlayUrl = url
+                val payloadFav = payload.get("isFavorite")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asBoolean
+                syncFavoriteStateForTrack(payloadFav)
+                FloatingLyricManager.activeInstance?.onNativeTrackChanged(currentSongId, currentTitle, currentArtist)
+                ListeningStatsTracker.onTrackChanged(
+                    this,
+                    currentSongId,
+                    currentTitle,
+                    currentArtist,
+                    currentCoverUrl,
+                    false
+                )
+                prequeuedForInstanceId = 0
+                prequeuedNextSongId = ""
+                val autoplay = payload.get("autoplay")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asBoolean
+                    ?: false
+                userPaused = !autoplay
+                isTransitioningTrack = autoplay
+                if (autoplay) {
+                    acquireTransitionWakeLock(30_000L)
+                }
+                if (currentSongId.isNotBlank() && nativeQueue.isNotEmpty()) {
+                    val matchedIdx = nativeQueue.indexOfFirst { it.id == currentSongId }
+                    if (matchedIdx != -1) {
+                        nativeQueueIndex = matchedIdx
+                    }
+                }
+                val volume = payload.get("volume")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asFloat
+                    ?: desiredUserVolume
+                val rate = payload.get("rate")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asFloat
+                    ?: 1.0f
+                val initialSeekSec = payload.get("seekTime")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asDouble
+                    ?: 0.0
+                val expectedDurSec = payload.get("durationSec")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asDouble
+                    ?: 0.0
+                payload.get("crossfadeMs")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asLong
+                    ?.let { latestCrossfadeMs = it.coerceIn(0L, 3000L) }
+                payload.get("volumeNormalization")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asBoolean
+                    ?.let { latestVolumeNormalization = it }
+                crossfadeDurationMs = latestCrossfadeMs
+                volumeNormalizationEnabled = latestVolumeNormalization
+                desiredUserVolume = volume.coerceIn(0f, 1f)
+                applyLoudnessNormalization()
 
-            val currentItem = NativeQueueItem(
-                id = currentSongId,
-                name = currentTitle,
-                artist = currentArtist,
-                album = currentAlbum,
-                cover = currentCoverUrl,
-                url = url,
-                source = "netease",
-                dt = (expectedDurSec * 1000.0).toLong()
-            )
-            val mediaItem = buildMediaItemWithMeta(currentItem, url, nativeQueueIndex, nativeIsFm)
+                hasNotifiedLoaded = false
+                cancelVolumeFade()
+                resetShortAudioRetryIfTrackChanged(
+                    currentSongId,
+                    currentTitle,
+                    currentArtist,
+                    (expectedDurSec * 1000.0).toLong()
+                )
 
-            exoPlayer.stop()
-            if (initialSeekSec > 0.0) {
-                exoPlayer.setMediaItem(mediaItem, (initialSeekSec * 1000.0).toLong())
-            } else {
-                exoPlayer.setMediaItem(mediaItem)
+                val currentItem = NativeQueueItem(
+                    id = currentSongId,
+                    name = currentTitle,
+                    artist = currentArtist,
+                    album = currentAlbum,
+                    cover = currentCoverUrl,
+                    url = url,
+                    source = "netease",
+                    dt = (expectedDurSec * 1000.0).toLong()
+                )
+                val mediaItem = buildMediaItemWithMeta(currentItem, url, nativeQueueIndex, nativeIsFm)
+
+                exoPlayer.stop()
+                if (initialSeekSec > 0.0) {
+                    exoPlayer.setMediaItem(mediaItem, (initialSeekSec * 1000.0).toLong())
+                } else {
+                    exoPlayer.setMediaItem(mediaItem)
+                }
+                syncExoPlayerRepeatMode()
+                if (autoplay && crossfadeDurationMs > 0L) {
+                    pendingFadeInOnReady = true
+                    exoPlayer.volume = 0.02f
+                } else {
+                    pendingFadeInOnReady = false
+                    exoPlayer.volume = effectiveTargetVolume()
+                }
+                exoPlayer.playbackParameters = PlaybackParameters(rate.coerceIn(0.25f, 4f))
+                exoPlayer.playWhenReady = autoplay
+                exoPlayer.prepare()
+
+                snapshotPlayerState()
+                ensureForegroundNotification()
+                updateNotification()
+                fetchCoverArtworkAsync(currentCoverUrl, currentInstanceId)
+            }.onFailure { err ->
+                Log.e(TAG, "loadAndPrepare failed: ${err.message}", err)
+                isTransitioningTrack = false
+                releaseTransitionWakeLock()
+                emitAudioEvent("loaderror", err.message ?: "Invalid track payload")
             }
-            syncExoPlayerRepeatMode()
-            if (autoplay && crossfadeDurationMs > 0L) {
-                pendingFadeInOnReady = true
-                exoPlayer.volume = 0.02f
-            } else {
-                pendingFadeInOnReady = false
-                exoPlayer.volume = effectiveTargetVolume()
-            }
-            exoPlayer.playbackParameters = PlaybackParameters(rate.coerceIn(0.25f, 4f))
-            exoPlayer.playWhenReady = autoplay
-            exoPlayer.prepare()
-
-            snapshotPlayerState()
-            ensureForegroundNotification()
-            updateNotification()
-            fetchCoverArtworkAsync(currentCoverUrl, currentInstanceId)
         }
     }
 
@@ -2412,9 +2482,7 @@ class MusicPlaybackService : MediaSessionService() {
             val bmp = runCatching {
                 val localCoverPrefix = "http://127.0.0.1:${NaiwaApp.instance.localServerPort}/local-cover"
                 val isLocalCover = coverUrl.startsWith(localCoverPrefix)
-                val reqUrl = if (!isLocalCover && coverUrl.startsWith("http") && !coverUrl.contains("param=")) {
-                    "$coverUrl?param=300y300"
-                } else coverUrl
+                val reqUrl = appendCoverSizeParam(coverUrl, isLocalCover)
                 val req = Request.Builder().url(reqUrl).get().build()
                 val client = if (isLocalCover) localCoverClient else httpClient
                 client.newCall(req).execute().use { resp ->

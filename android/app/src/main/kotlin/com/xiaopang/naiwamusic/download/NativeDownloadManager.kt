@@ -21,6 +21,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.concurrent.TimeUnit
 
 /**
@@ -34,6 +36,52 @@ class NativeDownloadManager(
     companion object {
         private const val TAG = "NativeDownloadManager"
         private const val MAX_DOWNLOAD_BYTES = 200L * 1024L * 1024L // 单曲上限 200MB
+
+        internal fun buildDownloadRecord(
+            safeName: String,
+            targetFile: File,
+            songInfo: JsonObject?
+        ): JsonObject {
+            return JsonObject().apply {
+                addProperty("filename", safeName)
+                addProperty("path", targetFile.absolutePath)
+                addProperty("size", targetFile.length())
+                val idPrim = songInfo?.get("id")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asJsonPrimitive
+                if (idPrim != null) {
+                    if (idPrim.isNumber) {
+                        addProperty("id", idPrim.asLong)
+                    } else {
+                        val rawId = idPrim.asString.trim()
+                        val numericId = rawId.toLongOrNull()
+                        when {
+                            numericId != null -> addProperty("id", numericId)
+                            rawId.isNotEmpty() -> addProperty("id", rawId)
+                            else -> addProperty("id", targetFile.absolutePath.hashCode().toLong())
+                        }
+                    }
+                } else {
+                    addProperty("id", targetFile.absolutePath.hashCode().toLong())
+                }
+                val nameVal = songInfo?.get("name")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asString
+                    ?.takeIf { it.isNotBlank() }
+                    ?: safeName
+                val picUrlVal = songInfo?.get("picUrl")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.asString
+                    ?: ""
+                addProperty("name", nameVal)
+                addProperty("picUrl", picUrlVal)
+                val arEl = songInfo?.get("ar")
+                if (arEl != null && !arEl.isJsonNull) {
+                    add("ar", arEl)
+                }
+                addProperty("downloadTime", System.currentTimeMillis())
+            }
+        }
     }
 
     private val gson = Gson()
@@ -67,10 +115,11 @@ class NativeDownloadManager(
     private fun getIndexFile(): File = File(getDownloadDir(), ".alger_downloads_index.json")
 
     fun enqueueDownload(payload: JsonObject) {
-        val url = payload.get("url")?.asString?.trim() ?: ""
-        val rawFilename = payload.get("filename")?.asString ?: "unknown_${System.currentTimeMillis()}"
-        val songInfo = payload.getAsJsonObject("songInfo")
-        val typeHint = payload.get("type")?.asString
+        val url = payload.get("url")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString?.trim() ?: ""
+        val rawFilename = payload.get("filename")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+            ?: "unknown_${System.currentTimeMillis()}"
+        val songInfo = payload.get("songInfo")?.takeIf { it.isJsonObject }?.asJsonObject
+        val typeHint = payload.get("type")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
 
         if (url.isBlank() || !isSafePublicHttpUrl(url)) {
             emitError(rawFilename, "无效或不安全的下载地址")
@@ -84,10 +133,14 @@ class NativeDownloadManager(
         )
 
         scope.launch {
+            var partFile: File? = null
             try {
                 val safeName = sanitizeFilename(rawFilename)
                 val ext = resolveExt(url, typeHint)
-                val targetFile = File(getDownloadDir(), "$safeName.$ext")
+                val downloadDir = getDownloadDir()
+                val targetFile = File(downloadDir, "$safeName.$ext")
+                val tempFile = File(downloadDir, "$safeName.$ext.${System.nanoTime()}.part")
+                partFile = tempFile
 
                 val reqBuilder = Request.Builder()
                     .url(url)
@@ -113,7 +166,7 @@ class NativeDownloadManager(
                     var lastReportTime = 0L
 
                     body.byteStream().use { input ->
-                        FileOutputStream(targetFile).use { output ->
+                        FileOutputStream(tempFile).use { output ->
                             val buf = ByteArray(16 * 1024)
                             while (true) {
                                 val read = input.read(buf)
@@ -146,6 +199,36 @@ class NativeDownloadManager(
                                     )
                                 }
                             }
+                            output.flush()
+                        }
+                    }
+
+                    if (downloaded <= 0L) {
+                        throw IllegalStateException("下载内容为空")
+                    }
+                    if (totalBytes > 0L && downloaded < totalBytes) {
+                        throw IllegalStateException("下载流提前中断 ($downloaded/$totalBytes)")
+                    }
+
+                    try {
+                        Files.move(
+                            tempFile.toPath(),
+                            targetFile.toPath(),
+                            StandardCopyOption.REPLACE_EXISTING,
+                            StandardCopyOption.ATOMIC_MOVE
+                        )
+                    } catch (_: Exception) {
+                        runCatching {
+                            Files.move(
+                                tempFile.toPath(),
+                                targetFile.toPath(),
+                                StandardCopyOption.REPLACE_EXISTING
+                            )
+                        }.getOrElse {
+                            if (targetFile.exists()) targetFile.delete()
+                            if (!tempFile.renameTo(targetFile)) {
+                                throw IllegalStateException("写入目标音频文件失败")
+                            }
                         }
                     }
 
@@ -153,18 +236,7 @@ class NativeDownloadManager(
                     runCatching { exportCopyToPublicMusic(targetFile, ext) }
 
                     // 记录到本地下载索引
-                    val record = JsonObject().apply {
-                        addProperty("filename", safeName)
-                        addProperty("path", targetFile.absolutePath)
-                        addProperty("size", targetFile.length())
-                        addProperty("id", songInfo?.get("id")?.asLong ?: targetFile.absolutePath.hashCode().toLong())
-                        addProperty("name", songInfo?.get("name")?.asString ?: safeName)
-                        addProperty("picUrl", songInfo?.get("picUrl")?.asString ?: "")
-                        if (songInfo?.has("ar") == true) {
-                            add("ar", songInfo.get("ar"))
-                        }
-                        addProperty("downloadTime", System.currentTimeMillis())
-                    }
+                    val record = buildDownloadRecord(safeName, targetFile, songInfo)
                     saveRecord(record)
 
                     eventEmitter(
@@ -197,6 +269,8 @@ class NativeDownloadManager(
             } catch (e: Exception) {
                 Log.e(TAG, "Download failed for $rawFilename: ${e.message}")
                 emitError(rawFilename, e.message ?: "下载失败")
+            } finally {
+                runCatching { partFile?.takeIf { it.exists() }?.delete() }
             }
         }
     }

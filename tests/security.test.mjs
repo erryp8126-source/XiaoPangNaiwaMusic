@@ -3854,7 +3854,10 @@ test("iteration 2 invariants: common/advanced settings split, sync preview UI, 3
     path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/player/MusicPlaybackService.kt"),
     "utf-8"
   );
-  assert.match(serviceKt, /FloatingLyricManager\.activeInstance\?\.release\(\)/);
+  assert.match(
+    serviceKt,
+    /FloatingLyricManager\.activeInstance\?\.let[\s\S]{0,200}suspendForServiceStop\(\)[\s\S]{0,120}\.release\(\)/
+  );
 });
 
 test("mixed-content P3 & Netlify release health gate P1: HTTPS image/media upgrade, MIXED_CONTENT_NEVER_ALLOW, and health gate verification", async () => {
@@ -4437,7 +4440,15 @@ test("HTTP 301 auto-logout hardening & Android cold-start auth restoration", asy
   );
   assert.match(requestTs, /createHttp301SessionGuard/);
   assert.match(requestTs, /\/login\/status/);
-  assert.match(requestTs, /noLogin:\s*true/);
+  assert.match(requestTs, /buildLoginStatusVerifyConfig/);
+  assert.match(requestTs, /skip301Guard/);
+  assert.match(requestTs, /attachAuthCookieToRequestConfig/);
+  const verifySessionMatch = requestTs.match(/verifySession:\s*\(\)\s*=>[\s\S]*?(?=hasActiveAuthSession:)/);
+  assert.ok(verifySessionMatch, "request.ts must define verifySession");
+  assert.ok(
+    !/noLogin\s*:/.test(verifySessionMatch[0]),
+    "verifySession must not pass noLogin: true to /login/status"
+  );
   assert.match(requestTs, /SESSION_EXPIRED_TOAST_TEXT/);
   assert.match(requestTs, /ensureAndroidAuthRestoredSync/);
   assert.ok(
@@ -4954,4 +4965,555 @@ test("cross-platform playlist import: URL extraction, text parsing, anti-wrong-s
   );
   assert.match(myMusicVue, /CrossPlatformImportModal/);
   assert.match(myMusicVue, /导入外部歌单/);
+});
+
+test("Batch 1 [C-01 & H-11]: 301 verifySession preserves MUSIC_U and POST retry does not spread JSON string data", async () => {
+  const authSessionMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/authSession.ts")).href
+  );
+
+  // 1. verifySession config uses skip301Guard instead of noLogin
+  const verifyCfg = authSessionMod.buildLoginStatusVerifyConfig();
+  assert.equal(verifyCfg.noRetry, true);
+  assert.equal(verifyCfg.skip301Guard, true);
+  assert.equal(verifyCfg.timeout, 8000);
+  assert.equal("noLogin" in verifyCfg, false);
+
+  // 2. GET /login/status attaches MUSIC_U token while noLogin:true omits it
+  const token = "MUSIC_U=valid_user_cookie_123;";
+  const verifyReq = authSessionMod.attachAuthCookieToRequestConfig(
+    { method: "get", url: "/login/status", ...authSessionMod.buildLoginStatusVerifyConfig() },
+    token
+  );
+  assert.equal(verifyReq.params.cookie, token);
+  assert.equal(verifyReq.skip301Guard, true);
+
+  const explicitNoLoginReq = authSessionMod.attachAuthCookieToRequestConfig(
+    { method: "get", url: "/song/url", params: { id: 1, noLogin: true } },
+    token
+  );
+  assert.equal(explicitNoLoginReq.params.cookie, undefined);
+
+  // 3. POST retry with serialized JSON string data does not spread string characters ("0": "{")
+  const retriedPostReq = authSessionMod.attachAuthCookieToRequestConfig(
+    {
+      method: "post",
+      url: "/login/cellphone",
+      data: JSON.stringify({ phone: "13800138000", countrycode: "86" }),
+    },
+    token
+  );
+  assert.equal(typeof retriedPostReq.data, "object");
+  assert.equal(retriedPostReq.data["0"], undefined);
+  assert.equal(retriedPostReq.data.phone, "13800138000");
+  assert.equal(retriedPostReq.data.countrycode, "86");
+  assert.equal(retriedPostReq.data.cookie, token);
+
+  const rawStringPostReq = authSessionMod.attachAuthCookieToRequestConfig(
+    {
+      method: "post",
+      url: "/custom/raw",
+      data: "plain-raw-body",
+    },
+    token
+  );
+  assert.equal(rawStringPostReq.data, "plain-raw-body");
+
+  const searchParamsReq = authSessionMod.attachAuthCookieToRequestConfig(
+    {
+      method: "post",
+      url: "/playlist/tracks",
+      data: new URLSearchParams({ op: "add", pid: "42" }),
+    },
+    token
+  );
+  assert.ok(searchParamsReq.data instanceof URLSearchParams);
+  assert.equal(searchParamsReq.data.get("cookie"), token);
+  assert.equal(searchParamsReq.data.get("pid"), "42");
+
+  // 4. End-to-end 301 guard simulation: verifySession with attached MUSIC_U stays logged in
+  let expiredCalls = 0;
+  let capturedVerifyCookie = "";
+  const guard = authSessionMod.createHttp301SessionGuard({
+    hasActiveAuthSession: () => true,
+    isOffline: () => false,
+    verifySession: async () => {
+      const cfg = authSessionMod.attachAuthCookieToRequestConfig(
+        { method: "get", url: "/login/status", ...authSessionMod.buildLoginStatusVerifyConfig() },
+        token
+      );
+      capturedVerifyCookie = cfg.params.cookie;
+      // Backend returns anonimousUser: true unless MUSIC_U is actually present
+      if (capturedVerifyCookie !== token) {
+        return { data: { code: 200, account: { id: 999, anonimousUser: true }, profile: null } };
+      }
+      return { data: { code: 200, account: { id: 1001, anonimousUser: false }, profile: { userId: 1001 } } };
+    },
+    onConfirmedExpired: () => {
+      expiredCalls += 1;
+    },
+  });
+
+  const guardRes = await guard.handle301({ url: "/user/playlist" });
+  assert.equal(capturedVerifyCookie, token);
+  assert.equal(guardRes.action, "kept-valid");
+  assert.equal(expiredCalls, 0);
+
+  // Verify skip301Guard prevents recursive loop even on non-auth URLs
+  const ignoredByFlagRes = await guard.handle301({ url: "/user/playlist", skip301Guard: true });
+  assert.equal(ignoredByFlagRes.action, "ignored");
+  assert.equal(ignoredByFlagRes.reason, "no-login-or-auth-endpoint");
+
+  const ignoredByEndpointRes = await guard.handle301({ url: "/login/status" });
+  assert.equal(ignoredByEndpointRes.action, "ignored");
+  assert.equal(ignoredByEndpointRes.reason, "no-login-or-auth-endpoint");
+});
+
+test("Batch 1 [C-02 & H-02 & H-05]: IPv6 transition SSRF blocking and QQ/Bilibili auth isolation", async () => {
+  const blockedIpv6s = [
+    "::ffff:7f00:1",
+    "::ffff:a9fe:a9fe",
+    "::ffff:127.0.0.1",
+    "::ffff:169.254.169.254",
+    "::127.0.0.1",
+    "::7f00:1",
+    "::ffff:0:127.0.0.1",
+    "64:ff9b::127.0.0.1",
+    "64:ff9b:1::1",
+    "2001::1",
+    "2001:2::1",
+    "2001:db8::1",
+    "2002:7f00:1::",
+    "fec0::1",
+    "100::1",
+    "0:0:0:0:0:0:0:1",
+  ];
+  for (const ip of blockedIpv6s) {
+    assert.equal(
+      musicApiMod.isPublicIPv6(ip),
+      false,
+      `Expected IPv6 SSRF address ${ip} to be rejected`
+    );
+    await assert.rejects(
+      () =>
+        musicApiMod.validateOutboundUrl(`http://[${ip}]/audio.mp3`, {
+          allowAnyPublicHost: true,
+        }),
+      /private|non-public/i,
+      `Expected validateOutboundUrl to reject http://[${ip}]/`
+    );
+  }
+
+  assert.equal(musicApiMod.isPublicIPv6("2606:4700:4700::1111"), true);
+  assert.equal(musicApiMod.isPublicIPv6("::ffff:808:808"), true);
+  const publicV6 = await musicApiMod.validateOutboundUrl(
+    "https://[2606:4700:4700::1111]/song.mp3",
+    { allowAnyPublicHost: true }
+  );
+  assert.equal(publicV6.hostname, "[2606:4700:4700::1111]");
+
+  // H-05: Split QQ & Bilibili allowlists + requireHttps enforcement
+  assert.ok(musicApiMod.BILIBILI_AUTH_ALLOWED_DOMAINS.has("passport.bilibili.com"));
+  assert.equal(musicApiMod.BILIBILI_AUTH_ALLOWED_DOMAINS.has("ssl.ptlogin2.qq.com"), false);
+  assert.ok(musicApiMod.QQ_AUTH_ALLOWED_DOMAINS.has("ssl.ptlogin2.qq.com"));
+  assert.equal(musicApiMod.QQ_AUTH_ALLOWED_DOMAINS.has("passport.bilibili.com"), false);
+  assert.ok(musicApiMod.PLATFORM_AUTH_ALLOWED_DOMAINS.has("passport.bilibili.com"));
+  assert.ok(musicApiMod.PLATFORM_AUTH_ALLOWED_DOMAINS.has("ssl.ptlogin2.qq.com"));
+
+  await assert.rejects(
+    () =>
+      safeFetchWithRedirects(
+        "http://ssl.ptlogin2.qq.com/check_sig?ok=1",
+        {},
+        { allowedSuffixes: musicApiMod.QQ_AUTH_ALLOWED_DOMAINS, requireHttps: true }
+      ),
+    /HTTPS/i
+  );
+
+  const musicApiTs = fs.readFileSync(
+    path.join(repoRoot, "netlify/functions/music-api.mts"),
+    "utf-8"
+  );
+  assert.match(musicApiTs, /fetchBilibiliAuthSafe/);
+  assert.match(musicApiTs, /fetchQqAuthSafe/);
+  assert.doesNotMatch(musicApiTs, /await\s+fetch\(nextUrl/);
+});
+
+test("Batch 1 [C-03 & H-04 & H-01]: hardened LX sandbox, terminateWorker on timeout, safe LX redirect/URL validation, and MainActivity URI check", async () => {
+  const { stripTypeScriptTypes } = await import("node:module");
+
+  // 1. LX sandbox worker global hardening locks out all dangerous APIs non-configurably
+  const workerSource = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/services/workers/lxScriptSandbox.worker.ts"),
+    "utf-8"
+  );
+  const patchedWorkerSource = workerSource.replace(
+    /import\s+\*\s+as\s+lxCrypto\s+from\s+['"]@\/utils\/lxCrypto['"];/,
+    "const lxCrypto: any = {};"
+  );
+  const jsWorkerSource = stripTypeScriptTypes(patchedWorkerSource, { mode: "strip" });
+  const workerMod = await import(
+    `data:text/javascript;base64,${Buffer.from(jsWorkerSource, "utf-8").toString("base64")}`
+  );
+
+  assert.deepEqual([...workerMod.BLOCKED_LX_SANDBOX_GLOBALS], [
+    "fetch",
+    "XMLHttpRequest",
+    "WebSocket",
+    "EventSource",
+    "indexedDB",
+    "caches",
+    "BroadcastChannel",
+    "importScripts",
+  ]);
+
+  const fakeProto = {};
+  for (const key of workerMod.BLOCKED_LX_SANDBOX_GLOBALS) {
+    fakeProto[key] = () => "should-not-remain";
+  }
+  const fakeGlobal = Object.create(fakeProto);
+  fakeGlobal.XMLHttpRequest = class {};
+
+  workerMod.hardenGlobalScope(fakeGlobal);
+  for (const key of workerMod.BLOCKED_LX_SANDBOX_GLOBALS) {
+    assert.equal(fakeGlobal[key], undefined);
+    const ownDesc = Object.getOwnPropertyDescriptor(fakeGlobal, key);
+    assert.equal(ownDesc?.configurable, false);
+    assert.equal(ownDesc?.writable, false);
+    assert.throws(() => {
+      fakeGlobal[key] = "reassigned";
+    }, TypeError);
+    assert.throws(() => {
+      delete fakeGlobal[key];
+    }, TypeError);
+
+    const protoDesc = Object.getOwnPropertyDescriptor(fakeProto, key);
+    assert.equal(protoDesc?.configurable, false);
+    assert.equal(protoDesc?.writable, false);
+    assert.equal(fakeProto[key], undefined);
+  }
+
+  // 2. LxMusicSourceRunner resolves safe audio URLs with credentials: 'omit' + redirect: 'manual' and blocks SSRF hops
+  const lxRunnerMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/services/LxMusicSourceRunner.ts")).href
+  );
+  for (const v6Url of [
+    "http://[::ffff:7f00:1]/song",
+    "http://[64:ff9b::127.0.0.1]/song",
+    "http://[2001::1]/song",
+    "http://[2002:7f00:1::]/song",
+    "http://[fec0::1]/song",
+  ]) {
+    assert.throws(() => lxRunnerMod.assertSafeLxRequestUrl(v6Url), /Blocked/);
+  }
+
+  const seenFetchOpts = [];
+  await assert.rejects(
+    () =>
+      lxRunnerMod.resolveSafeLxAudioUrl("https://api.example-music.test/api/url?id=1", async (_url, init) => {
+        seenFetchOpts.push(init);
+        return new Response(null, {
+          status: 302,
+          headers: { Location: "http://[::ffff:127.0.0.1]/secret-token" },
+        });
+      }),
+    /Blocked/
+  );
+  assert.equal(seenFetchOpts[0]?.credentials, "omit");
+  assert.equal(seenFetchOpts[0]?.redirect, "manual");
+
+  await assert.rejects(
+    () =>
+      lxRunnerMod.resolveSafeLxAudioUrl("https://api.example-music.test/api/url?id=2", async () => {
+        return new Response(
+          JSON.stringify({ url: "http://169.254.169.254/latest/meta-data/" }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }),
+    /Blocked/
+  );
+
+  const safeResolved = await lxRunnerMod.resolveSafeLxAudioUrl(
+    "https://api.example-music.test/api/url?id=3",
+    async (_url, init) => {
+      if (init?.method === "HEAD") {
+        return new Response(null, { status: 405 });
+      }
+      return new Response(
+        JSON.stringify({ url: "https://m701.music.126.net/2026/track.mp3" }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+  );
+  assert.equal(safeResolved, "https://m701.music.126.net/2026/track.mp3");
+
+  // 3. Static checks on LxMusicSourceRunner.ts, lxMusicStrategy.ts, and MainActivity.kt
+  const runnerTs = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/services/LxMusicSourceRunner.ts"),
+    "utf-8"
+  );
+  assert.match(runnerTs, /terminateWorker\(/);
+  assert.match(runnerTs, /assertSafeLxRequestUrl\(url\)/);
+
+  const strategyTs = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/api/lxMusicStrategy.ts"),
+    "utf-8"
+  );
+  assert.match(strategyTs, /resolveSafeLxAudioUrl/);
+  assert.match(strategyTs, /assertSafeLxRequestUrl/);
+
+  const mainActivityKt = fs.readFileSync(
+    path.join(repoRoot, "android/app/src/main/kotlin/com/xiaopang/naiwamusic/MainActivity.kt"),
+    "utf-8"
+  );
+  assert.equal(mainActivityKt.includes('url.startsWith("http://127.0.0.1:")'), false);
+  assert.match(mainActivityKt, /isAllowedInternalWebViewUrl/);
+  assert.match(mainActivityKt, /isAllowedExternalBrowserUrl/);
+});
+
+test("Batch 2 [H-26]: LxMusicSourceRunner isolates http fallback URL per callId and never leaks track A URL to track B", async () => {
+  const { LxMusicSourceRunner } = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/services/LxMusicSourceRunner.ts")).href
+  );
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (targetUrl) => {
+    const u = String(targetUrl);
+    if (u.includes("track=A")) {
+      return new Response(
+        JSON.stringify({ url: "https://cdn-a.music.example.com/song-a.mp3" }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    if (u.includes("track=C")) {
+      return new Response(
+        JSON.stringify({ url: "https://cdn-c.music.example.com/song-c.mp3" }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    return new Response(JSON.stringify({ message: "not found" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  class MockLxWorker {
+    constructor() {
+      this.onmessage = null;
+      this.onerror = null;
+      this.terminated = false;
+      this.pendingReqResolvers = new Map();
+      this.reqSeq = 0;
+    }
+
+    terminate() {
+      this.terminated = true;
+    }
+
+    postMessage(msg) {
+      if (this.terminated) return;
+      if (msg.type === "initialize") {
+        queueMicrotask(() => {
+          this.onmessage?.({
+            data: {
+              type: "initialized",
+              data: {
+                openDevTools: false,
+                sources: {
+                  kw: {
+                    name: "kw",
+                    type: "music",
+                    actions: ["musicUrl"],
+                    qualitys: ["320k", "128k"],
+                  },
+                },
+              },
+            },
+          });
+        });
+        return;
+      }
+
+      if (msg.type === "http-response") {
+        const resolver = this.pendingReqResolvers.get(msg.requestId);
+        this.pendingReqResolvers.delete(msg.requestId);
+        resolver?.(msg);
+        return;
+      }
+
+      if (msg.type === "invoke-request") {
+        const songId = msg.payload?.info?.musicInfo?.songmid;
+        if (songId === "trackA") {
+          const requestId = `req_${++this.reqSeq}`;
+          this.pendingReqResolvers.set(requestId, () => {
+            // Simulate script returning undefined so runner relies on callId-scoped fallback URL
+            this.onmessage?.({
+              data: {
+                type: "invoke-result",
+                callId: msg.callId,
+                result: undefined,
+              },
+            });
+          });
+          queueMicrotask(() => {
+            this.onmessage?.({
+              data: {
+                type: "http-request",
+                requestId,
+                callId: msg.callId,
+                url: "https://api.lx-example.test/resolve?track=A",
+                options: { method: "GET" },
+              },
+            });
+          });
+          return;
+        }
+
+        if (songId === "trackB") {
+          // Simulate track B failing to produce any URL (no fallback should remain from track A!)
+          queueMicrotask(() => {
+            this.onmessage?.({
+              data: {
+                type: "invoke-result",
+                callId: msg.callId,
+                result: undefined,
+              },
+            });
+          });
+          return;
+        }
+
+        if (songId === "trackC") {
+          const requestId = `req_${++this.reqSeq}`;
+          this.pendingReqResolvers.set(requestId, () => {
+            this.onmessage?.({
+              data: {
+                type: "invoke-result",
+                callId: msg.callId,
+                result: undefined,
+              },
+            });
+          });
+          queueMicrotask(() => {
+            this.onmessage?.({
+              data: {
+                type: "http-request",
+                requestId,
+                callId: msg.callId,
+                url: "https://api.lx-example.test/resolve?track=C",
+                options: { method: "GET" },
+              },
+            });
+          });
+        }
+      }
+    }
+  }
+
+  try {
+    const runner = new LxMusicSourceRunner("/* @name Mock */\n", () => new MockLxWorker());
+    await runner.initialize();
+
+    const makeInfo = (id) => ({
+      name: id,
+      singer: "Tester",
+      albumName: "Album",
+      songmid: id,
+      interval: "03:00",
+    });
+
+    const urlA = await runner.getMusicUrl("kw", makeInfo("trackA"), "320k");
+    assert.equal(urlA, "https://cdn-a.music.example.com/song-a.mp3");
+
+    await assert.rejects(
+      () => runner.getMusicUrl("kw", makeInfo("trackB"), "320k"),
+      /获取音乐 URL 失败/
+    );
+
+    const urlC = await runner.getMusicUrl("kw", makeInfo("trackC"), "320k");
+    assert.equal(urlC, "https://cdn-c.music.example.com/song-c.mp3");
+
+    runner.dispose();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Batch 2 [H-16..H-21, H-26..H-28, M-09, M-12]: cross-platform playback, lyric, server, download & queue invariants", () => {
+  const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), "utf-8");
+
+  // 1. FloatingLyricManager & MainActivity & MusicPlaybackService lifecycle [H-20]
+  const floatingKt = read("android/app/src/main/kotlin/com/xiaopang/naiwamusic/lyric/FloatingLyricManager.kt");
+  assert.match(floatingKt, /class LyricTrackState/);
+  assert.match(floatingKt, /lyricLinesSongId/);
+  assert.match(floatingKt, /fun suspendForServiceStop\(/);
+  assert.match(floatingKt, /fun detachControlCommand\(/);
+  assert.match(floatingKt, /isReleased \|\| !shouldBeAttached/);
+
+  const mainActivityKt = read("android/app/src/main/kotlin/com/xiaopang/naiwamusic/MainActivity.kt");
+  assert.match(mainActivityKt, /detachControlCommand\(lyricCommandHandler\)/);
+
+  const serviceKt = read("android/app/src/main/kotlin/com/xiaopang/naiwamusic/player/MusicPlaybackService.kt");
+  assert.match(serviceKt, /suspendForServiceStop\(\)/);
+  assert.match(serviceKt, /appendCoverSizeParam\(/);
+  assert.match(serviceKt, /currentArtworkBitmap\s*=\s*null/);
+  assert.match(serviceKt, /onAudioSessionIdChanged[\s\S]{0,260}initLoudnessEnhancer\(audioSessionId\)/);
+
+  // 2. EmbeddedHttpServer status pass-through & single URL decoding + NeteaseApiClient slice clamp [H-16..H-18]
+  const serverKt = read("android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/EmbeddedHttpServer.kt");
+  assert.match(serverKt, /fun resolveHttpStatus\(/);
+  assert.doesNotMatch(serverKt, /Response\.Status\.lookup\([^)]+\)\s*\?:\s*Response\.Status\.OK/);
+  const handleLocalFileBlock = serverKt.slice(serverKt.indexOf("private fun handleLocalFile("), serverKt.indexOf("private fun serveStreamWithRange("));
+  assert.doesNotMatch(handleLocalFileBlock, /URLDecoder\.decode/);
+  const handleLocalCoverBlock = serverKt.slice(serverKt.indexOf("private fun handleLocalCover("), serverKt.indexOf("private fun handleLocalFile("));
+  assert.doesNotMatch(handleLocalCoverBlock, /URLDecoder\.decode/);
+
+  const ncmKt = read("android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/NeteaseApiClient.kt");
+  assert.match(ncmKt, /slicePlaylistTrackIds\(/);
+  assert.match(ncmKt, /coerceAtLeast\(0\)/);
+  assert.match(ncmKt, /coerceIn\(0,\s*1000\)/);
+
+  const ncmSwift = read("ios/XiaoPangNaiwaMusic/Server/NeteaseApiClient.swift");
+  assert.match(ncmSwift, /let safeLimit = min\(max\(intParam\(params, "limit", 1000\), 0\), 1000\)/);
+  assert.match(ncmSwift, /let safeOffset = max\(intParam\(params, "offset", 0\), 0\)/);
+
+  // 3. Atomic .part download & Kuwo apostrophe parser [H-21, M-09]
+  const downloadKt = read("android/app/src/main/kotlin/com/xiaopang/naiwamusic/download/NativeDownloadManager.kt");
+  assert.match(downloadKt, /\.part"/);
+  assert.match(downloadKt, /ATOMIC_MOVE/);
+  assert.match(downloadKt, /buildDownloadRecord\(/);
+
+  const unblockKt = read("android/app/src/main/kotlin/com/xiaopang/naiwamusic/server/MusicUnblockEngine.kt");
+  assert.match(unblockKt, /parseKuwoSearchJson\(/);
+  assert.equal(unblockKt.includes('body.replace("\'", "\\"")'), false);
+
+  const unblockSwift = read("ios/XiaoPangNaiwaMusic/Server/MusicUnblockEngine.swift");
+  assert.match(unblockSwift, /parseKuwoSearchJson\(/);
+  assert.equal(unblockSwift.includes('body.replacingOccurrences(of: "\'", with: "\\"")'), false);
+
+  // 4. Frontend audioService, MusicHook, LxRunner, playerCore & playlist [H-26..H-28]
+  const lxRunnerTs = read("upstream/src/renderer/services/LxMusicSourceRunner.ts");
+  assert.equal(lxRunnerTs.includes("lastMusicUrl"), false);
+  assert.match(lxRunnerTs, /invocationFallbackUrls/);
+
+  const audioServiceTs = read("upstream/src/renderer/services/audioService.ts");
+  assert.match(audioServiceTs, /isPlaybackCancelledError/);
+  assert.match(audioServiceTs, /getEffectiveWebVolume/);
+  assert.match(audioServiceTs, /deferLoad:\s*true/);
+  assert.match(audioServiceTs, /nativeSound\.activateAndLoad\(isPlay\)/);
+  assert.match(audioServiceTs, /playGeneration/);
+
+  const musicHookTs = read("upstream/src/renderer/hooks/MusicHook.ts");
+  assert.match(musicHookTs, /MAX_URL_EXPIRED_RETRIES/);
+  assert.match(musicHookTs, /CacheManager\.clearMusicCache\(expiredTrack\.id\)/);
+
+  const playerCoreTs = read("upstream/src/renderer/store/modules/playerCore.ts");
+  assert.match(playerCoreTs, /handlePlayMusicWithOutcome/);
+  assert.match(playerCoreTs, /isPlaybackCancelledError/);
+
+  const playlistTs = read("upstream/src/renderer/store/modules/playlist.ts");
+  assert.match(playlistTs, /switchGeneration/);
+  assert.doesNotMatch(playlistTs, /newPlayList\.splice\(nowPlayListIndex,\s*1\)/);
+  assert.match(playlistTs, /audioService\.stop\(\)/);
+  assert.match(playlistTs, /playbackRequestManager\.cancelAllRequests\(\)/);
 });

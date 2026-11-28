@@ -53,4 +53,31 @@ class PlatformAuthProxyTest {
         assertFalse(SafeHttpGuard.isAllowedDomain("127.0.0.1", SafeHttpGuard.PLATFORM_AUTH_ALLOWED_DOMAINS))
         assertFalse(SafeHttpGuard.isAllowedDomain("passport.bilibili.com.evil.com", SafeHttpGuard.PLATFORM_AUTH_ALLOWED_DOMAINS))
     }
+
+    @Test
+    fun isolatesBilibiliAndQqAuthAllowlistsEnforcesHttpsAndRejectsInjectedQrsig() {
+        assertTrue(SafeHttpGuard.isAllowedDomain("passport.bilibili.com", SafeHttpGuard.BILIBILI_AUTH_ALLOWED_DOMAINS))
+        assertFalse(SafeHttpGuard.isAllowedDomain("passport.bilibili.com", SafeHttpGuard.QQ_AUTH_ALLOWED_DOMAINS))
+        assertTrue(SafeHttpGuard.isAllowedDomain("ssl.ptlogin2.qq.com", SafeHttpGuard.QQ_AUTH_ALLOWED_DOMAINS))
+        assertFalse(SafeHttpGuard.isAllowedDomain("ssl.ptlogin2.qq.com", SafeHttpGuard.BILIBILI_AUTH_ALLOWED_DOMAINS))
+
+        assertTrue(
+            SafeHttpGuard.validateUrlSyntax(
+                "http://ssl.ptlogin2.qq.com/check_sig?ok=1",
+                SafeHttpGuard.QQ_AUTH_ALLOWED_DOMAINS,
+                requireHttps = true
+            ) == null
+        )
+        assertTrue(
+            SafeHttpGuard.validateUrlSyntax(
+                "https://ssl.ptlogin2.qq.com/check_sig?ok=1",
+                SafeHttpGuard.QQ_AUTH_ALLOWED_DOMAINS,
+                requireHttps = true
+            ) != null
+        )
+
+        val (status, body) = PlatformAuthProxy().handle("/bind/qq/qr/poll", mapOf("qrsig" to "abc; evil=1"))
+        assertEquals(200, status)
+        assertTrue(body.contains("\"status\":\"error\""))
+    }
 }

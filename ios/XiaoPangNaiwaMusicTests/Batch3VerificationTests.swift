@@ -286,6 +286,16 @@ final class Batch3VerificationTests: XCTestCase {
         XCTAssertFalse(SafeHttpGuard.validatePublicHttpUrlAndResolve(URL(string: "http://169.254.169.254/latest")!))
         XCTAssertFalse(SafeHttpGuard.validatePublicHttpUrlAndResolve(URL(string: "ftp://8.8.8.8/song.mp3")!))
         XCTAssertTrue(SafeHttpGuard.validatePublicHttpUrlAndResolve(URL(string: "https://198.18.0.1/song.mp3")!))
+
+        for blockedIpv6 in ["::ffff:127.0.0.1", "::ffff:7f00:1", "::ffff:a9fe:a9fe", "::127.0.0.1", "64:ff9b::127.0.0.1", "64:ff9b:1::1", "2001::1", "2002:7f00:1::", "fec0::1", "100::1"] {
+            XCTAssertFalse(
+                SafeHttpGuard.validatePublicHttpUrlAndResolve(URL(string: "http://[\(blockedIpv6)]:8080/secret")!),
+                "Expected IPv6 SSRF target \(blockedIpv6) to be blocked"
+            )
+        }
+        XCTAssertTrue(
+            SafeHttpGuard.validatePublicHttpUrlAndResolve(URL(string: "https://[2606:4700:4700::1111]/song.mp3")!)
+        )
     }
 
     /// 验证 5（Phase 1）：iOS 原生桥接暴露 triggerHaptic 并正确派发四类触觉反馈

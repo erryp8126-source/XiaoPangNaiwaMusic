@@ -118,6 +118,7 @@ export const usePlayerStore = defineStore('player', () => {
     increaseVolume: playerCore.increaseVolume,
     decreaseVolume: playerCore.decreaseVolume,
     handlePlayMusic: playerCore.handlePlayMusic,
+    handlePlayMusicWithOutcome: playerCore.handlePlayMusicWithOutcome,
     playAudio: playerCore.playAudio,
     handlePause: playerCore.handlePause,
     checkPlaybackState: playerCore.checkPlaybackState,

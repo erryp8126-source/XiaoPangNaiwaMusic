@@ -4,6 +4,8 @@ import { defineStore, storeToRefs } from 'pinia';
 import { computed, ref, shallowRef, triggerRef } from 'vue';
 
 import { useSongDetail } from '@/hooks/usePlayerHooks';
+import { audioService } from '@/services/audioService';
+import { playbackRequestManager } from '@/services/playbackRequestManager';
 import { preloadService } from '@/services/preloadService';
 import type { SongResult } from '@/types/music';
 import { getImgUrl } from '@/utils';
@@ -107,6 +109,21 @@ export const usePlaylistStore = defineStore(
     const SINGLE_TRACK_MAX_RETRIES = MAX_SINGLE_TRACK_RETRIES; // 严格限制单曲最大重试 <= 2 次
     // 正在发起播放的目标歌曲ID（用于避免 setPlay 与 setPlayList 并发时索引错位）
     let pendingPlaySongId: string | number | null = null;
+    // 切歌代际标识与延迟重试句柄：用于区分“被新切歌取消”和“真实播放失败”
+    let switchGeneration = 0;
+    let pendingSwitchTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const clearPendingSwitchTimer = () => {
+      if (pendingSwitchTimer !== null) {
+        clearTimeout(pendingSwitchTimer);
+        pendingSwitchTimer = null;
+      }
+    };
+
+    const advanceSwitchGeneration = (): number => {
+      clearPendingSwitchTimer();
+      return ++switchGeneration;
+    };
 
     /**
      * 当队列为空或仅剩1首歌曲时，自动拉取推荐新歌追加到播放列表，确保不点暂停就能持续连播
@@ -370,34 +387,61 @@ export const usePlaylistStore = defineStore(
               ? list.findIndex((item) => String(item.id) === String(targetSongId))
               : -1;
           playListIndex.value = foundIndex !== -1 ? foundIndex : 0;
+        } else {
+          playListIndex.value = Math.min(Math.max(0, playListIndex.value), list.length - 1);
         }
 
         playList.value = list;
+      }
+      // 随机模式下也对 keepIndex 进行边界钳制
+      if (keepIndex && playList.value.length > 0) {
+        playListIndex.value = Math.min(Math.max(0, playListIndex.value), playList.value.length - 1);
       }
       // pinia-plugin-persistedstate 会自动保存状态
     };
 
     /**
-     * 添加到下一首播放
+     * 添加到下一首播放（随机模式下直接在当前队列局部插入，绝不重新洗牌或破坏 originalPlayList）
      */
     const addToNextPlay = (song: SongResult) => {
       const list = [...playList.value];
-      const currentIndex = playListIndex.value;
+      if (list.length === 0) {
+        playList.value = [song];
+        playListIndex.value = 0;
+        if (playMode.value === 2) {
+          originalPlayList.value = [song];
+        }
+        return;
+      }
 
-      // 如果歌曲已在播放列表中，先移除
-      const existingIndex = list.findIndex((item) => item.id === song.id);
+      let nextCurrentIndex = Math.max(0, Math.min(playListIndex.value, list.length - 1));
+      const existingIndex = list.findIndex((item) => String(item.id) === String(song.id));
+
+      if (existingIndex === nextCurrentIndex) {
+        list[existingIndex] = song;
+        playList.value = list;
+        playListIndex.value = nextCurrentIndex;
+        return;
+      }
+
       if (existingIndex !== -1) {
         list.splice(existingIndex, 1);
-        if (existingIndex <= currentIndex) {
-          playListIndex.value = Math.max(0, playListIndex.value - 1);
+        if (existingIndex < nextCurrentIndex) {
+          nextCurrentIndex = Math.max(0, nextCurrentIndex - 1);
         }
       }
 
-      // 插入到当前播放歌曲的下一个位置
-      const insertIndex = playListIndex.value + 1;
+      const insertIndex = Math.min(list.length, nextCurrentIndex + 1);
       list.splice(insertIndex, 0, song);
+      playList.value = list;
+      playListIndex.value = nextCurrentIndex;
 
-      setPlayList(list, true);
+      if (
+        playMode.value === 2 &&
+        !originalPlayList.value.some((item) => String(item.id) === String(song.id))
+      ) {
+        originalPlayList.value = [...originalPlayList.value, song];
+      }
     };
 
     /**
@@ -492,24 +536,29 @@ export const usePlaylistStore = defineStore(
     };
 
     /**
-     * 清空播放列表
+     * 清空播放列表（立即停播并取消在途请求与切歌重试）
      */
     const clearPlayAll = async () => {
-      const { audioService } = await import('@/services/audioService');
-      const playerCore = usePlayerCoreStore();
+      advanceSwitchGeneration();
+      pendingPlaySongId = null;
+      consecutiveFailCount.value = 0;
+      playbackRequestManager.cancelAllRequests();
 
-      audioService.pause();
-      setTimeout(() => {
-        playerCore.playMusic = {} as SongResult;
-        playerCore.playMusicUrl = '';
-        playList.value = [];
-        playListIndex.value = 0;
-        originalPlayList.value = [];
-        // 只清除 playerCore 的 localStorage（这些由 playerCore store 管理）
-        localStorage.removeItem('currentPlayMusic');
-        localStorage.removeItem('currentPlayMusicUrl');
-        // playlist 状态由 pinia-plugin-persistedstate 自动管理
-      }, 500);
+      const playerCore = usePlayerCoreStore();
+      playerCore.cancelPlaybackCheck();
+      audioService.stop();
+      playerCore.setIsPlay(false);
+      playerCore.userPlayIntent = false;
+      playerCore.playMusic = {} as SongResult;
+      playerCore.playMusicUrl = '';
+
+      playList.value = [];
+      playListIndex.value = 0;
+      originalPlayList.value = [];
+      // 只清除 playerCore 的 localStorage 与断点进度
+      localStorage.removeItem('currentPlayMusic');
+      localStorage.removeItem('currentPlayMusicUrl');
+      localStorage.removeItem('playProgress');
     };
 
     /**
@@ -597,7 +646,11 @@ export const usePlaylistStore = defineStore(
      * 下一首
      * @param singleTrackRetryCount 单曲重试次数（同一首歌的重试）
      */
-    const _nextPlay = async (singleTrackRetryCount: number = 0) => {
+    const _nextPlay = async (singleTrackRetryCount: number = 0, expectedGen?: number) => {
+      const gen =
+        singleTrackRetryCount === 0 && expectedGen === undefined
+          ? advanceSwitchGeneration()
+          : (expectedGen ?? switchGeneration);
       try {
         const playerCore = usePlayerCoreStore();
         const sleepTimerStore = useSleepTimerStore();
@@ -609,7 +662,7 @@ export const usePlaylistStore = defineStore(
             playListIndex.value = 0;
           }
           await appendRecommendedSongsIfNeeded(playerCore.playMusic?.id);
-          if (playList.value.length === 0) {
+          if (gen !== switchGeneration || playList.value.length === 0) {
             return;
           }
         }
@@ -626,7 +679,7 @@ export const usePlaylistStore = defineStore(
         }
 
         // 正常切歌（非单曲重试）前，先以当前正在播放的曲目校准真实索引
-        if (singleTrackRetryCount === 0) {
+        if (singleTrackRetryCount === 0 && expectedGen === undefined) {
           alignQueueIndexWithCurrentTrack(playerCore.playMusic);
         }
 
@@ -639,15 +692,15 @@ export const usePlaylistStore = defineStore(
           sleepTimerStore.stopPlayback();
           console.log('[nextPlay] 定时关闭（播完当前列表）触发，停止播放');
           playerCore.setIsPlay(false);
-          const { audioService } = await import('@/services/audioService');
           audioService.pause();
           return;
         }
 
         // 若当前队列只有 1 首歌（例如只点了单曲），播完时自动拉取推荐新歌续播，
         // 离线拉取失败时则回退重播当前曲目，确保不会突然静音断播
-        if (playList.value.length === 1 && singleTrackRetryCount === 0) {
+        if (playList.value.length === 1 && singleTrackRetryCount === 0 && expectedGen === undefined) {
           await appendRecommendedSongsIfNeeded(playList.value[0]?.id);
+          if (gen !== switchGeneration) return;
         }
 
         const currentIndex = playListIndex.value;
@@ -665,25 +718,17 @@ export const usePlaylistStore = defineStore(
         console.log(
           `[nextPlay] 尝试播放: ${nextSong.name}, 索引: ${currentIndex} -> ${nowPlayListIndex}, 单曲重试: ${singleTrackRetryCount}/${SINGLE_TRACK_MAX_RETRIES}, 连续失败: ${consecutiveFailCount.value}/${MAX_CONSECUTIVE_FAILS}`
         );
-        console.log(
-          '[nextPlay] Current mode:',
-          playMode.value,
-          'Playlist length:',
-          playList.value.length
-        );
 
-        // 先尝试播放歌曲
-        const success = await playerCore.handlePlayMusic(nextSong, true);
+        const outcome = await playerCore.handlePlayMusicWithOutcome(nextSong, true);
+        if (gen !== switchGeneration || outcome === 'cancelled' || outcome === 'autoplay-blocked') {
+          return;
+        }
 
-        if (success) {
+        if (outcome === 'playing') {
           // 播放成功，重置所有计数器并更新索引
           consecutiveFailCount.value = 0;
           playListIndex.value = nowPlayListIndex;
           console.log(`[nextPlay] 播放成功，索引已更新为: ${nowPlayListIndex}`);
-          console.log(
-            '[nextPlay] New current song in list:',
-            playList.value[playListIndex.value]?.name
-          );
         } else {
           console.error(`[nextPlay] 播放失败: ${nextSong.name}`);
           const failureCode = (playerCore.lastFailureCode || 'source-unavailable') as PlaybackFailureCode;
@@ -694,12 +739,14 @@ export const usePlaylistStore = defineStore(
               `[nextPlay] 单曲重试 ${singleTrackRetryCount + 1}/${SINGLE_TRACK_MAX_RETRIES}`
             );
             notifyPlaybackBufferingRetry(nextSong.name, { isOffline: isOfflineNow() });
-            // 不更新索引，重试同一首歌
-            setTimeout(() => {
-              _nextPlay(singleTrackRetryCount + 1);
+            clearPendingSwitchTimer();
+            pendingSwitchTimer = setTimeout(() => {
+              pendingSwitchTimer = null;
+              if (gen !== switchGeneration) return;
+              void _nextPlay(singleTrackRetryCount + 1, gen);
             }, 1000);
           } else {
-            // 单曲重试次数用尽，递增连续失败计数，尝试下一首
+            // 单曲重试次数用尽，递增连续失败计数，尝试下一首（绝不删除队列曲目）
             consecutiveFailCount.value++;
             console.log(
               `[nextPlay] 单曲重试用尽 (reason=${failureCode})，连续失败计数: ${consecutiveFailCount.value}/${MAX_CONSECUTIVE_FAILS}`
@@ -712,16 +759,18 @@ export const usePlaylistStore = defineStore(
             }
 
             if (playList.value.length > 1) {
-              // 更新索引到失败的歌曲位置，这样下次递归调用会继续往下
+              // 更新索引到失败的歌曲位置，这样下次自动跳过会继续往下
               playListIndex.value = nowPlayListIndex;
               notifyPlaybackUnavailable(nextSong.name, {
                 isOffline: isOfflineNow(),
                 isLocal: Boolean(nextSong.playMusicUrl?.startsWith('local://'))
               });
 
-              // 延迟后尝试下一首（重置单曲重试计数）
-              setTimeout(() => {
-                _nextPlay(0);
+              clearPendingSwitchTimer();
+              pendingSwitchTimer = setTimeout(() => {
+                pendingSwitchTimer = null;
+                if (gen !== switchGeneration) return;
+                void _nextPlay(0, gen);
               }, 500);
             } else {
               // 只有一首歌且失败
@@ -741,9 +790,13 @@ export const usePlaylistStore = defineStore(
     const nextPlay = useThrottleFn(_nextPlay, 500);
 
     /**
-     * 上一首
+     * 上一首（绝不因快切取消或单曲失败而 splice 删除队列歌曲）
      */
-    const _prevPlay = async () => {
+    const _prevPlay = async (singleTrackRetryCount: number = 0, expectedGen?: number) => {
+      const gen =
+        singleTrackRetryCount === 0 && expectedGen === undefined
+          ? advanceSwitchGeneration()
+          : (expectedGen ?? switchGeneration);
       try {
         const playerCore = usePlayerCoreStore();
         if (playList.value.length === 0) {
@@ -755,71 +808,80 @@ export const usePlaylistStore = defineStore(
           }
         }
 
+        if (consecutiveFailCount.value >= MAX_CONSECUTIVE_FAILS) {
+          notifyPlaybackUnavailable(playerCore.playMusic?.name, {
+            isOffline: isOfflineNow()
+          });
+          consecutiveFailCount.value = 0;
+          playerCore.setIsPlay(false);
+          return;
+        }
+
         // 切换上一首前，先根据当前正在播放的曲目校准真实索引（缺失则插入当前索引位）
-        alignQueueIndexWithCurrentTrack(playerCore.playMusic);
+        if (singleTrackRetryCount === 0 && expectedGen === undefined) {
+          alignQueueIndexWithCurrentTrack(playerCore.playMusic);
+        }
 
         const currentIndex = playListIndex.value;
         const nowPlayListIndex =
           (playListIndex.value - 1 + playList.value.length) % playList.value.length;
 
         const prevSong = { ...playList.value[nowPlayListIndex] };
-
-        console.log(
-          `[prevPlay] 尝试播放上一首: ${prevSong.name}, 索引: ${currentIndex} -> ${nowPlayListIndex}`
-        );
-
-        let success = false;
-        let retryCount = 0;
-        const maxRetries = 2;
-
-        // 先尝试播放歌曲，成功后再更新索引
-        while (!success && retryCount < maxRetries) {
-          success = await playerCore.handlePlayMusic(prevSong);
-
-          if (!success) {
-            retryCount++;
-            console.error(`播放上一首失败，尝试 ${retryCount}/${maxRetries}`);
-
-            if (retryCount >= maxRetries) {
-              console.error('多次尝试播放失败，将从播放列表中移除此歌曲');
-              const newPlayList = [...playList.value];
-              newPlayList.splice(nowPlayListIndex, 1);
-
-              if (newPlayList.length > 0) {
-                const keepCurrentIndexPosition = true;
-                setPlayList(newPlayList, keepCurrentIndexPosition);
-
-                if (newPlayList.length === 1) {
-                  playListIndex.value = 0;
-                } else {
-                  const newPrevIndex =
-                    (playListIndex.value - 1 + newPlayList.length) % newPlayList.length;
-                  playListIndex.value = newPrevIndex;
-                }
-
-                setTimeout(() => {
-                  prevPlay();
-                }, 300);
-                return;
-              } else {
-                console.error('播放列表为空，停止尝试');
-                break;
-              }
-            }
-          }
+        localStorage.removeItem('playProgress');
+        if (singleTrackRetryCount > 0 && !prevSong.playMusicUrl?.startsWith('local://')) {
+          prevSong.playMusicUrl = undefined;
+          prevSong.expiredAt = undefined;
         }
 
-        if (success) {
-          // 播放成功，更新索引
+        console.log(
+          `[prevPlay] 尝试播放上一首: ${prevSong.name}, 索引: ${currentIndex} -> ${nowPlayListIndex}, 重试: ${singleTrackRetryCount}/${SINGLE_TRACK_MAX_RETRIES}`
+        );
+
+        const outcome = await playerCore.handlePlayMusicWithOutcome(prevSong, true);
+        if (gen !== switchGeneration || outcome === 'cancelled' || outcome === 'autoplay-blocked') {
+          return;
+        }
+
+        if (outcome === 'playing') {
+          consecutiveFailCount.value = 0;
           playListIndex.value = nowPlayListIndex;
           console.log(`[prevPlay] 播放成功，索引已更新为: ${nowPlayListIndex}`);
-        } else {
-          console.error(`[prevPlay] 播放上一首失败，保持当前索引: ${currentIndex}`);
+          return;
+        }
+
+        const failureCode = (playerCore.lastFailureCode || 'source-unavailable') as PlaybackFailureCode;
+        if (shouldRetrySingleTrack(singleTrackRetryCount, failureCode)) {
+          notifyPlaybackBufferingRetry(prevSong.name, { isOffline: isOfflineNow() });
+          clearPendingSwitchTimer();
+          pendingSwitchTimer = setTimeout(() => {
+            pendingSwitchTimer = null;
+            if (gen !== switchGeneration) return;
+            void _prevPlay(singleTrackRetryCount + 1, gen);
+          }, 1000);
+          return;
+        }
+
+        consecutiveFailCount.value++;
+        if (failureCode === 'offline' || isOfflineNow()) {
           playerCore.setIsPlay(false);
-          notifyPlaybackUnavailable(prevSong.name, {
-            isOffline: isOfflineNow(),
-            isLocal: Boolean(prevSong.playMusicUrl?.startsWith('local://'))
-          });
+          return;
+        }
+
+        notifyPlaybackUnavailable(prevSong.name, {
+          isOffline: isOfflineNow(),
+          isLocal: Boolean(prevSong.playMusicUrl?.startsWith('local://'))
+        });
+
+        if (playList.value.length > 1) {
+          playListIndex.value = nowPlayListIndex;
+          clearPendingSwitchTimer();
+          pendingSwitchTimer = setTimeout(() => {
+            pendingSwitchTimer = null;
+            if (gen !== switchGeneration) return;
+            void _prevPlay(0, gen);
+          }, 500);
+        } else {
+          playerCore.setIsPlay(false);
         }
       } catch (error) {
         console.error('切换上一首出错:', error);
@@ -917,6 +979,7 @@ export const usePlaylistStore = defineStore(
           song.isFirstPlay = false;
         }
 
+        const gen = advanceSwitchGeneration();
         pendingPlaySongId = song.id;
 
         // 查找歌曲在播放列表中的索引（兼容 string/number ID 及省略 source 的情况）
@@ -946,7 +1009,11 @@ export const usePlaylistStore = defineStore(
           playListIndex.value = songIndex;
         }
 
-        const success = await playerCore.handlePlayMusic(song);
+        const outcome = await playerCore.handlePlayMusicWithOutcome(song);
+        if (gen !== switchGeneration || outcome === 'cancelled') {
+          return false;
+        }
+        const success = outcome === 'playing';
 
         // 再次核对索引（防止异步加载期间外部更新了 playList）
         const latestIndex = findSongIndex(playList.value, song);
@@ -955,12 +1022,15 @@ export const usePlaylistStore = defineStore(
         }
 
         if (success) {
+          consecutiveFailCount.value = 0;
           playerCore.isPlay = true;
 
           // 预加载下一首歌曲
           if (playListIndex.value >= 0 && playListIndex.value < playList.value.length) {
             setTimeout(() => {
-              preloadNextSongs(playListIndex.value);
+              if (gen === switchGeneration) {
+                preloadNextSongs(playListIndex.value);
+              }
             }, 3000);
           }
         }

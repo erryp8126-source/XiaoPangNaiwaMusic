@@ -36,6 +36,7 @@ import com.xiaopang.naiwamusic.lyric.FloatingLyricManager
 import com.xiaopang.naiwamusic.player.MusicPlaybackService
 import com.google.gson.JsonObject
 import org.json.JSONObject
+import java.net.URI
 
 class MainActivity : AppCompatActivity() {
 
@@ -43,6 +44,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var localScanner: LocalMusicScanner
     private lateinit var downloadManager: NativeDownloadManager
     private lateinit var floatingLyricManager: FloatingLyricManager
+    private var lyricCommandHandler: ((String) -> Unit)? = null
     private lateinit var jsBridge: AndroidJsBridge
 
     private var topInsetDp: Int = 0
@@ -134,7 +136,8 @@ class MainActivity : AppCompatActivity() {
                 else -> pushEventToJs("lyric-control-back", JSONObject.quote(cmd))
             }
         }
-        val existingLyricMgr = FloatingLyricManager.activeInstance
+        lyricCommandHandler = lyricCmdHandler
+        val existingLyricMgr = FloatingLyricManager.activeInstance?.takeUnless { it.isReleasedState() }
         floatingLyricManager = if (existingLyricMgr != null) {
             existingLyricMgr.onControlCommand = lyricCmdHandler
             existingLyricMgr
@@ -235,9 +238,13 @@ class MainActivity : AppCompatActivity() {
             networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
         }
         networkCallback = null
-        if (MusicPlaybackService.instance == null) {
-            floatingLyricManager.release()
+        if (::floatingLyricManager.isInitialized) {
+            floatingLyricManager.detachControlCommand(lyricCommandHandler)
+            if (MusicPlaybackService.instance == null) {
+                floatingLyricManager.release()
+            }
         }
+        lyricCommandHandler = null
         if (isFinishing) {
             MusicPlaybackService.eventEmitter = null
         }
@@ -337,15 +344,25 @@ class MainActivity : AppCompatActivity() {
                 view: WebView,
                 request: WebResourceRequest
             ): Boolean {
-                val url = request.url.toString()
-                if (url.startsWith("https://appassets.androidplatform.net/") ||
-                    url.startsWith("http://127.0.0.1:")
+                val url = request.url
+                val rawUrl = url?.toString()
+                if (url != null &&
+                    url.scheme?.lowercase() == "https" &&
+                    url.host?.lowercase() == INTERNAL_WEBVIEW_HOST &&
+                    url.userInfo == null &&
+                    (url.port == -1 || url.port == 443) &&
+                    isAllowedInternalWebViewUrl(rawUrl)
                 ) {
                     return false
                 }
-                // 外链（如 GitHub、会员页、文档）交给系统浏览器打开
-                runCatching {
-                    startActivity(Intent(Intent.ACTION_VIEW, request.url))
+                // 外链（如 GitHub、会员页、文档）仅放行合法 http/https 链接交由系统浏览器打开
+                if (url != null &&
+                    url.scheme?.lowercase() in EXTERNAL_BROWSER_SCHEMES &&
+                    isAllowedExternalBrowserUrl(rawUrl)
+                ) {
+                    runCatching {
+                        startActivity(Intent(Intent.ACTION_VIEW, url))
+                    }
                 }
                 return true
             }
@@ -503,6 +520,47 @@ class MainActivity : AppCompatActivity() {
             if (!isDestroyed) {
                 webView.evaluateJavascript(js, null)
             }
+        }
+    }
+
+    companion object {
+        internal const val INTERNAL_WEBVIEW_HOST = "appassets.androidplatform.net"
+        private val EXTERNAL_BROWSER_SCHEMES = setOf("http", "https")
+
+        private fun hasAuthorityBackslashOrControl(raw: String): Boolean {
+            if (raw.any { it.code < 0x20 || it.code == 0x7F }) return true
+            val schemeEnd = raw.indexOf("://")
+            if (schemeEnd < 0) return false
+            val afterScheme = raw.substring(schemeEnd + 3)
+            val authEnd = afterScheme.indexOfAny(charArrayOf('/', '?', '#')).let {
+                if (it < 0) afterScheme.length else it
+            }
+            val authority = afterScheme.substring(0, authEnd)
+            return authority.contains('\\')
+        }
+
+        internal fun isAllowedInternalWebViewUrl(rawUrl: String?): Boolean {
+            val trimmed = rawUrl?.trim().orEmpty()
+            if (trimmed.isEmpty() || hasAuthorityBackslashOrControl(trimmed)) return false
+            val uri = runCatching { URI(trimmed) }.getOrNull() ?: return false
+            val scheme = uri.scheme?.lowercase() ?: return false
+            if (scheme != "https") return false
+            if (uri.userInfo != null || uri.rawUserInfo != null) return false
+            val host = uri.host?.lowercase() ?: return false
+            if (host != INTERNAL_WEBVIEW_HOST) return false
+            if (uri.port != -1 && uri.port != 443) return false
+            val rawAuth = uri.rawAuthority?.lowercase() ?: return false
+            return rawAuth == INTERNAL_WEBVIEW_HOST || rawAuth == "$INTERNAL_WEBVIEW_HOST:443"
+        }
+
+        internal fun isAllowedExternalBrowserUrl(rawUrl: String?): Boolean {
+            val trimmed = rawUrl?.trim().orEmpty()
+            if (trimmed.isEmpty() || hasAuthorityBackslashOrControl(trimmed)) return false
+            val uri = runCatching { URI(trimmed) }.getOrNull() ?: return false
+            val scheme = uri.scheme?.lowercase() ?: return false
+            if (scheme !in EXTERNAL_BROWSER_SCHEMES) return false
+            val host = uri.host?.trim().orEmpty()
+            return host.isNotEmpty()
         }
     }
 }

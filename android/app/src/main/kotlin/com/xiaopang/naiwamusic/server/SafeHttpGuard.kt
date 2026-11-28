@@ -21,9 +21,12 @@ object SafeHttpGuard {
         "126.net"
     )
 
-    val PLATFORM_AUTH_ALLOWED_DOMAINS: Set<String> = setOf(
+    val BILIBILI_AUTH_ALLOWED_DOMAINS: Set<String> = setOf(
         "passport.bilibili.com",
-        "api.bilibili.com",
+        "api.bilibili.com"
+    )
+
+    val QQ_AUTH_ALLOWED_DOMAINS: Set<String> = setOf(
         "ssl.ptlogin2.qq.com",
         "ptlogin2.qq.com",
         "u.y.qq.com",
@@ -31,6 +34,9 @@ object SafeHttpGuard {
         "y.qq.com",
         "graph.qq.com"
     )
+
+    val PLATFORM_AUTH_ALLOWED_DOMAINS: Set<String> =
+        BILIBILI_AUTH_ALLOWED_DOMAINS + QQ_AUTH_ALLOWED_DOMAINS
 
     val EXTERNAL_PLAYLIST_ALLOWED_DOMAINS: Set<String> = setOf(
         "qishui.douyin.com",
@@ -117,6 +123,51 @@ object SafeHttpGuard {
         return true
     }
 
+    internal fun isPublicIpv6Bytes(bytes: ByteArray): Boolean {
+        if (bytes.size != 16) return false
+        val h0 = ((bytes[0].toInt() and 0xFF) shl 8) or (bytes[1].toInt() and 0xFF)
+        val h1 = ((bytes[2].toInt() and 0xFF) shl 8) or (bytes[3].toInt() and 0xFF)
+        val h2 = ((bytes[4].toInt() and 0xFF) shl 8) or (bytes[5].toInt() and 0xFF)
+        val h3 = ((bytes[6].toInt() and 0xFF) shl 8) or (bytes[7].toInt() and 0xFF)
+        val h4 = ((bytes[8].toInt() and 0xFF) shl 8) or (bytes[9].toInt() and 0xFF)
+        val h5 = ((bytes[10].toInt() and 0xFF) shl 8) or (bytes[11].toInt() and 0xFF)
+        val h6 = ((bytes[12].toInt() and 0xFF) shl 8) or (bytes[13].toInt() and 0xFF)
+        val h7 = ((bytes[14].toInt() and 0xFF) shl 8) or (bytes[15].toInt() and 0xFF)
+
+        // Unspecified ::/128 or loopback ::1/128
+        if (h0 == 0 && h1 == 0 && h2 == 0 && h3 == 0 && h4 == 0 && h5 == 0 && h6 == 0 && (h7 == 0 || h7 == 1)) {
+            return false
+        }
+        // IPv4-mapped IPv6 ::ffff:0:0/96
+        if (h0 == 0 && h1 == 0 && h2 == 0 && h3 == 0 && h4 == 0 && h5 == 0xFFFF) {
+            return isPublicIpv4Bytes(bytes.copyOfRange(12, 16))
+        }
+        // IPv4-compatible ::/96
+        if (h0 == 0 && h1 == 0 && h2 == 0 && h3 == 0 && h4 == 0 && h5 == 0) return false
+        // SIIT IPv4-translated ::ffff:0:0:0/96
+        if (h0 == 0 && h1 == 0 && h2 == 0 && h3 == 0 && h4 == 0xFFFF && h5 == 0) return false
+        // Discard-Only 100::/64
+        if (h0 == 0x0100 && h1 == 0 && h2 == 0 && h3 == 0) return false
+        // NAT64 well-known 64:ff9b::/96 & local-use 64:ff9b:1::/48
+        if (h0 == 0x0064 && h1 == 0xFF9B && h2 == 0 && h3 == 0 && h4 == 0 && h5 == 0) return false
+        if (h0 == 0x0064 && h1 == 0xFF9B && h2 == 0x0001) return false
+        // Teredo 2001::/32, Benchmarking 2001:2::/48, Documentation 2001:db8::/32
+        if (h0 == 0x2001 && h1 == 0x0000) return false
+        if (h0 == 0x2001 && h1 == 0x0002 && h2 == 0x0000) return false
+        if (h0 == 0x2001 && h1 == 0x0DB8) return false
+        // 6to4 2002::/16
+        if (h0 == 0x2002) return false
+        // ULA fc00::/7
+        if ((h0 and 0xFE00) == 0xFC00) return false
+        // Link-local fe80::/10
+        if ((h0 and 0xFFC0) == 0xFE80) return false
+        // Site-local fec0::/10
+        if ((h0 and 0xFFC0) == 0xFEC0) return false
+        // Multicast ff00::/8
+        if ((h0 and 0xFF00) == 0xFF00) return false
+        return true
+    }
+
     fun isPublicAddress(addr: InetAddress): Boolean {
         if (addr.isLoopbackAddress ||
             addr.isAnyLocalAddress ||
@@ -129,43 +180,30 @@ object SafeHttpGuard {
         val bytes = addr.address
         return when (addr) {
             is Inet4Address -> isPublicIpv4Bytes(bytes)
-            is Inet6Address -> {
-                if (bytes.size != 16) return false
-                val b0 = bytes[0].toInt() and 0xFF
-                val b1 = bytes[1].toInt() and 0xFF
-                // Unspecified :: or loopback ::1
-                val allZeroPrefix = (0 until 15).all { bytes[it].toInt() == 0 }
-                if (allZeroPrefix && (bytes[15].toInt() == 0 || bytes[15].toInt() == 1)) return false
-                // ULA fc00::/7
-                if ((b0 and 0xFE) == 0xFC) return false
-                // Link-local fe80::/10
-                if (b0 == 0xFE && (b1 and 0xC0) == 0x80) return false
-                // Multicast ff00::/8
-                if (b0 == 0xFF) return false
-                // IPv4-mapped IPv6 ::ffff:0:0/96
-                val isV4Mapped = (0 until 10).all { bytes[it].toInt() == 0 } &&
-                    (bytes[10].toInt() and 0xFF) == 0xFF &&
-                    (bytes[11].toInt() and 0xFF) == 0xFF
-                if (isV4Mapped) {
-                    return isPublicIpv4Bytes(bytes.copyOfRange(12, 16))
-                }
-                true
-            }
+            is Inet6Address -> isPublicIpv6Bytes(bytes)
             else -> false
         }
     }
 
-    fun validatePublicHttpUrlSyntax(rawUrl: String): URI? {
+    fun validatePublicHttpUrlSyntax(rawUrl: String, requireHttps: Boolean = false): URI? {
         val parsed = runCatching { URI(rawUrl.trim()) }.getOrNull() ?: return null
         val scheme = parsed.scheme?.lowercase() ?: return null
-        if (scheme != "http" && scheme != "https") return null
+        if (requireHttps) {
+            if (scheme != "https") return null
+        } else {
+            if (scheme != "http" && scheme != "https") return null
+        }
         val host = parsed.host?.lowercase()?.trim() ?: return null
         if (host.isEmpty()) return null
         return parsed
     }
 
-    fun validateUrlSyntax(rawUrl: String, allowedSuffixes: Set<String>): URI? {
-        val parsed = validatePublicHttpUrlSyntax(rawUrl) ?: return null
+    fun validateUrlSyntax(
+        rawUrl: String,
+        allowedSuffixes: Set<String>,
+        requireHttps: Boolean = false
+    ): URI? {
+        val parsed = validatePublicHttpUrlSyntax(rawUrl, requireHttps) ?: return null
         val host = parsed.host?.lowercase()?.trim() ?: return null
         if (!isAllowedDomain(host, allowedSuffixes)) return null
         return parsed
@@ -187,14 +225,18 @@ object SafeHttpGuard {
         return addresses.all { isPublicAddress(it) }
     }
 
-    fun validatePublicHttpUrlAndResolve(rawUrl: String): Boolean {
-        val parsed = validatePublicHttpUrlSyntax(rawUrl) ?: return false
+    fun validatePublicHttpUrlAndResolve(rawUrl: String, requireHttps: Boolean = false): Boolean {
+        val parsed = validatePublicHttpUrlSyntax(rawUrl, requireHttps) ?: return false
         val host = parsed.host ?: return false
         return validateResolvedPublicIps(host)
     }
 
-    fun validateUrlAndResolve(rawUrl: String, allowedSuffixes: Set<String>): Boolean {
-        val parsed = validateUrlSyntax(rawUrl, allowedSuffixes) ?: return false
+    fun validateUrlAndResolve(
+        rawUrl: String,
+        allowedSuffixes: Set<String>,
+        requireHttps: Boolean = false
+    ): Boolean {
+        val parsed = validateUrlSyntax(rawUrl, allowedSuffixes, requireHttps) ?: return false
         val host = parsed.host ?: return false
         return validateResolvedPublicIps(host)
     }
@@ -264,9 +306,19 @@ object SafeHttpGuard {
         client: OkHttpClient,
         initialRequest: Request,
         allowedSuffixes: Set<String>,
-        maxRedirects: Int = MAX_REDIRECTS
+        maxRedirects: Int = MAX_REDIRECTS,
+        requireHttps: Boolean = false,
+        onHopResponse: ((Response) -> Unit)? = null
     ): Response {
-        return executeRedirectsInternal(client, initialRequest, allowedSuffixes, null, maxRedirects)
+        return executeRedirectsInternal(
+            client,
+            initialRequest,
+            allowedSuffixes,
+            null,
+            maxRedirects,
+            requireHttps,
+            onHopResponse
+        )
     }
 
     /**
@@ -279,7 +331,7 @@ object SafeHttpGuard {
         blockedSuffixes: Set<String> = CUSTOM_LX_BLOCKED_DOMAINS,
         maxRedirects: Int = MAX_REDIRECTS
     ): Response {
-        return executeRedirectsInternal(client, initialRequest, null, blockedSuffixes, maxRedirects)
+        return executeRedirectsInternal(client, initialRequest, null, blockedSuffixes, maxRedirects, false, null)
     }
 
     /**
@@ -291,18 +343,19 @@ object SafeHttpGuard {
         initialRequest: Request,
         maxRedirects: Int = MAX_REDIRECTS
     ): Response {
-        return executeRedirectsInternal(client, initialRequest, null, null, maxRedirects)
+        return executeRedirectsInternal(client, initialRequest, null, null, maxRedirects, false, null)
     }
 
     private fun isUrlAllowedForRedirect(
         targetUrl: String,
         allowedSuffixes: Set<String>?,
-        blockedSuffixes: Set<String>?
+        blockedSuffixes: Set<String>?,
+        requireHttps: Boolean
     ): Boolean {
         return when {
-            allowedSuffixes != null -> validateUrlAndResolve(targetUrl, allowedSuffixes)
+            allowedSuffixes != null -> validateUrlAndResolve(targetUrl, allowedSuffixes, requireHttps)
             blockedSuffixes != null -> validateCustomLxUrlAndResolve(targetUrl, blockedSuffixes)
-            else -> validatePublicHttpUrlAndResolve(targetUrl)
+            else -> validatePublicHttpUrlAndResolve(targetUrl, requireHttps)
         }
     }
 
@@ -311,17 +364,20 @@ object SafeHttpGuard {
         initialRequest: Request,
         allowedSuffixes: Set<String>?,
         blockedSuffixes: Set<String>?,
-        maxRedirects: Int
+        maxRedirects: Int,
+        requireHttps: Boolean,
+        onHopResponse: ((Response) -> Unit)?
     ): Response {
         var currentReq = initialRequest
         var hop = 0
         while (true) {
             val targetUrl = currentReq.url.toString()
-            if (!isUrlAllowedForRedirect(targetUrl, allowedSuffixes, blockedSuffixes)) {
+            if (!isUrlAllowedForRedirect(targetUrl, allowedSuffixes, blockedSuffixes, requireHttps)) {
                 throw SecurityException("Blocked unsafe or non-allowlisted URL: ${currentReq.url.host}")
             }
 
             val resp = client.newCall(currentReq).execute()
+            onHopResponse?.invoke(resp)
             val code = resp.code
             val location = resp.header("Location")?.trim()
             if (code !in REDIRECT_CODES || location.isNullOrEmpty()) {
@@ -335,12 +391,15 @@ object SafeHttpGuard {
 
             val nextUrl = currentReq.url.resolve(location)
                 ?: throw SecurityException("Malformed redirect target")
-            if (!isUrlAllowedForRedirect(nextUrl.toString(), allowedSuffixes, blockedSuffixes)) {
+            if (!isUrlAllowedForRedirect(nextUrl.toString(), allowedSuffixes, blockedSuffixes, requireHttps)) {
                 throw SecurityException("Blocked redirect to unsafe or non-allowlisted host: ${nextUrl.host}")
             }
 
             val nextBuilder = currentReq.newBuilder().url(nextUrl)
-            if (!currentReq.url.host.equals(nextUrl.host, ignoreCase = true)) {
+            val sameOrigin = currentReq.url.host.equals(nextUrl.host, ignoreCase = true) &&
+                currentReq.url.scheme.equals(nextUrl.scheme, ignoreCase = true) &&
+                currentReq.url.port == nextUrl.port
+            if (!sameOrigin) {
                 nextBuilder.removeHeader("Authorization")
                 nextBuilder.removeHeader("Cookie")
             }

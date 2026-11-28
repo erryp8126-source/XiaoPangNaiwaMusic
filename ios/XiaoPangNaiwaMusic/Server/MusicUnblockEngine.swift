@@ -378,6 +378,93 @@ final class MusicUnblockEngine {
         return nil
     }
 
+    static func parseKuwoSearchJson(_ rawBody: String) -> [String: Any]? {
+        let trimmed = rawBody.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let direct = parseJsonDictStatic(trimmed) {
+            return direct
+        }
+        let converted = convertSingleQuotedJsonToStandard(trimmed)
+        return parseJsonDictStatic(converted)
+    }
+
+    private static func parseJsonDictStatic(_ raw: String) -> [String: Any]? {
+        guard let data = raw.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return obj
+    }
+
+    private static func convertSingleQuotedJsonToStandard(_ raw: String) -> String {
+        let scalars = Array(raw.unicodeScalars)
+        var out = String.UnicodeScalarView()
+        out.reserveCapacity(scalars.count)
+        var inDoubleQuote = false
+        var inSingleQuote = false
+        var escaped = false
+        var i = 0
+        while i < scalars.count {
+            let ch = scalars[i]
+            if inDoubleQuote {
+                out.append(ch)
+                if escaped {
+                    escaped = false
+                } else if ch == "\\" {
+                    escaped = true
+                } else if ch == "\"" {
+                    inDoubleQuote = false
+                }
+            } else if inSingleQuote {
+                if escaped {
+                    if ch == "'" {
+                        out.append("'")
+                    } else {
+                        out.append("\\")
+                        out.append(ch)
+                    }
+                    escaped = false
+                } else if ch == "\\" {
+                    escaped = true
+                } else if ch == "\"" {
+                    out.append("\\")
+                    out.append("\"")
+                } else if ch == "'" {
+                    var nextNonWs: UnicodeScalar? = nil
+                    var j = i + 1
+                    while j < scalars.count {
+                        if !CharacterSet.whitespacesAndNewlines.contains(scalars[j]) {
+                            nextNonWs = scalars[j]
+                            break
+                        }
+                        j += 1
+                    }
+                    let closing = nextNonWs == nil || nextNonWs == "," || nextNonWs == ":" || nextNonWs == "}" || nextNonWs == "]"
+                    if closing {
+                        inSingleQuote = false
+                        out.append("\"")
+                    } else {
+                        out.append("'")
+                    }
+                } else {
+                    out.append(ch)
+                }
+            } else {
+                if ch == "\"" {
+                    inDoubleQuote = true
+                    out.append(ch)
+                } else if ch == "'" {
+                    inSingleQuote = true
+                    out.append("\"")
+                } else {
+                    out.append(ch)
+                }
+            }
+            i += 1
+        }
+        return String(out)
+    }
+
     private func searchKuwo(
         keyword: String,
         songName: String,
@@ -387,7 +474,7 @@ final class MusicUnblockEngine {
         let q = enc(keyword)
         let searchUrl = "http://search.kuwo.cn/r.s?all=\(q)&ft=music&rformat=json&encoding=utf8&pcjson=1&vipver=1&pn=0&rn=\(Self.maxSearchCandidates)"
         guard let body = httpGetText(searchUrl, headers: ["User-Agent": Self.defaultUA]),
-              let root = parseJsonObject(body.replacingOccurrences(of: "'", with: "\"")),
+              let root = Self.parseKuwoSearchJson(body),
               let list = root["abslist"] as? [[String: Any]], !list.isEmpty else {
             return nil
         }

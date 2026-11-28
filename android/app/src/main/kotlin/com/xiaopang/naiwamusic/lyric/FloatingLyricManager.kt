@@ -54,9 +54,11 @@ import kotlin.math.abs
 class FloatingLyricManager(
     context: Context,
     private val prefs: AppPrefs,
-    @Volatile
-    var onControlCommand: (String) -> Unit
+    onControlCommand: (String) -> Unit
 ) {
+    @Volatile
+    var onControlCommand: ((String) -> Unit)? = onControlCommand
+
     companion object {
         private const val TAG = "FloatingLyricManager"
         private const val UNLOCK_CHANNEL_ID = "alger_desktop_lyric_lock"
@@ -359,6 +361,102 @@ class FloatingLyricManager(
         }
     }
 
+    internal data class TrackChangeDecision(
+        val trackChanged: Boolean,
+        val shouldFetchNativeLyrics: Boolean
+    )
+
+    internal class LyricTrackState {
+        var currentSongId: String = ""
+            private set
+        var currentSongTitle: String = "小庞奶娃音乐"
+            private set
+        var currentSongArtist: String = ""
+            private set
+        var lyricLinesSongId: String = ""
+            private set
+        var lyricLines: List<LyricLine> = emptyList()
+            private set
+        var fallbackTopText: String = "小庞奶娃音乐"
+            private set
+        var fallbackBottomText: String = ""
+            private set
+
+        fun onTrackChanged(songId: String, title: String, artist: String): TrackChangeDecision {
+            val cleanTitle = title.ifBlank { "小庞奶娃音乐" }
+            val staleLyricOwner =
+                lyricLinesSongId.isNotBlank() && songId.isNotBlank() && lyricLinesSongId != songId
+            val changed =
+                songId != currentSongId || cleanTitle != currentSongTitle || staleLyricOwner
+            currentSongId = songId
+            currentSongTitle = cleanTitle
+            currentSongArtist = artist
+
+            if (changed || (songId.isBlank() && lyricLines.isNotEmpty())) {
+                if (songId.isBlank() || lyricLinesSongId != songId) {
+                    lyricLines = emptyList()
+                    lyricLinesSongId = ""
+                }
+                fallbackTopText = cleanTitle
+                fallbackBottomText = artist
+            }
+
+            val hasYrcForThisSong =
+                songId.isNotBlank() &&
+                    lyricLinesSongId == songId &&
+                    lyricLines.any { it.words.isNotEmpty() }
+            val shouldFetch =
+                songId.isNotBlank() && songId.all { it.isDigit() } && !hasYrcForThisSong
+            return TrackChangeDecision(
+                trackChanged = changed,
+                shouldFetchNativeLyrics = shouldFetch
+            )
+        }
+
+        fun applyJsLyrics(songId: String, songTitle: String, parsed: List<LyricLine>): Boolean {
+            val cleanSongId = songId.trim()
+            if (cleanSongId.isNotBlank() &&
+                lyricLinesSongId == cleanSongId &&
+                lyricLines.any { it.words.isNotEmpty() }
+            ) {
+                currentSongId = cleanSongId
+                if (songTitle.isNotBlank()) currentSongTitle = songTitle
+                return false
+            }
+
+            if (songTitle.isNotBlank()) currentSongTitle = songTitle
+            if (cleanSongId.isNotBlank()) {
+                if (lyricLinesSongId.isNotBlank() && lyricLinesSongId != cleanSongId) {
+                    lyricLines = emptyList()
+                    lyricLinesSongId = ""
+                }
+                currentSongId = cleanSongId
+            }
+
+            if (parsed.isEmpty()) return false
+            lyricLines = parsed
+            lyricLinesSongId = cleanSongId.ifBlank { currentSongId }
+            return true
+        }
+
+        fun applyNativeLyrics(songId: String, parsed: List<LyricLine>): Boolean {
+            if (parsed.isEmpty() || songId.isBlank() || songId != currentSongId) {
+                return false
+            }
+            lyricLines = parsed
+            lyricLinesSongId = songId
+            return true
+        }
+
+        fun updateFallback(text: String, translation: String, songTitle: String) {
+            if (songTitle.isNotBlank()) currentSongTitle = songTitle
+            if (lyricLines.isEmpty()) {
+                fallbackTopText = text.ifBlank { songTitle.ifBlank { "小庞奶娃音乐" } }
+                fallbackBottomText = translation.ifBlank { currentSongArtist }
+            }
+        }
+    }
+
     private val appContext = context.applicationContext
     private val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val displayManager = appContext.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
@@ -378,6 +476,10 @@ class FloatingLyricManager(
 
     @Volatile
     private var isShowing = false
+    @Volatile
+    private var isReleased = false
+    @Volatile
+    private var shouldBeAttached = false
     @Volatile
     private var isHiddenForLandscape = false
     @Volatile
@@ -415,18 +517,8 @@ class FloatingLyricManager(
     private var lyricTextSizeSp: Float = prefs.floatingLyricTextSize
     private var showTranslation: Boolean = prefs.floatingLyricShowTranslation
 
-    @Volatile
-    private var currentSongId: String = ""
-    @Volatile
-    private var currentSongTitle: String = "小庞奶娃音乐"
-    @Volatile
-    private var currentSongArtist: String = ""
-    @Volatile
-    private var lyricLines: List<LyricLine> = emptyList()
+    private val lyricState = LyricTrackState()
     private var lyricFetchJob: Job? = null
-
-    private var fallbackTopText: String = "小庞奶娃音乐"
-    private var fallbackBottomText: String = ""
 
     private val autoCollapseRunnable = Runnable {
         if (isExpanded) {
@@ -727,9 +819,48 @@ class FloatingLyricManager(
         }
     }
 
+    fun detachControlCommand(handler: ((String) -> Unit)? = null) {
+        if (handler == null || onControlCommand === handler) {
+            onControlCommand = null
+        }
+    }
+
+    fun hasAttachedActivity(): Boolean = onControlCommand != null
+
+    fun isReleasedState(): Boolean = isReleased
+
+    private fun dispatchControlCommand(cmd: String) {
+        val handler = onControlCommand
+        if (handler != null) {
+            handler(cmd)
+            return
+        }
+        val svc = MusicPlaybackService.instance ?: return
+        when (cmd) {
+            "next" -> svc.handleExternalTrackCommand("nexttrack", 1)
+            "prev" -> svc.handleExternalTrackCommand("previoustrack", -1)
+            "playpause" -> svc.togglePlayPauseFromOverlay()
+        }
+    }
+
+    fun suspendForServiceStop() {
+        shouldBeAttached = false
+        runOnMain {
+            lyricFetchJob?.cancel()
+            lyricFetchJob = null
+        }
+        isHiddenForLandscape = false
+        hideOverlayViewOnly()
+    }
+
     fun release() {
-        lyricFetchJob?.cancel()
-        lyricFetchJob = null
+        isReleased = true
+        shouldBeAttached = false
+        onControlCommand = null
+        runOnMain {
+            lyricFetchJob?.cancel()
+            lyricFetchJob = null
+        }
         synchronized(landscapeLock) {
             if (isConfigCallbackRegistered) {
                 runCatching { appContext.unregisterComponentCallbacks(configCallbacks) }
@@ -747,8 +878,14 @@ class FloatingLyricManager(
     }
 
     private fun attachOverlayView() {
+        if (isReleased) return
+        shouldBeAttached = true
         runOnMain {
-            if (isShowing) return@runOnMain
+            if (isReleased || !shouldBeAttached || isShowing || !prefs.floatingLyricEnabled) {
+                return@runOnMain
+            }
+            val stillVisible = synchronized(landscapeLock) { landscapeController.isOverlayVisible }
+            if (!stillVisible) return@runOnMain
             if (!Settings.canDrawOverlays(appContext)) return@runOnMain
 
             highlightColor = prefs.floatingLyricColor
@@ -790,7 +927,7 @@ class FloatingLyricManager(
             val topView = KaraokeLyricLineView(appContext).apply {
                 setHighlightColor(highlightColor)
                 setTextSizeSp(lyricTextSizeSp)
-                setLineData(fallbackTopText, active = true, progress = 1f)
+                setLineData(lyricState.fallbackTopText, active = true, progress = 1f)
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
@@ -800,7 +937,7 @@ class FloatingLyricManager(
             val bottomView = KaraokeLyricLineView(appContext).apply {
                 setHighlightColor(highlightColor)
                 setTextSizeSp(lyricTextSizeSp)
-                setLineData(fallbackBottomText, active = false, progress = 0f)
+                setLineData(lyricState.fallbackBottomText, active = false, progress = 0f)
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
@@ -820,7 +957,7 @@ class FloatingLyricManager(
                 }
                 setOnClickListener {
                     this@FloatingLyricManager.setEnabled(false)
-                    onControlCommand("close")
+                    dispatchControlCommand("close")
                 }
             }
 
@@ -905,14 +1042,14 @@ class FloatingLyricManager(
         }
 
         addControlBtn(FloatingIconType.LOCK) { setLocked(true) }
-        addControlBtn(FloatingIconType.PREV) { onControlCommand("prev") }
+        addControlBtn(FloatingIconType.PREV) { dispatchControlCommand("prev") }
         playPauseBtn = addControlBtn(
             if (isPlayingState) FloatingIconType.PAUSE_CIRCLE else FloatingIconType.PLAY_CIRCLE,
             heightDp = 50
         ) {
-            onControlCommand("playpause")
+            dispatchControlCommand("playpause")
         }
-        addControlBtn(FloatingIconType.NEXT) { onControlCommand("next") }
+        addControlBtn(FloatingIconType.NEXT) { dispatchControlCommand("next") }
         addControlBtn(FloatingIconType.SETTINGS) {
             isStyleExpanded = !isStyleExpanded
             styleBar?.visibility = if (isStyleExpanded) View.VISIBLE else View.GONE
@@ -1118,24 +1255,21 @@ class FloatingLyricManager(
     }
 
     fun onNativeTrackChanged(songId: String, title: String, artist: String) {
-        val cleanTitle = title.ifBlank { "小庞奶娃音乐" }
-        val changed = songId != currentSongId || cleanTitle != currentSongTitle
-        currentSongId = songId
-        currentSongTitle = cleanTitle
-        currentSongArtist = artist
-
-        if (changed) {
-            lyricLines = emptyList()
-            fallbackTopText = cleanTitle
-            fallbackBottomText = artist
-            mainHandler.post {
-                topLineView?.setLineData(fallbackTopText, active = true, progress = 1f)
-                bottomLineView?.setLineData(fallbackBottomText, active = false, progress = 0f)
+        runOnMain {
+            if (isReleased) return@runOnMain
+            val decision = lyricState.onTrackChanged(songId, title, artist)
+            if (decision.trackChanged) {
+                lyricFetchJob?.cancel()
+                lyricFetchJob = null
+                topLineView?.setLineData(lyricState.fallbackTopText, active = true, progress = 1f)
+                bottomLineView?.setLineData(lyricState.fallbackBottomText, active = false, progress = 0f)
             }
-        }
-
-        if (songId.isNotBlank() && songId.all { it.isDigit() } && !lyricLines.any { it.words.isNotEmpty() }) {
-            fetchLyricsNatively(songId)
+            if (isShowing) {
+                renderFromNativePosition()
+            }
+            if (decision.shouldFetchNativeLyrics) {
+                fetchLyricsNatively(songId)
+            }
         }
     }
 
@@ -1144,17 +1278,13 @@ class FloatingLyricManager(
      * 格式：[{"t":12340,"d":3200,"text":"..."}, ...]
      */
     fun syncLyricLinesFromJs(songId: String, songTitle: String, linesJson: String) {
-        if (songTitle.isNotBlank()) currentSongTitle = songTitle
-        if (songId.isNotBlank()) currentSongId = songId
-
         val parsed = LyricParser.parseJsLyricLines(linesJson)
-        if (parsed.isNotEmpty()) {
-            // 若原生已成功拿到带逐字时间戳的 YRC 歌词且同一首歌，不降级覆盖
-            if (lyricLines.any { it.words.isNotEmpty() } && songId == currentSongId) {
-                return
+        runOnMain {
+            if (isReleased) return@runOnMain
+            if (lyricState.applyJsLyrics(songId, songTitle, parsed)) {
+                renderFromNativePosition()
+                startOrStopTicker()
             }
-            lyricLines = parsed
-            mainHandler.post { renderFromNativePosition() }
         }
     }
 
@@ -1163,16 +1293,15 @@ class FloatingLyricManager(
      */
     fun updateLyric(text: String, translation: String, songTitle: String, isPlaying: Boolean) {
         isPlayingState = isPlaying
-        if (songTitle.isNotBlank()) currentSongTitle = songTitle
-        mainHandler.post {
+        runOnMain {
+            if (isReleased) return@runOnMain
             playPauseBtn?.iconType =
                 if (isPlaying) FloatingIconType.PAUSE_CIRCLE else FloatingIconType.PLAY_CIRCLE
-            if (!isShowing) return@post
-            if (lyricLines.isEmpty()) {
-                fallbackTopText = text.ifBlank { songTitle.ifBlank { "小庞奶娃音乐" } }
-                fallbackBottomText = translation.ifBlank { currentSongArtist }
-                topLineView?.setLineData(fallbackTopText, active = true, progress = 1f)
-                bottomLineView?.setLineData(fallbackBottomText, active = false, progress = 0f)
+            lyricState.updateFallback(text, translation, songTitle)
+            if (!isShowing) return@runOnMain
+            if (lyricState.lyricLines.isEmpty()) {
+                topLineView?.setLineData(lyricState.fallbackTopText, active = true, progress = 1f)
+                bottomLineView?.setLineData(lyricState.fallbackBottomText, active = false, progress = 0f)
             }
             startOrStopTicker()
         }
@@ -1184,12 +1313,14 @@ class FloatingLyricManager(
             runCatching {
                 val res = NaiwaApp.instance.ncmClient.dispatch("/lyric/new", mapOf("id" to songId))
                 if (res.status != 200 || res.body.isBlank()) return@launch
-                if (songId != currentSongId) return@launch
 
                 val root = JsonParser.parseString(res.body).asJsonObject
-                val yrcRaw = root.getAsJsonObject("yrc")?.get("lyric")?.asString ?: ""
-                val lrcRaw = root.getAsJsonObject("lrc")?.get("lyric")?.asString ?: ""
-                val tlyricRaw = root.getAsJsonObject("tlyric")?.get("lyric")?.asString ?: ""
+                val yrcRaw = root.get("yrc")?.takeIf { it.isJsonObject }?.asJsonObject
+                    ?.get("lyric")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                val lrcRaw = root.get("lrc")?.takeIf { it.isJsonObject }?.asJsonObject
+                    ?.get("lyric")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                val tlyricRaw = root.get("tlyric")?.takeIf { it.isJsonObject }?.asJsonObject
+                    ?.get("lyric")?.takeIf { !it.isJsonNull }?.asString ?: ""
 
                 val parsedYrc = if (yrcRaw.isNotBlank()) LyricParser.parseYrc(yrcRaw) else emptyList()
                 val baseLines = if (parsedYrc.isNotEmpty()) parsedYrc else LyricParser.parseLrc(lrcRaw)
@@ -1199,11 +1330,13 @@ class FloatingLyricManager(
                     baseLines
                 }
 
-                if (parsed.isNotEmpty() && songId == currentSongId) {
-                    lyricLines = parsed
-                    mainHandler.post {
-                        renderFromNativePosition()
-                        startOrStopTicker()
+                if (parsed.isNotEmpty()) {
+                    runOnMain {
+                        if (isReleased) return@runOnMain
+                        if (lyricState.applyNativeLyrics(songId, parsed)) {
+                            renderFromNativePosition()
+                            startOrStopTicker()
+                        }
                     }
                 }
             }.onFailure {
@@ -1224,10 +1357,10 @@ class FloatingLyricManager(
 
     private fun renderFromNativePosition() {
         if (!isShowing) return
-        val lines = lyricLines
+        val lines = lyricState.lyricLines
         if (lines.isEmpty()) {
-            topLineView?.setLineData(fallbackTopText, active = true, progress = 1f)
-            bottomLineView?.setLineData(fallbackBottomText, active = false, progress = 0f)
+            topLineView?.setLineData(lyricState.fallbackTopText, active = true, progress = 1f)
+            bottomLineView?.setLineData(lyricState.fallbackBottomText, active = false, progress = 0f)
             return
         }
 
@@ -1235,7 +1368,7 @@ class FloatingLyricManager(
         val idx = LyricParser.findLineIndex(lines, posMs)
 
         if (idx < 0) {
-            topLineView?.setLineData(lines.getOrNull(0)?.text ?: currentSongTitle, active = true, progress = 1f)
+            topLineView?.setLineData(lines.getOrNull(0)?.text ?: lyricState.currentSongTitle, active = true, progress = 1f)
             bottomLineView?.setLineData(lines.getOrNull(1)?.text ?: "", active = false, progress = 0f)
             return
         }
@@ -1306,6 +1439,7 @@ class FloatingLyricManager(
     }
 
     fun hide() {
+        shouldBeAttached = false
         synchronized(landscapeLock) {
             landscapeController.onForceHide()
         }
@@ -1314,6 +1448,7 @@ class FloatingLyricManager(
     }
 
     private fun hideOverlayViewOnly() {
+        shouldBeAttached = false
         runOnMain {
             mainHandler.removeCallbacks(autoCollapseRunnable)
             mainHandler.removeCallbacks(lyricTicker)

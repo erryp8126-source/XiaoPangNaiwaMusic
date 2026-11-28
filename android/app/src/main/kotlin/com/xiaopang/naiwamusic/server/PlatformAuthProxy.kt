@@ -8,6 +8,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
@@ -189,13 +190,22 @@ class PlatformAuthProxy {
     }
 
     private val gson = Gson()
-    private val client: OkHttpClient = OkHttpClient.Builder()
+    private val bilibiliClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(12, TimeUnit.SECONDS)
         .followRedirects(false)
         .followSslRedirects(false)
-        .dns(SafeHttpGuard.createSafeDns(SafeHttpGuard.PLATFORM_AUTH_ALLOWED_DOMAINS))
+        .dns(SafeHttpGuard.createSafeDns(SafeHttpGuard.BILIBILI_AUTH_ALLOWED_DOMAINS))
+        .build()
+
+    private val qqClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(12, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(12, TimeUnit.SECONDS)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .dns(SafeHttpGuard.createSafeDns(SafeHttpGuard.QQ_AUTH_ALLOWED_DOMAINS))
         .build()
 
     fun handle(path: String, params: Map<String, String>): Pair<Int, String> {
@@ -222,30 +232,43 @@ class PlatformAuthProxy {
         }
     }
 
-    private fun executeGetText(url: String, headers: Map<String, String>): String {
+    private fun executeGetText(
+        url: String,
+        headers: Map<String, String>,
+        targetClient: OkHttpClient,
+        allowedDomains: Set<String>
+    ): String {
         val req = Request.Builder().url(url).get().apply {
             header("User-Agent", BROWSER_UA)
             headers.forEach { (k, v) -> header(k, v) }
         }.build()
         SafeHttpGuard.executeWithSafeRedirects(
-            client,
+            targetClient,
             req,
-            SafeHttpGuard.PLATFORM_AUTH_ALLOWED_DOMAINS
+            allowedDomains,
+            requireHttps = true
         ).use { resp ->
             return resp.body?.string() ?: "{}"
         }
     }
 
-    private fun executePostJson(url: String, jsonBody: String, headers: Map<String, String>): String {
+    private fun executePostJson(
+        url: String,
+        jsonBody: String,
+        headers: Map<String, String>,
+        targetClient: OkHttpClient,
+        allowedDomains: Set<String>
+    ): String {
         val body = jsonBody.toRequestBody("application/json; charset=utf-8".toMediaType())
         val req = Request.Builder().url(url).post(body).apply {
             header("User-Agent", BROWSER_UA)
             headers.forEach { (k, v) -> header(k, v) }
         }.build()
         SafeHttpGuard.executeWithSafeRedirects(
-            client,
+            targetClient,
             req,
-            SafeHttpGuard.PLATFORM_AUTH_ALLOWED_DOMAINS
+            allowedDomains,
+            requireHttps = true
         ).use { resp ->
             return resp.body?.string() ?: "{}"
         }
@@ -254,7 +277,9 @@ class PlatformAuthProxy {
     private fun generateBilibiliQr(): String {
         val raw = executeGetText(
             "https://passport.bilibili.com/x/passport-login/web/qrcode/generate",
-            mapOf("Referer" to BILIBILI_REFERER)
+            mapOf("Referer" to BILIBILI_REFERER),
+            bilibiliClient,
+            SafeHttpGuard.BILIBILI_AUTH_ALLOWED_DOMAINS
         )
         val root = JsonParser.parseString(raw).asJsonObject
         val dataObj = root.getAsJsonObject("data")
@@ -291,9 +316,10 @@ class PlatformAuthProxy {
         var setCookies: List<String> = emptyList()
         val bodyText: String
         SafeHttpGuard.executeWithSafeRedirects(
-            client,
+            bilibiliClient,
             req,
-            SafeHttpGuard.PLATFORM_AUTH_ALLOWED_DOMAINS
+            SafeHttpGuard.BILIBILI_AUTH_ALLOWED_DOMAINS,
+            requireHttps = true
         ).use { resp ->
             setCookies = resp.headers("Set-Cookie")
             bodyText = resp.body?.string() ?: "{}"
@@ -338,7 +364,9 @@ class PlatformAuthProxy {
         val raw = runCatching {
             executeGetText(
                 "https://api.bilibili.com/x/web-interface/nav",
-                mapOf("Referer" to BILIBILI_REFERER, "Cookie" to cookie)
+                mapOf("Referer" to BILIBILI_REFERER, "Cookie" to cookie),
+                bilibiliClient,
+                SafeHttpGuard.BILIBILI_AUTH_ALLOWED_DOMAINS
             )
         }.getOrNull()
         val root = raw?.let { runCatching { JsonParser.parseString(it).asJsonObject }.getOrNull() }
@@ -390,7 +418,9 @@ class PlatformAuthProxy {
         }
         val raw = executeGetText(
             "https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=${enc(uid)}&type=2",
-            mapOf("Referer" to BILIBILI_REFERER, "Cookie" to cookie)
+            mapOf("Referer" to BILIBILI_REFERER, "Cookie" to cookie),
+            bilibiliClient,
+            SafeHttpGuard.BILIBILI_AUTH_ALLOWED_DOMAINS
         )
         val root = JsonParser.parseString(raw).asJsonObject
         val list = root.getAsJsonObject("data")?.getAsJsonArray("list")
@@ -418,7 +448,9 @@ class PlatformAuthProxy {
         }
         val raw = executeGetText(
             "https://api.bilibili.com/x/v3/fav/resource/list?media_id=${enc(mediaId)}&pn=$pn&ps=$ps&platform=web",
-            mapOf("Referer" to BILIBILI_REFERER, "Cookie" to cookie)
+            mapOf("Referer" to BILIBILI_REFERER, "Cookie" to cookie),
+            bilibiliClient,
+            SafeHttpGuard.BILIBILI_AUTH_ALLOWED_DOMAINS
         )
         val root = JsonParser.parseString(raw).asJsonObject
         val dataObj = root.getAsJsonObject("data")
@@ -461,7 +493,9 @@ class PlatformAuthProxy {
         if (cid <= 0L) {
             val viewRaw = executeGetText(
                 "https://api.bilibili.com/x/web-interface/view?bvid=${enc(bvid)}",
-                headers
+                headers,
+                bilibiliClient,
+                SafeHttpGuard.BILIBILI_AUTH_ALLOWED_DOMAINS
             )
             val viewObj = runCatching { JsonParser.parseString(viewRaw).asJsonObject }.getOrNull()
             val viewData = viewObj?.getAsJsonObject("data")
@@ -474,7 +508,9 @@ class PlatformAuthProxy {
         }
         val playRaw = executeGetText(
             "https://api.bilibili.com/x/player/playurl?bvid=${enc(bvid)}&cid=$cid&qn=80&fnval=16&fourk=1",
-            headers
+            headers,
+            bilibiliClient,
+            SafeHttpGuard.BILIBILI_AUTH_ALLOWED_DOMAINS
         )
         val playObj = JsonParser.parseString(playRaw).asJsonObject
         val dataObj = playObj.getAsJsonObject("data")
@@ -523,9 +559,10 @@ class PlatformAuthProxy {
         var qrsig = ""
         val bytes: ByteArray
         SafeHttpGuard.executeWithSafeRedirects(
-            client,
+            qqClient,
             req,
-            SafeHttpGuard.PLATFORM_AUTH_ALLOWED_DOMAINS
+            SafeHttpGuard.QQ_AUTH_ALLOWED_DOMAINS,
+            requireHttps = true
         ).use { resp ->
             val setCookies = resp.headers("Set-Cookie")
             for (c in setCookies) {
@@ -553,8 +590,8 @@ class PlatformAuthProxy {
 
     private fun pollQqQr(params: Map<String, String>): String {
         val qrsig = params["qrsig"]?.trim().orEmpty()
-        if (qrsig.isEmpty()) {
-            return gson.toJson(mapOf("code" to 400, "status" to "error", "message" to "缺少 qrsig"))
+        if (qrsig.isEmpty() || qrsig.any { it == ';' || it.isWhitespace() || it.code < 0x20 || it.code == 0x7F }) {
+            return gson.toJson(mapOf("code" to 400, "status" to "error", "message" to "缺少或非法的 qrsig"))
         }
         val ptqrtoken = computeQqPtqrToken(qrsig)
         val u1 = enc("https://y.qq.com/n/ryqq/profile")
@@ -569,9 +606,10 @@ class PlatformAuthProxy {
         val collectedCookies = mutableListOf<String>()
         val bodyText: String
         SafeHttpGuard.executeWithSafeRedirects(
-            client,
+            qqClient,
             req,
-            SafeHttpGuard.PLATFORM_AUTH_ALLOWED_DOMAINS
+            SafeHttpGuard.QQ_AUTH_ALLOWED_DOMAINS,
+            requireHttps = true
         ).use { resp ->
             collectedCookies.addAll(resp.headers("Set-Cookie"))
             bodyText = resp.body?.string() ?: ""
@@ -589,35 +627,29 @@ class PlatformAuthProxy {
             )
         }
 
-        // 手动沿 PLATFORM_AUTH_ALLOWED_DOMAINS 安全跟随 check_sig 跳转收集完整 QQ 音乐 Cookie
+        // 手动沿 QQ_AUTH_ALLOWED_DOMAINS 强制 HTTPS 安全跟随 check_sig 跳转，跨 Host 自动剥离 Cookie
         if (parsed.redirectUrl.isNotBlank()) {
-            var hopUrl: String? = parsed.redirectUrl
-            var hop = 0
-            while (!hopUrl.isNullOrBlank() && hop < MAX_QQ_SIG_HOPS) {
-                if (!SafeHttpGuard.validateUrlAndResolve(hopUrl, SafeHttpGuard.PLATFORM_AUTH_ALLOWED_DOMAINS)) {
-                    break
-                }
-                val currentJar = extractQqCookieMap(collectedCookies)
-                val hopReq = Request.Builder().url(hopUrl).get()
-                    .header("User-Agent", BROWSER_UA)
-                    .header("Referer", QQ_REFERER)
-                    .apply {
-                        if (currentJar.isNotEmpty()) header("Cookie", formatCookieMap(currentJar))
+            val currentJar = extractQqCookieMap(collectedCookies)
+            val initialHost = runCatching { URI(parsed.redirectUrl).host }.getOrNull().orEmpty()
+            val hopReq = Request.Builder().url(parsed.redirectUrl).get()
+                .header("User-Agent", BROWSER_UA)
+                .header("Referer", QQ_REFERER)
+                .apply {
+                    if (initialHost.equals("ssl.ptlogin2.qq.com", ignoreCase = true) && currentJar.isNotEmpty()) {
+                        header("Cookie", formatCookieMap(currentJar))
                     }
-                    .build()
-                var nextLoc: String? = null
-                client.newCall(hopReq).execute().use { resp ->
+                }
+                .build()
+            SafeHttpGuard.executeWithSafeRedirects(
+                qqClient,
+                hopReq,
+                SafeHttpGuard.QQ_AUTH_ALLOWED_DOMAINS,
+                maxRedirects = MAX_QQ_SIG_HOPS,
+                requireHttps = true,
+                onHopResponse = { resp ->
                     collectedCookies.addAll(resp.headers("Set-Cookie"))
-                    if (resp.code in setOf(301, 302, 307, 308)) {
-                        val loc = resp.header("Location")?.trim()
-                        if (!loc.isNullOrEmpty()) {
-                            nextLoc = resp.request.url.resolve(loc)?.toString()
-                        }
-                    }
                 }
-                hopUrl = nextLoc
-                hop++
-            }
+            ).use { }
         }
 
         val cookieMap = extractQqCookieMap(collectedCookies)
@@ -656,7 +688,9 @@ class PlatformAuthProxy {
         runCatching {
             val raw = executeGetText(
                 "https://c.y.qq.com/rsc/fcgi-bin/fcg_get_profile_homepage.fcg?cid=205360838&ct=20&userid=${enc(uid)}&reqfrom=1&format=json&inCharset=utf8&outCharset=utf-8",
-                mapOf("Referer" to QQ_REFERER, "Cookie" to cookie)
+                mapOf("Referer" to QQ_REFERER, "Cookie" to cookie),
+                qqClient,
+                SafeHttpGuard.QQ_AUTH_ALLOWED_DOMAINS
             )
             val root = JsonParser.parseString(raw).asJsonObject
             val creator = root.getAsJsonObject("data")?.getAsJsonObject("creator")
@@ -686,7 +720,9 @@ class PlatformAuthProxy {
         val checkRaw = runCatching {
             executeGetText(
                 "https://c.y.qq.com/rsc/fcgi-bin/fcg_user_created_diss?hostuin=${enc(uid)}&sin=0&size=5&r=${System.currentTimeMillis()}&g_tk=5381&loginUin=${enc(uid)}&format=json&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq.json&needNewCode=0",
-                mapOf("Referer" to QQ_REFERER, "Cookie" to normalizedCookie)
+                mapOf("Referer" to QQ_REFERER, "Cookie" to normalizedCookie),
+                qqClient,
+                SafeHttpGuard.QQ_AUTH_ALLOWED_DOMAINS
             )
         }.getOrNull()
         val checkCode = checkRaw?.let {
@@ -710,7 +746,9 @@ class PlatformAuthProxy {
         }
         val raw = executeGetText(
             "https://c.y.qq.com/rsc/fcgi-bin/fcg_user_created_diss?hostuin=${enc(uid)}&sin=0&size=50&r=${System.currentTimeMillis()}&g_tk=5381&loginUin=${enc(uid)}&format=json&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq.json&needNewCode=0",
-            mapOf("Referer" to QQ_REFERER, "Cookie" to normalizedCookie)
+            mapOf("Referer" to QQ_REFERER, "Cookie" to normalizedCookie),
+            qqClient,
+            SafeHttpGuard.QQ_AUTH_ALLOWED_DOMAINS
         )
         val root = JsonParser.parseString(raw).asJsonObject
         val dissList = root.getAsJsonObject("data")?.getAsJsonArray("disslist")
@@ -744,7 +782,9 @@ class PlatformAuthProxy {
         }
         val raw = executeGetText(
             "https://c.y.qq.com/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg?type=1&json=1&utf8=1&onlysong=0&new_format=1&disstid=${enc(tid)}&g_tk=5381&loginUin=${enc(uid)}&hostUin=0&format=json&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq.json&needNewCode=0",
-            mapOf("Referer" to QQ_REFERER, "Cookie" to normalizedCookie)
+            mapOf("Referer" to QQ_REFERER, "Cookie" to normalizedCookie),
+            qqClient,
+            SafeHttpGuard.QQ_AUTH_ALLOWED_DOMAINS
         )
         val root = JsonParser.parseString(raw).asJsonObject
         val cd = root.getAsJsonArray("cdlist")?.firstOrNull()?.asJsonObject
@@ -826,7 +866,9 @@ class PlatformAuthProxy {
         val searchRaw = executePostJson(
             "https://u.y.qq.com/cgi-bin/musicu.fcg",
             searchPayload,
-            mapOf("Referer" to QQ_REFERER, "Origin" to "https://y.qq.com", "Cookie" to normalizedCookie)
+            mapOf("Referer" to QQ_REFERER, "Origin" to "https://y.qq.com", "Cookie" to normalizedCookie),
+            qqClient,
+            SafeHttpGuard.QQ_AUTH_ALLOWED_DOMAINS
         )
         val searchRoot = JsonParser.parseString(searchRaw).asJsonObject
         val songList = searchRoot.getAsJsonObject("req_0")
@@ -859,7 +901,9 @@ class PlatformAuthProxy {
         val vkeyRaw = executePostJson(
             "https://u.y.qq.com/cgi-bin/musicu.fcg",
             vkeyPayload,
-            mapOf("Referer" to QQ_REFERER, "Origin" to "https://y.qq.com", "Cookie" to normalizedCookie)
+            mapOf("Referer" to QQ_REFERER, "Origin" to "https://y.qq.com", "Cookie" to normalizedCookie),
+            qqClient,
+            SafeHttpGuard.QQ_AUTH_ALLOWED_DOMAINS
         )
         val vkeyRoot = JsonParser.parseString(vkeyRaw).asJsonObject
         val vkeyData = vkeyRoot.getAsJsonObject("req_vkey")?.getAsJsonObject("data")

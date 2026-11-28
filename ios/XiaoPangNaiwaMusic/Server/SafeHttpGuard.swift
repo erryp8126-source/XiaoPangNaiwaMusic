@@ -9,9 +9,12 @@ enum SafeHttpGuard {
         "126.net"
     ]
 
-    static let platformAuthAllowedDomains: Set<String> = [
+    static let bilibiliAuthAllowedDomains: Set<String> = [
         "passport.bilibili.com",
-        "api.bilibili.com",
+        "api.bilibili.com"
+    ]
+
+    static let qqAuthAllowedDomains: Set<String> = [
         "ssl.ptlogin2.qq.com",
         "ptlogin2.qq.com",
         "u.y.qq.com",
@@ -19,6 +22,8 @@ enum SafeHttpGuard {
         "y.qq.com",
         "graph.qq.com"
     ]
+
+    static let platformAuthAllowedDomains: Set<String> = bilibiliAuthAllowedDomains.union(qqAuthAllowedDomains)
 
     static let externalPlaylistAllowedDomains: Set<String> = [
         "qishui.douyin.com",
@@ -101,20 +106,46 @@ enum SafeHttpGuard {
 
     static func isPublicIPv6(_ bytes: [UInt8]) -> Bool {
         guard bytes.count == 16 else { return false }
-        // Unspecified :: or loopback ::1
-        if bytes[0..<15].allSatisfy({ $0 == 0 }) && (bytes[15] == 0 || bytes[15] == 1) {
+        let h0 = (UInt16(bytes[0]) << 8) | UInt16(bytes[1])
+        let h1 = (UInt16(bytes[2]) << 8) | UInt16(bytes[3])
+        let h2 = (UInt16(bytes[4]) << 8) | UInt16(bytes[5])
+        let h3 = (UInt16(bytes[6]) << 8) | UInt16(bytes[7])
+        let h4 = (UInt16(bytes[8]) << 8) | UInt16(bytes[9])
+        let h5 = (UInt16(bytes[10]) << 8) | UInt16(bytes[11])
+        let h6 = (UInt16(bytes[12]) << 8) | UInt16(bytes[13])
+        let h7 = (UInt16(bytes[14]) << 8) | UInt16(bytes[15])
+
+        // Unspecified ::/128 or loopback ::1/128
+        if h0 == 0 && h1 == 0 && h2 == 0 && h3 == 0 && h4 == 0 && h5 == 0 && h6 == 0 && (h7 == 0 || h7 == 1) {
             return false
         }
-        // ULA fc00::/7
-        if (bytes[0] & 0xFE) == 0xFC { return false }
-        // Link-local fe80::/10
-        if bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0x80 { return false }
-        // Multicast ff00::/8
-        if bytes[0] == 0xFF { return false }
         // IPv4-mapped IPv6 ::ffff:0:0/96
-        if bytes[0..<10].allSatisfy({ $0 == 0 }) && bytes[10] == 0xFF && bytes[11] == 0xFF {
+        if h0 == 0 && h1 == 0 && h2 == 0 && h3 == 0 && h4 == 0 && h5 == 0xFFFF {
             return isPublicIPv4(bytes[12], bytes[13], bytes[14], bytes[15])
         }
+        // IPv4-compatible ::/96
+        if h0 == 0 && h1 == 0 && h2 == 0 && h3 == 0 && h4 == 0 && h5 == 0 { return false }
+        // SIIT IPv4-translated ::ffff:0:0:0/96
+        if h0 == 0 && h1 == 0 && h2 == 0 && h3 == 0 && h4 == 0xFFFF && h5 == 0 { return false }
+        // Discard-Only 100::/64
+        if h0 == 0x0100 && h1 == 0 && h2 == 0 && h3 == 0 { return false }
+        // NAT64 well-known 64:ff9b::/96 & local-use 64:ff9b:1::/48
+        if h0 == 0x0064 && h1 == 0xFF9B && h2 == 0 && h3 == 0 && h4 == 0 && h5 == 0 { return false }
+        if h0 == 0x0064 && h1 == 0xFF9B && h2 == 0x0001 { return false }
+        // Teredo 2001::/32, Benchmarking 2001:2::/48, Documentation 2001:db8::/32
+        if h0 == 0x2001 && h1 == 0x0000 { return false }
+        if h0 == 0x2001 && h1 == 0x0002 && h2 == 0x0000 { return false }
+        if h0 == 0x2001 && h1 == 0x0DB8 { return false }
+        // 6to4 2002::/16
+        if h0 == 0x2002 { return false }
+        // ULA fc00::/7
+        if (h0 & 0xFE00) == 0xFC00 { return false }
+        // Link-local fe80::/10
+        if (h0 & 0xFFC0) == 0xFE80 { return false }
+        // Site-local fec0::/10
+        if (h0 & 0xFFC0) == 0xFEC0 { return false }
+        // Multicast ff00::/8
+        if (h0 & 0xFF00) == 0xFF00 { return false }
         return true
     }
 
@@ -248,11 +279,15 @@ final class SafeRedirectSessionDelegate: NSObject, URLSessionTaskDelegate {
         }
 
         var sanitized = request
-        if let prevHost = task.currentRequest?.url?.host?.lowercased(),
-           let nextHost = nextUrl.host?.lowercased(),
-           prevHost != nextHost {
-            sanitized.setValue(nil, forHTTPHeaderField: "Authorization")
-            sanitized.setValue(nil, forHTTPHeaderField: "Cookie")
+        if let prevUrl = task.currentRequest?.url {
+            let prevHost = prevUrl.host?.lowercased()
+            let nextHost = nextUrl.host?.lowercased()
+            let prevScheme = prevUrl.scheme?.lowercased()
+            let nextScheme = nextUrl.scheme?.lowercased()
+            if prevHost != nextHost || prevScheme != nextScheme || prevUrl.port != nextUrl.port {
+                sanitized.setValue(nil, forHTTPHeaderField: "Authorization")
+                sanitized.setValue(nil, forHTTPHeaderField: "Cookie")
+            }
         }
         completionHandler(sanitized)
     }
