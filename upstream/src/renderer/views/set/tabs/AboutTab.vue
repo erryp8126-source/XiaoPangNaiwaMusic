@@ -43,6 +43,9 @@
       </template>
       <template #action>
         <div class="flex items-center gap-2 flex-wrap">
+          <s-btn @click="openReleaseAnnouncement">
+            <i class="ri-megaphone-line mr-1"></i>查看更新公告
+          </s-btn>
           <s-btn :loading="checking" @click="checkForUpdates(true)">
             {{ checking ? t('settings.about.checking') : t('settings.about.checkUpdate') }}
           </s-btn>
@@ -133,6 +136,7 @@ import mascotIcon from '@/assets/icon.png';
 import { useSettingsStore } from '@/store/modules/settings';
 import { isElectron, isRealAndroid } from '@/utils';
 import { clearNativeLastCrashLog, getNativeLastCrashLog } from '@/utils/androidBridge';
+import { dispatchOpenReleaseAnnouncement } from '@/utils/announcementPolicy';
 import { checkUpdate, UpdateResult } from '@/utils/update';
 
 import config from '../../../../../package.json';
@@ -254,6 +258,10 @@ const openAuthor = () => {
 
 const openOriginalAuthor = () => {
   openExternal(ORIGINAL_AUTHOR_GITHUB_URL);
+};
+
+const openReleaseAnnouncement = () => {
+  dispatchOpenReleaseAnnouncement();
 };
 
 const lastCrashLog = ref('');

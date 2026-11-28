@@ -167,6 +167,10 @@ import { useSettingsStore } from '@/store/modules/settings';
 import { isLyricWindow, isRealAndroid } from '@/utils';
 import { triggerHaptic } from '@/utils/androidBridge';
 import {
+  ONBOARDING_COMPLETED_EVENT,
+  ONBOARDING_STATE_EVENT
+} from '@/utils/announcementPolicy';
+import {
   detectExistingUserCustomConfig,
   evaluateOnboardingEligibility
 } from '@/utils/onboardingPolicy';
@@ -201,23 +205,38 @@ const applyThemeChoice = (choice: 'light' | 'dark') => {
   }
 };
 
-const markCompleted = () => {
+const notifyOnboardingState = (active: boolean) => {
+  if (typeof window === 'undefined') return;
+  (window as any).__xiaopangOnboardingActive = active;
+  window.dispatchEvent(new CustomEvent(ONBOARDING_STATE_EVENT, { detail: { active } }));
+};
+
+const markCompleted = (options?: { completedInteractiveFreshUser?: boolean }) => {
+  const wasInteractive = Boolean(options?.completedInteractiveFreshUser);
   try {
     localStorage.setItem(ONBOARDING_KEY, String(Date.now()));
   } catch {
     // ignore
   }
   visible.value = false;
+  notifyOnboardingState(false);
+  if (wasInteractive && typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent(ONBOARDING_COMPLETED_EVENT, {
+        detail: { freshUser: true }
+      })
+    );
+  }
 };
 
 const skipOnboarding = () => {
   triggerHaptic('light');
-  markCompleted();
+  markCompleted({ completedInteractiveFreshUser: true });
 };
 
 const completeOnboarding = () => {
   triggerHaptic('success');
-  markCompleted();
+  markCompleted({ completedInteractiveFreshUser: true });
 };
 
 const handleSkipCloudSync = () => {
@@ -230,17 +249,20 @@ const handleSkipCloudSync = () => {
 };
 
 const goImportLocalMusic = () => {
-  markCompleted();
+  markCompleted({ completedInteractiveFreshUser: true });
   router.push('/library?tab=local&autoScan=1');
 };
 
 const goConfigureCloudSync = () => {
-  markCompleted();
+  markCompleted({ completedInteractiveFreshUser: true });
   router.push('/set?section=sync');
 };
 
 const maybeOpenOnboarding = () => {
-  if (isLyricWindow.value) return;
+  if (isLyricWindow.value) {
+    notifyOnboardingState(false);
+    return;
+  }
   try {
     const rawPlaylists = localStorage.getItem('xiaopang_custom_playlists_v1');
     let customPlaylistsCount = 0;
@@ -272,14 +294,19 @@ const maybeOpenOnboarding = () => {
     });
 
     if (decision.shouldAutoMarkCompleted) {
-      markCompleted();
+      markCompleted({ completedInteractiveFreshUser: false });
       return;
     }
-    if (!decision.shouldShow) return;
+    if (!decision.shouldShow) {
+      notifyOnboardingState(false);
+      return;
+    }
   } catch {
+    notifyOnboardingState(false);
     return;
   }
   visible.value = true;
+  notifyOnboardingState(true);
 };
 
 const handleDisclaimerAgreed = () => {
@@ -294,6 +321,9 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  if (visible.value) {
+    notifyOnboardingState(false);
+  }
   window.removeEventListener('xiaopang-disclaimer-agreed', handleDisclaimerAgreed);
 });
 </script>

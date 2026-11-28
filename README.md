@@ -28,7 +28,7 @@
 
 <p align="center">
   <b>⚡ 快速开始：</b>
-  <a href="https://github.com/erryp8126-source/XiaoPangNaiwaMusic/releases/latest"><b>下载最新 Android APK / iOS IPA (v1.0.1)</b></a>
+  <a href="https://github.com/erryp8126-source/XiaoPangNaiwaMusic/releases/latest"><b>下载最新 Android APK / iOS IPA (v1.1.0)</b></a>
   &nbsp;·&nbsp;
   <a href="https://erryp8126-source.github.io/XiaoPangNaiwaMusic/"><b>iPhone / 浏览器免签在线体验</b></a>
 </p>
@@ -147,7 +147,7 @@ XiaoPangNaiwaMusic/
   ```
 
 ### iOS 端（`.ipa`）
-1. **直接下载 `.ipa`**：前往 [Releases 页面](https://github.com/erryp8126-source/XiaoPangNaiwaMusic/releases/latest) 直接下载云端编好的 **`XiaoPangNaiwaMusic-v1.0.1-unsigned.ipa`**（支持 iOS 15.0+）。
+1. **直接下载 `.ipa`**：前往 [Releases 页面](https://github.com/erryp8126-source/XiaoPangNaiwaMusic/releases/latest) 直接下载云端编好的 **`XiaoPangNaiwaMusic-v1.1.0-unsigned.ipa`**（支持 iOS 15.0+）。
 2. **GitHub Actions 云端重新编译**（无需 Mac）：
    - 进入仓库 **Actions → Build & Release Android + iOS + PWA → Run workflow**，约 4 分钟即可自动编出最新的 Android APK、iOS IPA 与 PWA 并同步发布。
 3. **Mac 本地编译**（需 Xcode 15+ 与 `brew install xcodegen`）：

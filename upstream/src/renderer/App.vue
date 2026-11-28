@@ -10,6 +10,7 @@
           <app-floating-toast />
           <disclaimer-modal />
           <onboarding-guide-modal />
+          <release-announcement-modal />
         </n-message-provider>
       </n-dialog-provider>
     </n-config-provider>
@@ -26,6 +27,7 @@ import { useRouter } from 'vue-router';
 import AppFloatingToast from '@/components/common/AppFloatingToast.vue';
 import DisclaimerModal from '@/components/common/DisclaimerModal.vue';
 import OnboardingGuideModal from '@/components/common/OnboardingGuideModal.vue';
+import ReleaseAnnouncementModal from '@/components/common/ReleaseAnnouncementModal.vue';
 import { useCloudSyncStore } from '@/store/modules/cloudSync';
 import { useListeningStatsStore } from '@/store/modules/listeningStats';
 import { useOfflineAvailabilityStore } from '@/store/modules/offlineAvailability';

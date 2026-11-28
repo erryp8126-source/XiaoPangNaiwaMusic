@@ -22,7 +22,7 @@ const require = createRequire(import.meta.url);
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const ncmApi: Record<string, any> = require("netease-cloud-music-api-alger");
 
-export const FALLBACK_SERVICE_VERSION = "1.0.1";
+export const FALLBACK_SERVICE_VERSION = "1.1.0";
 
 function resolveServiceVersion(): string {
   try {

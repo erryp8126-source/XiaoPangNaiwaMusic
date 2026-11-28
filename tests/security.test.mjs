@@ -2197,7 +2197,7 @@ test("release prep: saveTextFile isolated to Backups/ with .json/.txt allowlist 
 
   const readmeMd = fs.readFileSync(path.join(repoRoot, "README.md"), "utf-8");
   assert.doesNotMatch(readmeMd, /v5\.1\.4/);
-  assert.match(readmeMd, /XiaoPangNaiwaMusic-v1\.0\.\d+-unsigned\.ipa/);
+  assert.match(readmeMd, /XiaoPangNaiwaMusic-v\d+\.\d+\.\d+-unsigned\.ipa/);
 
   const buildApkPs1 = fs.readFileSync(path.join(repoRoot, "build_apk.ps1"), "utf-8");
   assert.doesNotMatch(buildApkPs1, /"5\.1\.3"/);
@@ -2253,19 +2253,19 @@ test("v1.0.1 patch: VPN FakeIP (198.18.0.0/15) allowed, private SSRF still block
 
   const rootPkg = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf-8"));
   const upstreamPkg = JSON.parse(fs.readFileSync(path.join(repoRoot, "upstream/package.json"), "utf-8"));
-  assert.equal(rootPkg.version, "1.0.1");
-  assert.equal(upstreamPkg.version, "1.0.1");
+  assert.equal(rootPkg.version, "1.1.0");
+  assert.equal(upstreamPkg.version, "1.1.0");
 
   const gradleKts = fs.readFileSync(path.join(repoRoot, "android/app/build.gradle.kts"), "utf-8");
-  assert.match(gradleKts, /versionCode\s*=\s*10001/);
-  assert.match(gradleKts, /versionName\s*=\s*"1\.0\.1"/);
+  assert.match(gradleKts, /versionCode\s*=\s*10100/);
+  assert.match(gradleKts, /versionName\s*=\s*"1\.1\.0"/);
 
   const projectYml = fs.readFileSync(path.join(repoRoot, "ios/project.yml"), "utf-8");
-  assert.match(projectYml, /MARKETING_VERSION:\s*"1\.0\.1"/);
-  assert.match(projectYml, /CURRENT_PROJECT_VERSION:\s*"10001"/);
+  assert.match(projectYml, /MARKETING_VERSION:\s*"1\.1\.0"/);
+  assert.match(projectYml, /CURRENT_PROJECT_VERSION:\s*"10100"/);
   const readmeMd = fs.readFileSync(path.join(repoRoot, "README.md"), "utf-8");
-  assert.match(readmeMd, /\(v1\.0\.1\)/);
-  assert.match(readmeMd, /XiaoPangNaiwaMusic-v1\.0\.1-unsigned\.ipa/);
+  assert.match(readmeMd, /\(v1\.1\.0\)/);
+  assert.match(readmeMd, /XiaoPangNaiwaMusic-v1\.1\.0-unsigned\.ipa/);
 });
 
 test("dark mode overhaul: zero :global(.dark) selectors, neutral charcoal tokens & warm gold SearchBar accents", () => {
@@ -4004,4 +4004,202 @@ test("mixed-content P3 & Netlify release health gate P1: HTTPS image/media upgra
     assert.ok(workflowYml.includes(token), `build-dual-platform.yml must include "${token}"`);
   }
   assert.match(workflowYml, /needs:\s*\[[^\]]*deploy-verify-netlify[^\]]*\]/);
+});
+
+test("release announcements: structured changelog, independent ID gating, anti-stacking popup policy, and About entry", async () => {
+  // 1. Runtime validation of structured announcement data & independent ID
+  const announcementsMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/constants/releaseAnnouncements.ts")).href
+  );
+  const policyMod = await import(
+    pathToFileURL(path.join(repoRoot, "upstream/src/renderer/utils/announcementPolicy.ts")).href
+  );
+
+  const latest = announcementsMod.LATEST_ANNOUNCEMENT;
+  assert.ok(latest, "LATEST_ANNOUNCEMENT must be exported");
+  assert.equal(latest.id, "2026-11-27-update");
+  assert.equal(latest.version, "1.1.0");
+  assert.equal(latest.date, "2026-11-28");
+  assert.equal(latest.sections.length, 4);
+  assert.deepEqual(
+    latest.sections.map((s) => s.id),
+    ["playback-sources", "mobile-system", "ui-ux", "stability-security"]
+  );
+  const totalItems = latest.sections.reduce((acc, s) => acc + s.items.length, 0);
+  assert.ok(totalItems >= 18, `expected comprehensive post-2026-11-23 items, got ${totalItems}`);
+
+  // 2. Runtime tests on anti-stacking & independent-ID gating policy
+  // Case A: Disclaimer not yet agreed -> MUST NOT pop
+  assert.deepEqual(
+    policyMod.evaluateAnnouncementPopup({
+      isLyricWindow: false,
+      disclaimerAgreed: false,
+      isOnboardingActive: false,
+      justCompletedFreshOnboarding: false,
+      seenAnnouncementId: null,
+      latestAnnouncementId: latest.id,
+    }),
+    {
+      shouldShow: false,
+      shouldMarkSeenSilently: false,
+      reason: "disclaimer-pending",
+    }
+  );
+
+  // Case B: Onboarding currently active -> MUST NOT stack/pop
+  assert.deepEqual(
+    policyMod.evaluateAnnouncementPopup({
+      isLyricWindow: false,
+      disclaimerAgreed: true,
+      isOnboardingActive: true,
+      justCompletedFreshOnboarding: false,
+      seenAnnouncementId: null,
+      latestAnnouncementId: latest.id,
+    }),
+    {
+      shouldShow: false,
+      shouldMarkSeenSilently: false,
+      reason: "onboarding-active",
+    }
+  );
+
+  // Case C: Brand-new user just finished 3-step onboarding -> silently mark seen & DO NOT pop
+  assert.deepEqual(
+    policyMod.evaluateAnnouncementPopup({
+      isLyricWindow: false,
+      disclaimerAgreed: true,
+      isOnboardingActive: false,
+      justCompletedFreshOnboarding: true,
+      seenAnnouncementId: null,
+      latestAnnouncementId: latest.id,
+    }),
+    {
+      shouldShow: false,
+      shouldMarkSeenSilently: true,
+      reason: "fresh-user-onboarding-completed",
+    }
+  );
+
+  // Case D: Upgraded returning user on same version (1.0.1) with null or older seen ID -> pops once
+  assert.deepEqual(
+    policyMod.evaluateAnnouncementPopup({
+      isLyricWindow: false,
+      disclaimerAgreed: true,
+      isOnboardingActive: false,
+      justCompletedFreshOnboarding: false,
+      seenAnnouncementId: null,
+      latestAnnouncementId: latest.id,
+    }),
+    {
+      shouldShow: true,
+      shouldMarkSeenSilently: false,
+      reason: "eligible",
+    }
+  );
+  assert.deepEqual(
+    policyMod.evaluateAnnouncementPopup({
+      isLyricWindow: false,
+      disclaimerAgreed: true,
+      isOnboardingActive: false,
+      justCompletedFreshOnboarding: false,
+      seenAnnouncementId: "2026-11-23-update",
+      latestAnnouncementId: latest.id,
+    }),
+    {
+      shouldShow: true,
+      shouldMarkSeenSilently: false,
+      reason: "eligible",
+    }
+  );
+
+  // Case E: Already seen latest announcement ID -> DO NOT pop again
+  assert.deepEqual(
+    policyMod.evaluateAnnouncementPopup({
+      isLyricWindow: false,
+      disclaimerAgreed: true,
+      isOnboardingActive: false,
+      justCompletedFreshOnboarding: false,
+      seenAnnouncementId: latest.id,
+      latestAnnouncementId: latest.id,
+    }),
+    {
+      shouldShow: false,
+      shouldMarkSeenSilently: false,
+      reason: "already-seen",
+    }
+  );
+
+  // Case F: Desktop lyric overlay window -> DO NOT pop
+  assert.deepEqual(
+    policyMod.evaluateAnnouncementPopup({
+      isLyricWindow: true,
+      disclaimerAgreed: true,
+      isOnboardingActive: false,
+      justCompletedFreshOnboarding: false,
+      seenAnnouncementId: null,
+      latestAnnouncementId: latest.id,
+    }),
+    {
+      shouldShow: false,
+      shouldMarkSeenSilently: false,
+      reason: "lyric-window",
+    }
+  );
+
+  // Storage helper persists both independent ID and version
+  const store = new Map();
+  policyMod.markAnnouncementSeen(
+    {
+      getItem: (k) => store.get(k) ?? null,
+      setItem: (k, v) => store.set(k, v),
+    },
+    latest
+  );
+  assert.equal(store.get("alger_seen_announcement_id"), "2026-11-27-update");
+  assert.equal(store.get("alger_seen_announcement_version"), "1.1.0");
+
+  // 3. Root CHANGELOG.md & UI wiring verification
+  const changelog = fs.readFileSync(path.join(repoRoot, "CHANGELOG.md"), "utf-8");
+  assert.match(changelog, /2026-11-27-update/);
+  assert.match(changelog, /播放与音源升级/);
+  assert.match(changelog, /移动端与系统级增强/);
+  assert.match(changelog, /界面减负与顺手操作/);
+  assert.match(changelog, /稳定性与安全加固/);
+
+  const modalSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/common/ReleaseAnnouncementModal.vue"),
+    "utf-8"
+  );
+  assert.doesNotMatch(modalSrc, /:global\(\.dark\)/);
+  assert.doesNotMatch(modalSrc, /\bv-html\b/);
+  assert.match(modalSrc, /evaluateAnnouncementPopup/);
+  assert.match(modalSrc, /markAnnouncementSeen/);
+  assert.match(modalSrc, /ANNOUNCEMENT_SEEN_ID_KEY/);
+  assert.match(modalSrc, /OPEN_RELEASE_ANNOUNCEMENT_EVENT/);
+  assert.match(modalSrc, /registerAndroidBackHandler/);
+  assert.match(modalSrc, /scheduleAutoCheck\(300\)/);
+  assert.match(modalSrc, /scheduleAutoCheck\(320\)/);
+
+  const onboardingSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/components/common/OnboardingGuideModal.vue"),
+    "utf-8"
+  );
+  assert.doesNotMatch(onboardingSrc, /:global\(\.dark\)/);
+  assert.match(onboardingSrc, /ONBOARDING_STATE_EVENT/);
+  assert.match(onboardingSrc, /ONBOARDING_COMPLETED_EVENT/);
+  assert.match(onboardingSrc, /completedInteractiveFreshUser:\s*true/);
+  assert.match(onboardingSrc, /completedInteractiveFreshUser:\s*false/);
+
+  const appSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/App.vue"),
+    "utf-8"
+  );
+  assert.match(appSrc, /<release-announcement-modal\s*\/>/);
+
+  const aboutSrc = fs.readFileSync(
+    path.join(repoRoot, "upstream/src/renderer/views/set/tabs/AboutTab.vue"),
+    "utf-8"
+  );
+  assert.match(aboutSrc, /查看更新公告/);
+  assert.match(aboutSrc, /dispatchOpenReleaseAnnouncement/);
 });

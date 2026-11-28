@@ -1,6 +1,6 @@
 {
   "name": "xiaopang-naiwa-music-web",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "private": true,
   "description": "小庞奶娃音乐 Web / Safari PWA + Netlify Serverless Music API",
   "engines": {
